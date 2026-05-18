@@ -24,14 +24,16 @@ package: if it's importable, ``parser.parse_args`` will service the
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sys
+import tarfile
 import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from snapz import __version__, api, archive
+from snapz import __version__, api, archive, events, preferences, remote
 from snapz import style as st
 from snapz.archive import FileEntry, WalkResult
 from snapz.config import RuntimeConfig, default_config
@@ -89,6 +91,12 @@ def _prompt(prompt: str, default: Optional[str] = None) -> str:
 
 def _print_error(msg: str) -> None:
     print(f"{st.err_prefix()} {msg}", file=sys.stderr)
+
+
+def _looks_binary(data: bytes) -> bool:
+    """Cheap binary heuristic for terminal-safe previews/output."""
+
+    return b"\x00" in data[:8192]
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +447,7 @@ def cmd_save_interactive(args: argparse.Namespace, config: RuntimeConfig) -> int
             on_progress=progress,
             overwrite=overwrite,
             note=note,
+            use_file_cache=not getattr(args, "no_cache", False),
         )
     finally:
         progress.finish()
@@ -512,6 +521,7 @@ def cmd_save_scripted(args: argparse.Namespace, config: RuntimeConfig) -> int:
             on_progress=progress if sys.stderr.isatty() else None,
             overwrite=args.overwrite,
             note=(getattr(args, "message", "") or "").strip(),
+            use_file_cache=not getattr(args, "no_cache", False),
         )
     finally:
         progress.finish()
@@ -691,6 +701,9 @@ def cmd_rm(args: argparse.Namespace, config: RuntimeConfig) -> int:
     if meta is None:
         _print_error(t('msg.no_snapshot_named', name=st.name(name), path=path))
         return EXIT_ERROR
+    if _wants_json(args) and not args.yes:
+        _emit_json({"deleted": False, "reason": "needs-confirmation", "snapshot": meta})
+        return EXIT_ERROR
     if not args.yes and not _confirm(
         t(
             'prompt.delete_one',
@@ -699,7 +712,14 @@ def cmd_rm(args: argparse.Namespace, config: RuntimeConfig) -> int:
         )
     ):
         return EXIT_USER_ABORT
-    api.delete(path, name, config=config)
+    try:
+        deleted = api.delete(path, name, config=config)
+    except PermissionError as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json({"deleted": deleted, "snapshot": meta})
+        return EXIT_OK
     print(f"{st.ok_mark()} {t('msg.deleted_one', name=st.name(meta.name))}")
     return EXIT_OK
 
@@ -735,6 +755,9 @@ def cmd_mv(args: argparse.Namespace, config: RuntimeConfig) -> int:
     if not ok:
         _print_error(t('msg.no_snapshot_named', name=st.name(old), path=path))
         return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json({"renamed": True, "old": old, "new": new, "path": path})
+        return EXIT_OK
     print(
         f"{st.ok_mark()} {t('msg.renamed', old=st.name(old))} "
         f"{st.arrow()} {st.name(new)}"
@@ -756,6 +779,7 @@ def cmd_restore(args: argparse.Namespace, config: RuntimeConfig) -> int:
         auto_save=not args.no_auto_save,
         clean=args.clean,
         assume_yes=args.yes,
+        wants_json=_wants_json(args),
     )
 
 
@@ -767,12 +791,35 @@ def _restore_with_confirmation(
     auto_save: bool,
     clean: bool,
     assume_yes: bool,
+    wants_json: bool = False,
 ) -> int:
     try:
         estimate = api.restore_estimate(path, name, config=config)
     except FileNotFoundError as exc:
         _print_error(str(exc))
         return EXIT_ERROR
+
+    if wants_json:
+        if not assume_yes:
+            _emit_json({
+                "restored": False,
+                "reason": "needs-confirmation",
+                "estimate": estimate,
+            })
+            return EXIT_ERROR
+        try:
+            outcome = api.restore(
+                path,
+                name,
+                config=config,
+                auto_save=auto_save,
+                clean=clean,
+            )
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            _emit_json({"restored": False, "reason": str(exc)})
+            return EXIT_ERROR
+        _emit_json({"restored": True, "outcome": outcome})
+        return EXIT_OK
 
     label_w = 14
     # Heading verb is bare (not "已 restored"); use the verb-form key so
@@ -822,13 +869,17 @@ def _restore_with_confirmation(
         return EXIT_USER_ABORT
 
     started = time.monotonic()
-    outcome = api.restore(
-        path,
-        name,
-        config=config,
-        auto_save=auto_save,
-        clean=clean,
-    )
+    try:
+        outcome = api.restore(
+            path,
+            name,
+            config=config,
+            auto_save=auto_save,
+            clean=clean,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
     elapsed = time.monotonic() - started
 
     print(f"{st.ok_mark()} {t('msg.restored')} {st.name(outcome.snapshot.name)}")
@@ -865,6 +916,12 @@ def cmd_config(args: argparse.Namespace, config: RuntimeConfig) -> int:
 
     if op == "list":
         on_disk = preferences.load_config(root)
+        if _wants_json(args):
+            _emit_json({
+                "config": preferences.effective_config(root),
+                "overrides": on_disk,
+            })
+            return EXIT_OK
         key_w = max(len(k) for k in preferences.KNOWN_CONFIG_KEYS)
         for key, spec in preferences.KNOWN_CONFIG_KEYS.items():
             effective = on_disk.get(key, spec["default"])
@@ -887,6 +944,9 @@ def cmd_config(args: argparse.Namespace, config: RuntimeConfig) -> int:
     try:
         if op == "get":
             value = preferences.get_config_value(root, args.key)
+            if _wants_json(args):
+                _emit_json({"key": args.key, "value": value})
+                return EXIT_OK
             print(_format_config_value(value))
             return EXIT_OK
         if op == "set":
@@ -894,6 +954,9 @@ def cmd_config(args: argparse.Namespace, config: RuntimeConfig) -> int:
                 _print_error(t('config.set_requires_value'))
                 return EXIT_ERROR
             parsed = preferences.set_config_value(root, args.key, args.value)
+            if _wants_json(args):
+                _emit_json({"key": args.key, "value": parsed, "set": True})
+                return EXIT_OK
             print(
                 f"{st.ok_mark()} {st.name(args.key)} = "
                 f"{st.numeric(_format_config_value(parsed))}"
@@ -901,6 +964,14 @@ def cmd_config(args: argparse.Namespace, config: RuntimeConfig) -> int:
             return EXIT_OK
         if op == "unset":
             removed = preferences.unset_config_value(root, args.key)
+            if _wants_json(args):
+                default = preferences.KNOWN_CONFIG_KEYS.get(args.key, {}).get("default")
+                _emit_json({
+                    "key": args.key,
+                    "removed": removed,
+                    "value": default,
+                })
+                return EXIT_OK
             if removed:
                 spec = preferences.KNOWN_CONFIG_KEYS.get(args.key)
                 default = spec["default"] if spec else None
@@ -984,6 +1055,10 @@ def cmd_diff(args: argparse.Namespace, config: RuntimeConfig) -> int:
         _print_error(str(exc))
         return EXIT_ERROR
 
+    if _wants_json(args):
+        _emit_json(result)
+        return EXIT_OK
+
     # The diff TUI is the default when interactive; --text forces plain
     # output, and --tui still works as an explicit opt-in.
     use_tui = (not args.text) and _stdout_is_tty()
@@ -1051,6 +1126,9 @@ def cmd_export(args: argparse.Namespace, config: RuntimeConfig) -> int:
     except (NotADirectoryError, FileExistsError) as exc:
         _print_error(str(exc))
         return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(outcome)
+        return EXIT_OK
     snapz = outcome.snapshot
     print(
         f"{st.ok_mark()} {t('msg.exported')} {st.name(snapz.name)}  "
@@ -1066,16 +1144,196 @@ def cmd_export(args: argparse.Namespace, config: RuntimeConfig) -> int:
     return EXIT_OK
 
 
+def cmd_bundle(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    try:
+        outcome = api.export_bundle(
+            args.source,
+            args.dst,
+            config=config,
+            overwrite=args.overwrite,
+            archived=args.archive,
+        )
+    except (FileNotFoundError, FileExistsError, IsADirectoryError, ValueError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(outcome)
+        return EXIT_OK
+    print(
+        f"{st.ok_mark()} {t('msg.bundled')} "
+        f"{st.numeric(f'{outcome.snapshot_count:,}')} {t('label.snapshots_n')}  "
+        f"{st.muted(st.arrow())}  {st.path(str(outcome.destination))}"
+    )
+    print(_kv(t('kv.source'), st.path(str(outcome.source))))
+    print(_kv(t('kv.blobs'), st.numeric(f'{outcome.blob_count:,}')))
+    print(_kv(t('kv.size'), st.numeric(format_size(outcome.size_bytes))))
+    return EXIT_OK
+
+
+def cmd_import(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    try:
+        outcome = api.import_bundle(
+            args.bundle,
+            config=config,
+            path=args.path,
+            overwrite=args.overwrite,
+        )
+    except (
+        FileNotFoundError,
+        FileExistsError,
+        NotADirectoryError,
+        ValueError,
+        tarfile.TarError,
+    ) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(outcome)
+        return EXIT_OK
+    print(
+        f"{st.ok_mark()} {t('msg.imported')} "
+        f"{st.numeric(f'{outcome.snapshot_count:,}')} {t('label.snapshots_n')}  "
+        f"{st.muted(st.arrow())}  {st.path(str(outcome.source))}"
+    )
+    print(_kv(t('kv.key'), st.muted(outcome.key)))
+    print(_kv(t('kv.blobs'), st.numeric(f'{outcome.blob_count:,}')))
+    state = "archive" if outcome.archived else "active"
+    print(_kv(t('kv.state'), st.warn(state) if outcome.archived else st.success(state)))
+    if outcome.overwritten_snapshots:
+        print(_kv(
+            t('kv.overwritten'),
+            ", ".join(st.name(n) for n in outcome.overwritten_snapshots),
+        ))
+    return EXIT_OK
+
+
+def cmd_login(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    tenant = args.tenant or _prompt("Tenant", "default")
+    username = args.username or _prompt("Username")
+    if not tenant or not username:
+        _print_error("tenant and username are required")
+        return EXIT_ERROR
+    password = args.password
+    if password is None:
+        try:
+            password = getpass.getpass("Password: ")
+        except EOFError:
+            password = ""
+    if not password:
+        _print_error("password is required")
+        return EXIT_ERROR
+    try:
+        auth = remote.login(
+            args.server,
+            tenant=tenant,
+            username=username,
+            password=password,
+            device_name=args.device or "",
+            tls_ca=args.tls_ca or "",
+            tls_client_cert=args.tls_client_cert or "",
+            tls_client_key=args.tls_client_key or "",
+            config=config,
+        )
+    except (ValueError, remote.RemoteError, KeyError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(auth)
+        return EXIT_OK
+    print(f"{st.ok_mark()} logged in to {st.path(auth.server_url)}")
+    print(_kv("tenant", st.name(auth.tenant)))
+    print(_kv("user", st.name(auth.username)))
+    print(_kv("device", st.muted(auth.device_id)))
+    return EXIT_OK
+
+
+def cmd_logout(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    existed = remote.logout(config)
+    if _wants_json(args):
+        _emit_json({"logged_out": existed})
+        return EXIT_OK
+    if existed:
+        print(f"{st.ok_mark()} logged out")
+    else:
+        print(st.muted("not logged in"))
+    return EXIT_OK
+
+
+def _print_sync_outcome(verb: str, outcome: remote.SyncOutcome) -> None:
+    print(
+        f"{st.ok_mark() if outcome.ok else st.warn('!')} "
+        f"{verb} {st.numeric(str(len(outcome.items)))} source(s)  "
+        f"{st.muted(outcome.server_url)}"
+    )
+    for item in outcome.items:
+        print(f"  {st.muted('-')} {remote.format_sync_item(item)}")
+        print(f"    {st.muted(item.source_id)}  {st.muted(item.key)}")
+    if outcome.failures:
+        print(_kv("failed", st.warn(str(len(outcome.failures)))))
+        for failure in outcome.failures:
+            where = failure.source_id or failure.key
+            print(f"  {st.warn(where)}  {failure.message}")
+
+
+def cmd_push(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    try:
+        outcome = remote.push_all(config=config)
+    except (FileNotFoundError, ValueError, remote.RemoteError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(outcome)
+        return EXIT_OK if outcome.ok else EXIT_ERROR
+    _print_sync_outcome("pushed", outcome)
+    return EXIT_OK if outcome.ok else EXIT_ERROR
+
+
+def cmd_pull(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    try:
+        outcome = remote.pull_all(config=config)
+    except (FileNotFoundError, ValueError, remote.RemoteError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(outcome)
+        return EXIT_OK if outcome.ok else EXIT_ERROR
+    _print_sync_outcome("pulled into archive", outcome)
+    return EXIT_OK if outcome.ok else EXIT_ERROR
+
+
+def cmd_adopt(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    try:
+        entry = api.adopt_archive(args.archive_key, args.path, config=config)
+    except (FileNotFoundError, FileExistsError, NotADirectoryError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(entry)
+        return EXIT_OK
+    print(
+        f"{st.ok_mark()} adopted {st.muted(args.archive_key)} "
+        f"{st.arrow()} {st.path(entry.meta.abspath)}"
+    )
+    print(_kv("snapshots", st.numeric(str(len(entry.snapshots)))))
+    return EXIT_OK
+
+
 def cmd_gc(args: argparse.Namespace, config: RuntimeConfig) -> int:
     try:
         if args.all:
             result = api.gc(
-                all_dirs=True, dry_run=args.dry_run, config=config
+                all_dirs=True,
+                dry_run=args.dry_run,
+                rebuild_index=args.rebuild_index,
+                config=config,
             )
         else:
             path = resolve_path(args.path or ".")
             result = api.gc(
-                path, dry_run=args.dry_run, config=config
+                path,
+                dry_run=args.dry_run,
+                rebuild_index=args.rebuild_index,
+                config=config,
             )
     except ValueError as exc:
         _print_error(str(exc))
@@ -1100,6 +1358,322 @@ def cmd_gc(args: argparse.Namespace, config: RuntimeConfig) -> int:
         f"{st.ok_mark()} {verb} "
         f"{st.numeric(format_size(result.bytes_freed))}  {suffix}"
     )
+    return EXIT_OK
+
+
+def _print_check_result(result) -> None:
+    status = "ok" if result.ok else "issues found"
+    print(
+        f"{st.ok_mark() if result.ok else st.warn('!')} "
+        f"check {status}  {st.muted(f'({result.dirs_scanned} dir(s) scanned)')}"
+    )
+    if result.fixed_count:
+        print(_kv("fixed", st.numeric(str(result.fixed_count))))
+    if not result.issues:
+        return
+    for issue in result.issues:
+        color = st.error if issue.severity == "error" else st.warn
+        fixed = f" {st.success('(fixed)')}" if issue.fixed else ""
+        where = f"  {st.muted(issue.path)}" if issue.path else ""
+        snap = f"  {st.name(issue.snapshot)}" if issue.snapshot else ""
+        print(
+            f"  {color(issue.severity.upper())} "
+            f"{issue.code}{fixed}{snap}{where}"
+        )
+        print(f"    {issue.message}")
+
+
+def cmd_check(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    try:
+        result = api.check(
+            None if args.all else resolve_path(args.path or "."),
+            all_dirs=args.all,
+            deep=args.deep,
+            fix=args.fix,
+            config=config,
+        )
+    except ValueError as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(result)
+        return EXIT_OK if result.ok else EXIT_ERROR
+    _print_check_result(result)
+    return EXIT_OK if result.ok else EXIT_ERROR
+
+
+def cmd_migrate(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    try:
+        outcome = api.migrate(
+            None if args.all else resolve_path(args.path or "."),
+            all_dirs=args.all,
+            to=args.to,
+            dry_run=args.dry_run,
+            config=config,
+        )
+    except ValueError as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(outcome)
+        return EXIT_OK
+    verb = "would migrate" if outcome.dry_run else "migrated"
+    print(
+        f"{st.ok_mark()} {verb} "
+        f"{st.numeric(f'{outcome.blobs_migrated:,}')} blob(s)  "
+        f"{st.muted(format_size(outcome.bytes_migrated))}"
+    )
+    if outcome.blobs_skipped:
+        print(_kv("skipped", st.numeric(f"{outcome.blobs_skipped:,}")))
+    print(_kv("dirs", st.numeric(str(outcome.dirs_scanned))))
+    return EXIT_OK
+
+
+def cmd_init(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    try:
+        outcome = api.init_source(args.path or ".", config=config, force=args.force)
+    except (NotADirectoryError, ValueError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(outcome)
+        return EXIT_OK
+    action = "created" if outcome.created else "exists"
+    print(
+        f"{st.ok_mark()} {action} {st.path(str(outcome.marker_path))}"
+    )
+    print(_kv("source", st.path(str(outcome.source))))
+    print(_kv("id", st.muted(outcome.marker_id)))
+    return EXIT_OK
+
+
+def _print_auto_relocate_outcome(outcome) -> None:
+    verb = "would relocate" if outcome.dry_run else "relocated"
+    if not outcome.relocated and not outcome.skipped:
+        print(st.muted("(no relocation candidates found)"))
+        return
+    if outcome.relocated:
+        print(
+            f"{st.ok_mark()} {verb} "
+            f"{st.numeric(f'{len(outcome.relocated):,}')} source(s)"
+        )
+        for item in outcome.relocated:
+            print(
+                f"  {st.path(str(item.old_path))} "
+                f"{st.arrow()} {st.path(str(item.new_path))}  "
+                f"{st.muted('(' + item.method + ')')}"
+            )
+    if outcome.skipped:
+        print(_kv("skipped", st.warn(f"{len(outcome.skipped):,}")))
+        for item in outcome.skipped:
+            print(
+                f"  {st.warn(item.reason)}  "
+                f"{st.path(str(item.old_path))}"
+            )
+            for cand in item.candidates[:3]:
+                print(
+                    f"    {st.muted('-')} {st.path(str(cand.new_path))}  "
+                    f"{st.muted('(' + cand.method + ')')}"
+                )
+
+
+def cmd_relocate(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    if args.auto:
+        roots = args.paths or ["."]
+        if _wants_json(args):
+            if not args.dry_run and not args.yes:
+                try:
+                    outcome = api.auto_relocate_sources(
+                        roots, config=config, dry_run=True,
+                    )
+                except NotADirectoryError as exc:
+                    _emit_json({"relocated": False, "reason": str(exc)})
+                    return EXIT_ERROR
+                _emit_json({
+                    "relocated": False,
+                    "reason": "needs-confirmation",
+                    "outcome": outcome,
+                })
+                return EXIT_ERROR
+            try:
+                outcome = api.auto_relocate_sources(
+                    roots, config=config, dry_run=args.dry_run,
+                )
+            except NotADirectoryError as exc:
+                _emit_json({"relocated": False, "reason": str(exc)})
+                return EXIT_ERROR
+            _emit_json(outcome)
+            return EXIT_OK
+
+        try:
+            plan = api.auto_relocate_sources(roots, config=config, dry_run=True)
+        except NotADirectoryError as exc:
+            _print_error(str(exc))
+            return EXIT_ERROR
+        _print_auto_relocate_outcome(plan)
+        if args.dry_run or not plan.relocated:
+            return EXIT_OK
+        if not args.yes and not _confirm(
+            f"relocate {len(plan.relocated)} source(s)?",
+            default_yes=False,
+        ):
+            print(st.muted(t('status.aborted')))
+            return EXIT_USER_ABORT
+        outcome = api.auto_relocate_sources(roots, config=config, dry_run=False)
+        _print_auto_relocate_outcome(outcome)
+        return EXIT_OK
+
+    if len(args.paths) != 2:
+        _print_error("relocate requires OLD NEW, or use --auto ROOT...")
+        return EXIT_ERROR
+    old, new = args.paths
+    try:
+        entry = api.relocate_source(old, new, config=config)
+    except (FileNotFoundError, NotADirectoryError, FileExistsError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(entry)
+        return EXIT_OK
+    print(
+        f"{st.ok_mark()} relocated {st.path(old)} "
+        f"{st.arrow()} {st.path(entry.meta.abspath)}"
+    )
+    print(_kv("key", st.muted(entry.key)))
+    print(_kv("snapshots", st.numeric(str(len(entry.snapshots)))))
+    return EXIT_OK
+
+
+def cmd_protect(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    path = resolve_path(args.path or ".")
+    name = _resolve_snapshot_name(
+        path, args.name, config, title_key="picker.title_show",
+    )
+    if name is None:
+        return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
+    try:
+        meta = (
+            api.unprotect(path, name, config=config)
+            if args.command == "unprotect"
+            else api.protect(path, name, config=config)
+        )
+    except FileNotFoundError as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if _wants_json(args):
+        _emit_json(meta)
+        return EXIT_OK
+    state = "protected" if meta.protected else "unprotected"
+    print(f"{st.ok_mark()} {state} {st.name(meta.name)}")
+    return EXIT_OK
+
+
+def _print_archive_table(entries) -> None:
+    if not entries:
+        print(st.muted("(no archived sources)"))
+        return
+    key_w = max(3, *(len(e.key) for e in entries))
+    path_w = max(4, *(len(e.meta.abspath) for e in entries))
+    print(st.dim(
+        f"  {'KEY'.ljust(key_w)}  {'SNAPS'.rjust(5)}  "
+        f"{'REASON'.ljust(16)}  {'SOURCE'.ljust(path_w)}"
+    ))
+    for entry in entries:
+        print(
+            f"  {st.muted(entry.key.ljust(key_w))}  "
+            f"{st.numeric(str(len(entry.snapshots)).rjust(5))}  "
+            f"{st.warn((entry.archive_reason or 'archived').ljust(16))}  "
+            f"{st.path(entry.meta.abspath)}"
+        )
+
+
+def _resolve_archive_entry(
+    raw: Optional[str], config: RuntimeConfig,
+) -> Optional[api.DirEntry]:
+    entries = api.list_archives(config=config)
+    if raw:
+        for entry in entries:
+            if raw == entry.key or raw == entry.meta.abspath:
+                return entry
+        maybe_path = str(resolve_path(raw))
+        for entry in entries:
+            if maybe_path == entry.meta.abspath:
+                return entry
+        _print_error(f"no archived source matches: {raw}")
+        return None
+    if not _stdout_is_tty():
+        _print_error("archive key/source is required in non-interactive mode")
+        return None
+    from snapz import tui
+    key = tui.run_archive_picker(entries, title="Archived sources")
+    if key is None:
+        return None
+    return next((entry for entry in entries if entry.key == key), None)
+
+
+def cmd_archive(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    if args.archive_op == "list":
+        entries = api.list_archives(config=config)
+        if _wants_json(args):
+            _emit_json({"archives": entries})
+            return EXIT_OK
+        _print_archive_table(entries)
+        return EXIT_OK
+
+    if args.archive_op != "restore":
+        _print_error(f"unknown archive operation: {args.archive_op}")
+        return EXIT_ERROR
+
+    entry = _resolve_archive_entry(args.archive, config)
+    if entry is None:
+        return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
+
+    name = args.name
+    if not name:
+        if not _stdout_is_tty():
+            _print_error("snapshot name is required in non-interactive mode")
+            return EXIT_ERROR
+        from snapz import tui
+        name = tui.run_snapshot_picker(
+            entry.snapshots,
+            title=f"Archived snapshots · {entry.meta.abspath}",
+        )
+        if not name:
+            print(st.muted(t("picker.cancelled")))
+            return EXIT_USER_ABORT
+
+    dst = args.dst
+    if not dst:
+        if not _stdout_is_tty():
+            _print_error("destination path is required in non-interactive mode")
+            return EXIT_ERROR
+        from snapz import tui
+        dst = tui.prompt_text("restore archived snapshot to:", initial=entry.meta.abspath)
+        if not dst:
+            print(st.muted(t("picker.cancelled")))
+            return EXIT_USER_ABORT
+
+    try:
+        outcome = api.restore_archive(
+            entry.key,
+            name,
+            dst,
+            config=config,
+            overwrite=args.overwrite,
+        )
+    except (FileNotFoundError, NotADirectoryError, FileExistsError, ValueError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+
+    if _wants_json(args):
+        _emit_json({"archive": entry, "outcome": outcome})
+        return EXIT_OK
+    print(
+        f"{st.ok_mark()} restored archived {st.name(outcome.snapshot.name)} "
+        f"{st.arrow()} {st.path(str(outcome.destination))}"
+    )
+    print(_kv("source", st.muted(entry.meta.abspath)))
+    print(_kv("extracted", st.numeric(str(outcome.extracted_count))))
     return EXIT_OK
 
 
@@ -1247,6 +1821,7 @@ def cmd_prune(args: argparse.Namespace, config: RuntimeConfig) -> int:
             keep_within_days=args.keep_within_days,
             keep_daily=args.keep_daily,
             keep_weekly=args.keep_weekly,
+            keep_tag=args.keep_tag or (),
             protect=args.protect or (),
             config=config,
         )
@@ -1256,7 +1831,31 @@ def cmd_prune(args: argparse.Namespace, config: RuntimeConfig) -> int:
 
     drop_names = [s.name for s in plan.drop]
     if not plan.keep and not plan.drop:
+        if _wants_json(args):
+            _emit_json({"plan": plan, "outcome": None})
+            return EXIT_OK
         print(st.muted(t('status.no_snapshots_dir')))
+        return EXIT_OK
+
+    if _wants_json(args):
+        if args.dry_run:
+            _emit_json({"plan": plan, "outcome": None})
+            return EXIT_OK
+        if not args.yes:
+            _emit_json({
+                "pruned": False,
+                "reason": "needs-confirmation",
+                "plan": plan,
+            })
+            return EXIT_ERROR
+        outcome = api.execute_prune(
+            plan,
+            drop_names=drop_names,
+            run_gc=not args.no_gc,
+            dry_run=False,
+            config=config,
+        )
+        _emit_json({"pruned": True, "plan": plan, "outcome": outcome})
         return EXIT_OK
 
     use_tui = (
@@ -1372,7 +1971,7 @@ def cmd_revert(args: argparse.Namespace, config: RuntimeConfig) -> int:
 
     paths = list(args.paths or [])
     if not paths:
-        if args.text or not _stdout_is_tty():
+        if args.text or _wants_json(args) or not _stdout_is_tty():
             _print_error(t('picker.no_paths_given'))
             return EXIT_ERROR
         from snapz import tui
@@ -1380,6 +1979,30 @@ def cmd_revert(args: argparse.Namespace, config: RuntimeConfig) -> int:
         if not paths:
             print(st.muted(t('status.aborted')))
             return EXIT_USER_ABORT
+
+    if _wants_json(args):
+        if not args.yes:
+            _emit_json({
+                "reverted": False,
+                "reason": "needs-confirmation",
+                "snapshot": snap_meta,
+                "paths": paths,
+            })
+            return EXIT_ERROR
+        try:
+            outcome = api.revert(
+                src,
+                name,
+                paths,
+                config=config,
+                auto_save=not args.no_auto_save,
+                delete_extras=args.delete_extras,
+            )
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            _emit_json({"reverted": False, "reason": str(exc)})
+            return EXIT_ERROR
+        _emit_json({"reverted": True, "outcome": outcome})
+        return EXIT_OK
 
     print(
         f"{st.bold('\u21a9')} {t('verb.revert_imp')} {st.name(snap_meta.name)} "
@@ -1408,14 +2031,18 @@ def cmd_revert(args: argparse.Namespace, config: RuntimeConfig) -> int:
         print(st.muted(t('status.aborted')))
         return EXIT_USER_ABORT
 
-    outcome = api.revert(
-        src,
-        name,
-        paths,
-        config=config,
-        auto_save=not args.no_auto_save,
-        delete_extras=args.delete_extras,
-    )
+    try:
+        outcome = api.revert(
+            src,
+            name,
+            paths,
+            config=config,
+            auto_save=not args.no_auto_save,
+            delete_extras=args.delete_extras,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
     _print_revert_outcome(outcome)
     return EXIT_OK
 
@@ -1557,6 +2184,256 @@ def cmd_find(args: argparse.Namespace, config: RuntimeConfig) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Cat / browse (P5)
+# ---------------------------------------------------------------------------
+
+
+def cmd_cat(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    src = resolve_path(args.path or ".")
+    name = _resolve_snapshot_name(
+        src, args.name, config, title_key="picker.title_cat",
+    )
+    if name is None:
+        return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
+
+    relpath = (args.relpath or "").strip().strip("/")
+    if not relpath:
+        _print_error(t("cat.no_path_given"))
+        return EXIT_ERROR
+
+    try:
+        data = api.read_snapshot_bytes(src, name, relpath, config=config)
+    except (FileNotFoundError, ValueError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+
+    if data is None:
+        _print_error(t("cat.no_such_path", path=relpath, snap=name))
+        return EXIT_ERROR
+
+    if _wants_json(args):
+        _emit_json({
+            "snapshot": name,
+            "path": relpath,
+            "bytes": len(data),
+            "binary": _looks_binary(data),
+        })
+        return EXIT_OK
+
+    raw = bool(getattr(args, "raw", False))
+    binary_ok = bool(getattr(args, "binary_ok", False))
+    stdout_tty = sys.stdout.isatty()
+    if raw:
+        sys.stdout.buffer.write(data)
+        return EXIT_OK
+
+    if _looks_binary(data):
+        if not stdout_tty and binary_ok:
+            sys.stdout.buffer.write(data)
+            return EXIT_OK
+        print(t("cat.binary_placeholder", size=format_size(len(data))))
+        return EXIT_OK
+
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
+    sys.stdout.write(text)
+    return EXIT_OK
+
+
+def cmd_browse(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    src = resolve_path(args.path or ".")
+    name = _resolve_snapshot_name(
+        src, args.name, config, title_key="picker.title_browse",
+    )
+    if name is None:
+        return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
+
+    try:
+        _abspath, meta, manifest = api._load_manifest_or_raise(  # noqa: SLF001
+            src, name, config=config,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+
+    if _wants_json(args):
+        _emit_json({
+            "snapshot": meta.name,
+            "path": str(src),
+            "entries": [e.to_dict() for e in manifest.entries],
+        })
+        return EXIT_OK
+
+    if not _stdout_is_tty():
+        for entry in sorted(manifest.entries, key=lambda e: e.path.casefold()):
+            suffix = "/" if entry.type == "dir" else ""
+            print(entry.path + suffix)
+        return EXIT_OK
+
+    from snapz import tui
+
+    def _preview(relpath: str) -> Optional[bytes]:
+        return api.read_snapshot_bytes(src, name, relpath, config=config)
+
+    action = tui.browse_manifest(
+        manifest.entries,
+        title=t("browse.title", name=meta.name),
+        src=src,
+        mode="view",
+        preview=_preview,
+        initial_filter=getattr(args, "filter", "") or "",
+    )
+    if action.kind == "file":
+        return cmd_cat(
+            argparse.Namespace(
+                name=name,
+                relpath=action.path,
+                path=str(src),
+                raw=False,
+                binary_ok=False,
+                json=False,
+            ),
+            config,
+        )
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# tag — user-defined labels (P3)
+# ---------------------------------------------------------------------------
+
+
+def cmd_tag(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    action = getattr(args, "tag_action", None)
+    path = resolve_path(getattr(args, "path", None) or ".")
+
+    if action in ("add", "rm"):
+        name = getattr(args, "name", None)
+        if not name:
+            _print_error(t('tag.missing_name'))
+            return EXIT_ERROR
+        tags = [t_.strip() for t_ in (getattr(args, "tags", None) or []) if t_.strip()]
+        if not tags:
+            _print_error(t('tag.missing_tags'))
+            return EXIT_ERROR
+        try:
+            if action == "add":
+                meta = api.tag_add(path, name, tags, config=config)
+            else:
+                meta = api.tag_remove(path, name, tags, config=config)
+        except (FileNotFoundError, ValueError) as exc:
+            _print_error(str(exc))
+            return EXIT_ERROR
+        if _wants_json(args):
+            _emit_json({"snapshot": meta.name, "tags": meta.tags})
+            return EXIT_OK
+        label = t('tag.added') if action == "add" else t('tag.removed')
+        tag_str = ",".join(meta.tags) if meta.tags else "-"
+        print(f"{st.ok_mark()} {label}: {st.name(meta.name)}  [{st.muted(tag_str)}]")
+        return EXIT_OK
+
+    # list
+    groups = api.list_tags(path, config=config)
+    if _wants_json(args):
+        _emit_json({
+            "path": str(path),
+            "tags": {
+                tag: [snap.name for snap in snaps]
+                for tag, snaps in sorted(groups.items())
+            },
+        })
+        return EXIT_OK
+
+    if not groups:
+        print(st.muted(t('tag.empty')))
+        return EXIT_OK
+    for tag in sorted(groups):
+        names = [s.name for s in groups[tag]]
+        print(f"{st.name(tag)}  {st.muted('(' + str(len(names)) + ')')}")
+        for n in names:
+            print(f"  {st.muted('·')} {n}")
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# log — audit trail of destructive operations (P1)
+# ---------------------------------------------------------------------------
+
+
+_LOG_EXTRA_ORDER = (
+    "previous", "pre_restore", "pre_revert",
+    "extracted", "cleaned", "reverted", "deleted",
+    "file_count", "size_bytes", "bytes_freed", "blobs_removed",
+    "remaining", "snapshot_count", "previous_key", "paths", "note",
+)
+
+
+def _format_log_extras(event: "events.Event") -> str:
+    parts: list[str] = []
+    for key in _LOG_EXTRA_ORDER:
+        if key in event.extra and event.extra[key] is not None:
+            value = event.extra[key]
+            if isinstance(value, list):
+                if not value:
+                    continue
+                rendered = ",".join(str(v) for v in value[:4])
+                if len(value) > 4:
+                    rendered += f",+{len(value) - 4}"
+                parts.append(f"{key}={rendered}")
+            else:
+                parts.append(f"{key}={value}")
+    # Include any remaining unknown extras for forward-compat.
+    for key, value in event.extra.items():
+        if key in _LOG_EXTRA_ORDER or value is None:
+            continue
+        parts.append(f"{key}={value}")
+    return " ".join(parts)
+
+
+def _print_log_text(rows: list["events.Event"], *, show_source: bool) -> None:
+    if not rows:
+        print(st.muted(t('log.empty')))
+        return
+    for ev in rows:
+        ts = format_iso(ev.ts)
+        kind = st.bold(ev.kind.ljust(9))
+        snap = ev.snapshot or ""
+        snap_cell = st.name(snap) if snap else st.muted("-")
+        extras = _format_log_extras(ev)
+        extras_cell = (" " + st.muted(extras)) if extras else ""
+        line = f"{st.muted(ts)}  {kind}  {snap_cell}{extras_cell}"
+        if show_source and ev.source:
+            line += "  " + st.muted(f"({ev.source})")
+        print(line)
+
+
+def cmd_log(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    kinds: Optional[list[str]] = None
+    raw_kinds = getattr(args, "kind", None)
+    if raw_kinds:
+        kinds = [chunk.strip() for chunk in raw_kinds.split(",") if chunk.strip()]
+    limit = getattr(args, "limit", None)
+
+    if getattr(args, "all", False):
+        rows = events.load_all(config, kinds=kinds, limit=limit)
+        show_source = True
+    else:
+        src = resolve_path(args.path or ".")
+        folder = Store(config).dir_for(src)
+        rows = events.load_for(folder, kinds=kinds, limit=limit)
+        show_source = False
+
+    if _wants_json(args):
+        _emit_json({"events": [e.to_dict() for e in rows]})
+        return EXIT_OK
+
+    _print_log_text(rows, show_source=show_source)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # Argparse plumbing
 # ---------------------------------------------------------------------------
 
@@ -1588,6 +2465,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=t("flag.json"),
     )
+    parser.add_argument(
+        "--minimal",
+        action="store_true",
+        help=t("flag.minimal"),
+    )
 
     sub = parser.add_subparsers(dest="command")
 
@@ -1598,6 +2480,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_save.add_argument("-y", "--yes", action="store_true", help=t("save.yes"))
     p_save.add_argument("--overwrite", action="store_true")
     p_save.add_argument("--include-large", action="store_true")
+    p_save.add_argument(
+        "--no-cache",
+        action="store_true",
+        help=t("save.no_cache"),
+    )
+    p_save.add_argument(
+        "--workers",
+        type=int,
+        metavar="N",
+        help=t("save.workers"),
+    )
     p_save.add_argument(
         "-m", "--message", default="", metavar="NOTE",
         help=t("save.message"),
@@ -1695,6 +2588,83 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_export.set_defaults(func=cmd_export)
 
+    # portable source bundle
+    p_bundle = sub.add_parser(
+        "bundle",
+        help=t("bundle.help"),
+    )
+    p_bundle.add_argument("source", help=t("bundle.source"))
+    p_bundle.add_argument("dst", help=t("bundle.dst"))
+    p_bundle.add_argument(
+        "--archive",
+        action="store_true",
+        help=t("bundle.archive"),
+    )
+    p_bundle.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=t("bundle.overwrite"),
+    )
+    p_bundle.set_defaults(func=cmd_bundle)
+
+    # portable source import
+    p_import = sub.add_parser(
+        "import",
+        help=t("import.help"),
+    )
+    p_import.add_argument("bundle", help=t("import.bundle"))
+    p_import.add_argument(
+        "--path",
+        help=t("import.path"),
+    )
+    p_import.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=t("import.overwrite"),
+    )
+    p_import.set_defaults(func=cmd_import)
+
+    # remote login/logout
+    p_login = sub.add_parser("login", help="log in to a snapz-server remote")
+    p_login.add_argument("server", help="server URL, e.g. http://127.0.0.1:8765")
+    p_login.add_argument("--tenant", help="tenant name")
+    p_login.add_argument("--username", help="username")
+    p_login.add_argument("--password", help="password (prompts when omitted)")
+    p_login.add_argument("--device", help="device name recorded on the server")
+    p_login.add_argument(
+        "--tls-ca",
+        help="CA bundle for verifying the HTTPS server certificate",
+    )
+    p_login.add_argument(
+        "--tls-client-cert",
+        help="PEM client certificate for mTLS",
+    )
+    p_login.add_argument(
+        "--tls-client-key",
+        help="PEM private key for the mTLS client certificate",
+    )
+    p_login.set_defaults(func=cmd_login)
+
+    p_logout = sub.add_parser("logout", help="remove the saved remote token")
+    p_logout.set_defaults(func=cmd_logout)
+
+    # remote sync
+    p_push = sub.add_parser("push", help="push snapshots to the configured remote")
+    p_push.add_argument("scope", choices=["all"], help="push all local sources")
+    p_push.set_defaults(func=cmd_push)
+
+    p_pull = sub.add_parser("pull", help="pull snapshots from the configured remote")
+    p_pull.add_argument("scope", choices=["all"], help="pull all remote sources")
+    p_pull.set_defaults(func=cmd_pull)
+
+    p_adopt = sub.add_parser(
+        "adopt",
+        help="bind an archived source, such as a pulled remote archive, to a path",
+    )
+    p_adopt.add_argument("archive_key")
+    p_adopt.add_argument("path")
+    p_adopt.set_defaults(func=cmd_adopt)
+
     # diff
     p_diff = sub.add_parser(
         "diff",
@@ -1746,7 +2716,116 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help=t("gc.dry_run"),
     )
+    p_gc.add_argument(
+        "--rebuild-index", action="store_true",
+        help=t("gc.rebuild_index"),
+    )
     p_gc.set_defaults(func=cmd_gc)
+
+    # check
+    p_check = sub.add_parser(
+        "check",
+        help="validate store metadata and blob reachability",
+    )
+    p_check.add_argument("path", nargs="?")
+    p_check.add_argument("--all", action="store_true")
+    p_check.add_argument("--deep", action="store_true")
+    p_check.add_argument("--fix", action="store_true")
+    p_check.set_defaults(func=cmd_check)
+
+    # migrate
+    p_migrate = sub.add_parser(
+        "migrate",
+        help="migrate legacy per-directory blobs to the v3 global CAS pool",
+    )
+    p_migrate.add_argument("path", nargs="?")
+    p_migrate.add_argument("--all", action="store_true")
+    p_migrate.add_argument("--to", default="v3", choices=["v3"])
+    p_migrate.add_argument("--dry-run", action="store_true")
+    p_migrate.set_defaults(func=cmd_migrate)
+
+    # init source marker
+    p_init = sub.add_parser(
+        "init",
+        help="write a .snapz-id marker for reliable move detection",
+    )
+    p_init.add_argument("path", nargs="?", help="source directory (default: cwd)")
+    p_init.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing .snapz-id marker",
+    )
+    p_init.set_defaults(func=cmd_init)
+
+    # Compatibility alias for the user's requested spelling.
+    p_initd = sub.add_parser("initd", help=argparse.SUPPRESS)
+    p_initd.add_argument("path", nargs="?")
+    p_initd.add_argument("--force", action="store_true")
+    p_initd.set_defaults(func=cmd_init)
+
+    # relocate source binding after a directory rename
+    p_relocate = sub.add_parser(
+        "relocate",
+        help="move snapshots from an old source path to a renamed live directory",
+    )
+    p_relocate.add_argument(
+        "paths",
+        nargs="*",
+        help="OLD NEW for manual relocation, or ROOT... with --auto",
+    )
+    p_relocate.add_argument(
+        "--auto",
+        action="store_true",
+        help="scan roots for moved archived sources and relocate exact matches",
+    )
+    p_relocate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show automatic matches without moving store bindings",
+    )
+    p_relocate.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="apply automatic relocation without prompting",
+    )
+    p_relocate.set_defaults(func=cmd_relocate)
+
+    # archive sources whose original directory is missing or recreated
+    p_archive = sub.add_parser(
+        "archive",
+        help="list archived sources and restore archived snapshots",
+    )
+    archive_sub = p_archive.add_subparsers(dest="archive_op")
+    p_archive_list = archive_sub.add_parser("list", help="list archived sources")
+    p_archive_list.set_defaults(func=cmd_archive)
+    p_archive_restore = archive_sub.add_parser(
+        "restore",
+        help="restore an archived snapshot to a destination path",
+    )
+    p_archive_restore.add_argument(
+        "archive",
+        nargs="?",
+        help="archive key or original source path",
+    )
+    p_archive_restore.add_argument("name", nargs="?", help="snapshot name")
+    p_archive_restore.add_argument("dst", nargs="?", help="destination path")
+    p_archive_restore.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="extract even if the destination is non-empty",
+    )
+    p_archive_restore.set_defaults(func=cmd_archive)
+
+    # protect / unprotect
+    p_protect = sub.add_parser("protect", help="mark a snapshot as protected")
+    p_protect.add_argument("name", nargs="?").completer = _snapshot_name_completer  # type: ignore[attr-defined]
+    p_protect.add_argument("--path", help="target directory (default: cwd)")
+    p_protect.set_defaults(func=cmd_protect)
+
+    p_unprotect = sub.add_parser("unprotect", help="remove snapshot protection")
+    p_unprotect.add_argument("name", nargs="?").completer = _snapshot_name_completer  # type: ignore[attr-defined]
+    p_unprotect.add_argument("--path", help="target directory (default: cwd)")
+    p_unprotect.set_defaults(func=cmd_protect)
 
     # stats
     p_stats = sub.add_parser(
@@ -1790,6 +2869,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_prune.add_argument(
         "--keep-weekly", type=int, metavar="N",
         help=t("prune.keep_weekly"),
+    )
+    p_prune.add_argument(
+        "--keep-tag", action="append", metavar="TAG", default=None,
+        help=t("prune.keep_tag"),
     )
     p_prune.add_argument(
         "--protect", action="append", metavar="NAME",
@@ -1873,6 +2956,70 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_find.set_defaults(func=cmd_find)
 
+    # cat — print one file from a snapshot
+    p_cat = sub.add_parser("cat", help=t("cat.help"))
+    p_cat.add_argument("name", nargs="?", help=t("cat.snapshot")).completer = _snapshot_name_completer  # type: ignore[attr-defined]
+    p_cat.add_argument("relpath", nargs="?", help=t("cat.relpath"))
+    p_cat.add_argument("--path", help=t("cat.path"))
+    p_cat.add_argument(
+        "--raw",
+        action="store_true",
+        help=t("cat.raw"),
+    )
+    p_cat.add_argument(
+        "--binary-ok",
+        action="store_true",
+        help=t("cat.binary_ok"),
+    )
+    p_cat.set_defaults(func=cmd_cat)
+
+    # browse — interactive manifest browser
+    p_browse = sub.add_parser("browse", help=t("browse.help"))
+    p_browse.add_argument("name", nargs="?", help=t("browse.snapshot")).completer = _snapshot_name_completer  # type: ignore[attr-defined]
+    p_browse.add_argument("--path", help=t("browse.path"))
+    p_browse.add_argument(
+        "--filter",
+        default="",
+        help=t("browse.filter"),
+    )
+    p_browse.set_defaults(func=cmd_browse)
+
+    # tag — user-defined labels
+    p_tag = sub.add_parser("tag", help=t("tag.help"))
+    tag_sub = p_tag.add_subparsers(dest="tag_action")
+    p_tag_add = tag_sub.add_parser("add", help=t("tag.add_help"))
+    p_tag_add.add_argument("name", help=t("tag.snapshot"))
+    p_tag_add.add_argument("tags", nargs="+", help=t("tag.values"))
+    p_tag_add.add_argument("--path", help=t("tag.path"))
+    p_tag_add.set_defaults(func=cmd_tag, tag_action="add")
+    p_tag_rm = tag_sub.add_parser("rm", help=t("tag.rm_help"))
+    p_tag_rm.add_argument("name", help=t("tag.snapshot"))
+    p_tag_rm.add_argument("tags", nargs="+", help=t("tag.values"))
+    p_tag_rm.add_argument("--path", help=t("tag.path"))
+    p_tag_rm.set_defaults(func=cmd_tag, tag_action="rm")
+    p_tag_list = tag_sub.add_parser("list", help=t("tag.list_help"))
+    p_tag_list.add_argument("--path", help=t("tag.path"))
+    p_tag_list.set_defaults(func=cmd_tag, tag_action="list")
+    # Default when `snapz tag` is invoked without a subcommand → list.
+    p_tag.set_defaults(func=cmd_tag, tag_action="list")
+
+    # log — operation history
+    p_log = sub.add_parser("log", help=t("log.help"))
+    p_log.add_argument("--path", help=t("log.path"))
+    p_log.add_argument(
+        "--all", action="store_true",
+        help=t("log.all"),
+    )
+    p_log.add_argument(
+        "-n", "--limit", type=int, default=None,
+        help=t("log.limit"),
+    )
+    p_log.add_argument(
+        "--kind", default=None,
+        help=t("log.kind"),
+    )
+    p_log.set_defaults(func=cmd_log)
+
     return parser
 
 
@@ -1921,9 +3068,12 @@ def _main_impl(argv: Optional[list[str]]) -> int:
     # argparse so the user gets the expected behaviour.
     known_subs = {
         "save", "list", "alist", "rm", "mv", "show", "restore",
-        "gc", "export", "config", "diff",
+        "gc", "check", "migrate", "init", "initd", "protect", "unprotect",
+        "relocate", "archive",
+        "export", "bundle", "import", "config", "diff",
+        "login", "logout", "push", "pull", "adopt",
         "stats", "prune", "revert",
-        "undo", "find",
+        "undo", "find", "cat", "browse", "log", "tag",
     }
     enter_bare_mode = (
         not argv
@@ -1940,6 +3090,7 @@ def _main_impl(argv: Optional[list[str]]) -> int:
             yes=False,
             include_large=False,
             message="",
+            no_cache=False,
             no_picker=False,
         )
         return cmd_save_interactive(ns, config)
@@ -1955,12 +3106,38 @@ def _main_impl(argv: Optional[list[str]]) -> int:
 
     args = parser.parse_args(argv)
     config = default_config()
+    try:
+        st.configure(str(preferences.get_config_value(Path(config.root), "color")))
+    except (KeyError, ValueError):
+        st.configure("auto")
     if getattr(args, "no_zstd", False) or no_zstd_requested:
         config = RuntimeConfig(
             root=config.root,
             large_file_bytes=config.large_file_bytes,
             follow_symlinks=config.follow_symlinks,
             use_zstd=False,
+            apply_default_ignores=config.apply_default_ignores,
+            apply_gitignore=config.apply_gitignore,
+            apply_snapzignore=config.apply_snapzignore,
+            use_file_cache=config.use_file_cache,
+            save_workers=config.save_workers,
+        )
+
+    workers = getattr(args, "workers", None)
+    if workers is not None:
+        if workers < 1:
+            _print_error(t("save.workers_positive"))
+            return EXIT_ERROR
+        config = RuntimeConfig(
+            root=config.root,
+            large_file_bytes=config.large_file_bytes,
+            follow_symlinks=config.follow_symlinks,
+            use_zstd=config.use_zstd,
+            apply_default_ignores=config.apply_default_ignores,
+            apply_gitignore=config.apply_gitignore,
+            apply_snapzignore=config.apply_snapzignore,
+            use_file_cache=config.use_file_cache,
+            save_workers=workers,
         )
 
     if json_requested:

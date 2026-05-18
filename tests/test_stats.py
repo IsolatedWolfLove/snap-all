@@ -77,6 +77,28 @@ def test_stats_global_lists_every_known_source(project_dir, tmp_path, config):
     assert sizes == sorted(sizes, reverse=True)
 
 
+def test_stats_global_uses_bulk_cached_meta(project_dir, tmp_path, config, monkeypatch):
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "a.txt").write_text("hi", encoding="utf-8")
+
+    api.save(project_dir, "p1", config=config)
+    api.save(other, "o1", config=config)
+
+    def fail_list_snapshots(*_args, **_kwargs):
+        raise AssertionError("global stats should use cached dir metadata")
+
+    monkeypatch.setattr(api.Store, "list_snapshots", fail_list_snapshots)
+    entries = api.stats(config=config)
+
+    assert {entry.abspath for entry in entries} == {
+        project_dir.resolve(),
+        other.resolve(),
+    }
+    assert all(entry.snapshot_count == 1 for entry in entries)
+    assert all(entry.on_disk_bytes > 0 for entry in entries)
+
+
 # ----------------- CLI text mode ------------------------------------------
 
 

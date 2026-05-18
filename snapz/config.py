@@ -18,6 +18,19 @@ DIR_META_FILENAME = "_meta.json"
 ARCHIVE_SUFFIX_ZSTD = ".tar.zst"
 ARCHIVE_SUFFIX_GZIP = ".tar.gz"
 META_SUFFIX = ".meta.json"
+SOURCE_MARKER_FILENAME = ".snapz-id"
+
+
+def _default_save_workers() -> int:
+    fallback = max(1, min(8, os.cpu_count() or 1))
+    raw = os.environ.get("SNAPZ_SAVE_WORKERS")
+    if not raw:
+        return fallback
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return fallback
+    return max(1, parsed)
 
 
 def storage_root() -> Path:
@@ -44,6 +57,8 @@ class RuntimeConfig:
     apply_default_ignores: bool = True
     apply_gitignore: bool = True
     apply_snapzignore: bool = True
+    use_file_cache: bool = True
+    save_workers: int = field(default_factory=_default_save_workers)
 
     def with_root(self, root: Path) -> "RuntimeConfig":
         return RuntimeConfig(
@@ -54,6 +69,8 @@ class RuntimeConfig:
             apply_default_ignores=self.apply_default_ignores,
             apply_gitignore=self.apply_gitignore,
             apply_snapzignore=self.apply_snapzignore,
+            use_file_cache=self.use_file_cache,
+            save_workers=self.save_workers,
         )
 
 

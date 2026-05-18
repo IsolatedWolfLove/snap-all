@@ -106,6 +106,37 @@ def test_revert_unknown_snapshot_raises(project_dir, config):
         )
 
 
+def test_revert_detects_corrupt_blob_during_stream(project_dir, config, monkeypatch):
+    api.save(project_dir, "v1", config=config)
+    target = project_dir / "src" / "main.py"
+    target.write_text("keep me\n", encoding="utf-8")
+    from snapz import cas
+    from snapz.store import Store
+
+    calls = 0
+    original = cas.verify_blob
+
+    def counting_verify_blob(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cas, "verify_blob", counting_verify_blob)
+    dir_root = Store(config).dir_for(project_dir.resolve())
+    manifest = cas.read_manifest(cas.manifest_path(dir_root, "v1"))
+    entry = next(e for e in manifest.entries if e.path == "src/main.py")
+    cas.find_blob(dir_root, entry.sha256).write_bytes(b"not a compressed blob")
+
+    with pytest.raises(ValueError):
+        api.revert(
+            project_dir, "v1", ["src/main.py"],
+            config=config, auto_save=False,
+        )
+
+    assert calls == 0
+    assert target.read_text(encoding="utf-8") == "keep me\n"
+
+
 # ----------------- CLI text mode -----------------------------------------
 
 

@@ -68,6 +68,7 @@ class WalkResult:
     files: list[FileEntry] = field(default_factory=list)
     total_bytes: int = 0
     ignored_count: int = 0
+    dirs_pruned: int = 0
     large_files: list[FileEntry] = field(default_factory=list)
 
     @property
@@ -104,6 +105,10 @@ def walk(
         keep: list[str] = []
         for name in sorted(dirnames):
             rel = f"{rel_dir}/{name}" if rel_dir else name
+            if matcher.match_dir_early(rel):
+                result.ignored_count += 1
+                result.dirs_pruned += 1
+                continue
             if matcher.match(rel, is_dir=True):
                 result.ignored_count += 1
                 continue

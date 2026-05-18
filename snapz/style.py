@@ -46,6 +46,17 @@ def set_enabled(value: bool) -> None:
     _ENABLED = bool(value)
 
 
+def configure(mode: str) -> None:
+    """Apply a persistent color preference: auto, always, or never."""
+
+    if mode == "always":
+        set_enabled(True)
+    elif mode == "never":
+        set_enabled(False)
+    else:
+        _refresh()
+
+
 def _wrap(code: str, text: str) -> str:
     if not _ENABLED or not text:
         return text

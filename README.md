@@ -5,18 +5,21 @@ a `tar.zst` archive under `~/.snapz-all/`, with named retention,
 `ncdu`-style management, and dry-run + double confirmation before any
 destructive action.
 
-> **Status — alpha (v0.2).** Save, list, restore (auto pre-restore +
+> **Status — stable (v1.0.1).** Save, list, restore (auto pre-restore +
 > `--clean`), the `ncdu`-style curses TUI, rename/delete, **stats**,
-> **prune** (retention policies), **revert** (selective rollback),
-> **undo** (chained rollback to the initial state), **find** (locate a
-> path or glob across every snapshot), TUI **`/` filter**, machine
+> **prune** (retention policies + protected snapshots), **revert**
+> (selective rollback), **undo** (chained rollback to the initial state),
+> **find** (locate a path or glob across every snapshot), **check**
+> (store validation), source lifecycle **init/archive/relocate** with
+> automatic move detection, portable **bundle/import**, multi-tenant
+> **snapz-server** remote sync, TUI **`/` filter**, machine
 > readable **`--json`** output on every read command, and a one-command
 > release pipeline (`scripts/build.sh` → wheel + sdist + `.pyz`) are
 > all implemented and tested. **Snapshots are content-addressed**, so
 > resnapping an unchanged tree costs ~0 bytes and `snapz gc` reclaims
-> orphaned blobs after deletes. 220 unit tests, ~2s on a laptop. Full
-> `.snapzignore` semantics (negation, nested files) are the remaining
-> roadmap item.
+> orphaned blobs after deletes. New captures use a root-level v3 blob
+> pool shared across recorded source directories, while v2 per-dir CAS
+> snapshots remain readable.
 
 [**中文文档 / Chinese README**](./README.zh.md)
 
@@ -34,7 +37,7 @@ Pick whichever fits your environment:
 
 | Mode | File | Size | Best for |
 |---|---|---|---|
-| Zipapp | `dist/snapz.pyz` | ~5 MB | drop-in single executable; needs `python3 ≥ 3.10` on target (Linux always has it) |
+| Zipapp | `dist/snapz.pyz`, `dist/snapz-server.pyz` | ~5 MB each | drop-in single executables; need `python3 ≥ 3.10` on target |
 | Wheel | `dist/snapz_cli-*.whl` | ~30 KB | `pip install`, library use |
 
 ### From a release artifact
@@ -42,6 +45,7 @@ Pick whichever fits your environment:
 ```bash
 # 1. Zipapp — single self-contained executable (zstandard bundled inside)
 install -m 0755 dist/snapz.pyz ~/.local/bin/snapz
+install -m 0755 dist/snapz-server.pyz ~/.local/bin/snapz-server
 
 # 2. Wheel
 pipx install "dist/snapz_cli-*.whl[zstd]"
@@ -56,7 +60,8 @@ git clone <this repo>
 cd snapz
 python3 -m venv .venv
 .venv/bin/pip install -e .[dev]
-ln -sf "$PWD/.venv/bin/snapz" ~/.local/bin/snapz   # shell-wide
+ln -sf "$PWD/.venv/bin/snapz" ~/.local/bin/snapz             # shell-wide
+ln -sf "$PWD/.venv/bin/snapz-server" ~/.local/bin/snapz-server
 ```
 
 > ⚠️ **Conflict warning:** Ubuntu/Debian ship `snapd` at `/usr/bin/snapz`.
@@ -69,7 +74,7 @@ ln -sf "$PWD/.venv/bin/snapz" ~/.local/bin/snapz   # shell-wide
 Everything is wrapped by `scripts/build.sh`:
 
 ```bash
-./scripts/build.sh all              # wheel + sdist + .pyz   (default)
+./scripts/build.sh all              # wheel + sdist + client/server .pyz (default)
 ./scripts/build.sh wheel            # PEP 517 wheel + sdist only
 ./scripts/build.sh pyz              # shiv zipapp only
 ./scripts/build.sh smoke            # run --version against the built artifacts
@@ -137,6 +142,34 @@ $ snapz mv             # picks "old", then prompts for the new name
 # Export to an arbitrary directory (no auto-pre-restore, never touches src)
 $ snapz export v0.1 /tmp/scratch --path /tmp/proj
 
+# Portable bundles (move snapshot history between machines/stores)
+$ snapz bundle /tmp/proj /tmp/proj.snapz        # pack every snapshot for /tmp/proj
+$ snapz import /tmp/proj.snapz                  # import as archived history
+$ snapz import /tmp/proj.snapz --path /tmp/proj # bind to an existing live directory
+
+# Remote sync through a standalone multi-tenant server
+$ snapz-server --data /srv/snapz setup
+$ snapz-server --data /srv/snapz user add acme alice
+$ snapz-server --data /srv/snapz run \
+    --host 0.0.0.0 \
+    --port 8765 \
+    --tls-cert /etc/snapz/tls/fullchain.pem \
+    --tls-key /etc/snapz/tls/privkey.pem \
+    --admin-token "$(openssl rand -hex 32)"
+# Admin UI: https://server:8765/admin
+# Cross-origin admin apps must be allowlisted with --cors-origin https://admin.example
+# Optional mTLS hardening: add --tls-client-ca /etc/snapz/tls/client-ca.pem
+# Vben Admin drop-in files: web/vue-vben-admin-snapz/
+$ snapz login https://server:8765 --tenant acme --username alice
+# With mTLS enabled:
+$ snapz login https://server:8765 --tenant acme --username alice \
+    --tls-ca /etc/snapz/tls/server-ca.pem \
+    --tls-client-cert ~/.config/snapz/client.pem \
+    --tls-client-key ~/.config/snapz/client-key.pem
+$ snapz push all                                # upload every active/archived source
+$ snapz pull all                                # pull every remote source into archive
+$ snapz adopt remote-src_xxx /tmp/proj          # bind a pulled archive to a live dir
+
 # Storage breakdown (TUI by default; --text for plain output)
 $ snapz stats                                    # current dir
 $ snapz stats --all                              # every recorded source
@@ -147,6 +180,18 @@ $ snapz prune --keep-last 5 --path /tmp/proj
 $ snapz prune --keep-daily 7 --keep-weekly 4 --path /tmp/proj
 $ snapz prune --keep-within-days 30 --protect release-1.0 --path /tmp/proj
 $ snapz prune --keep-last 5 --dry-run --text     # report only
+$ snapz protect release-1.0 --path /tmp/proj     # persistent prune/delete guard
+$ snapz unprotect release-1.0 --path /tmp/proj
+
+# Source directory lifecycle
+$ snapz init /tmp/proj                          # write .snapz-id for cross-device move detection
+$ mv /tmp/proj /tmp/proj-renamed
+$ snapz list /tmp/proj-renamed                  # exact moved-source matches auto-bind on use
+$ snapz relocate /tmp/proj /tmp/proj-renamed     # bind snapshots to renamed dir
+$ snapz relocate --auto /tmp -y                 # auto-bind exact inode/.snapz-id matches
+$ snapz relocate --auto ~ --dry-run             # preview only
+$ snapz archive list                             # dirs that were deleted/recreated
+$ snapz archive restore <key> baseline /tmp/out  # restore archived snapshot elsewhere
 
 # Selective rollback (revert one file or subtree without touching the rest)
 $ snapz revert v0.1 src/main.py --path /tmp/proj          # one file
@@ -167,6 +212,13 @@ $ snapz find src/main.py                         # exact path: every snapshot co
 $ snapz find src --path /tmp/proj                # directory prefix → whole subtree
 $ snapz find '**/*.py'                           # recursive glob (quote it!)
 $ snapz find src/main.py --json | jq             # structured rows for chatops
+
+# Store reliability
+$ snapz check --path /tmp/proj                   # manifest/blob/metadata validation
+$ snapz check --all --deep --json | jq           # decompress and verify every blob
+$ snapz check --all --fix                        # safe fixes: registry, perms, temp files
+$ snapz migrate --all --to v3 --dry-run          # preview v2 per-dir CAS migration
+$ snapz migrate --all --to v3                    # move old blobs into the global pool
 
 # Persistent preferences (~/.snapz-all/_config.json)
 $ snapz config list                              # show defaults + overrides
@@ -470,17 +522,62 @@ snapz gc --dry-run        # report only, don't delete
 on-the-fly; `gc` is the only command you ever need to run periodically
 (or never — it's only useful after deleting old snapshots).
 
+### Validating and migrating the store
+
+`snapz check` verifies registry entries, per-directory metadata,
+snapshot meta/manifest pairs, blob reachability, and orphaned global
+blobs. Add `--deep` to decompress every blob and verify its sha256.
+`--fix` is intentionally conservative: it rebuilds safe metadata,
+repairs permissions, removes stale temporary files, and rewrites a
+manifest's snapshot name when it disagrees with the meta file. It does
+not delete snapshots or orphan blobs; use `snapz gc` for reclamation.
+
+`snapz migrate --to v3` moves legacy per-directory CAS blobs into the
+root-level `~/.snapz-all/objects/` pool. Existing v2 snapshots stay
+readable before and after migration.
+
+### Renamed and deleted source directories
+
+New snapshots record the source directory identity (`dev:ino`) in store
+metadata. If a source directory is deleted, or deleted and later
+recreated as a different directory, its old snapshots stop appearing in
+normal `snapz list` / `snapz alist` output and move to
+`snapz archive list`. This prevents a new unrelated directory at the
+same path from inheriting old snapshots by accident.
+
+When a directory is intentionally renamed, run:
+
+```bash
+snapz relocate /old/path /new/path
+```
+
+This moves the store binding to the new live directory and updates
+snapshot metadata to point at that path. Snapshot contents are not
+rewritten because manifests store source-relative paths.
+
+Archived snapshots can be restored without recreating the original
+source path:
+
+```bash
+snapz archive restore <archive-key> <snapshot-name> /restore/path
+```
+
+In a TTY, `snapz archive restore` opens pickers for the archived source
+and snapshot when those arguments are omitted.
+
 ## Ignore rules
 
 By default the following sources are merged when scanning a tree:
 
 1. Built-in defaults: `__pycache__/`, `node_modules/`, `.venv/`,
    `venv/`, `*.pyc`, `.DS_Store`, `dist/`, `build/`, etc.
-2. `.gitignore` in the source root and `.git/info/exclude`.
-3. `.snapzignore` in the source root.
+2. `.gitignore` files from the source root and nested directories, plus
+   `.git/info/exclude`.
+3. `.snapzignore` files from the source root and nested directories.
 
-The matcher is gitignore-flavoured but intentionally simpler:
-`!negation` and nested `.gitignore` files are not honoured (yet).
+Ignore matching is powered by `pathspec`, so Git-style negation
+(`!keep.log`), anchored patterns, directory patterns, and nested ignore
+files are honoured.
 
 Files larger than 100 MiB are skipped with a warning. Pass
 `--include-large` to keep them.
@@ -489,7 +586,9 @@ Files larger than 100 MiB are skipped with a warning. Pass
 
 `snapz` writes `.tar.zst` when the optional `zstandard` package is
 available, otherwise falls back to `.tar.gz` (stdlib). You can force
-gzip with `snapz --no-zstd ...`.
+gzip with `snapz --no-zstd ...`. Portable `.snapz` bundles and remote
+pushes use the same zstd-first behavior, and remote uploads are checked
+with a bundle SHA-256 before they are accepted.
 
 ## Library use
 
@@ -542,7 +641,9 @@ adds, overwrites and extras.
 - **M3 ✅** — `snapz restore <name>` + auto pre-restore + TUI `r` key
 - **M5 ✅** — automated build (wheel/sdist/zipapp/standalone binary)
 - **M6 ✅** — `snapz stats` / `snapz prune` / `snapz revert` with curses pickers
-- **M4** — full `.snapzignore` semantics (negation, nested files), `gc` policies, in-TUI sort & filter
+- **M4 ✅** — full `.snapzignore` / `.gitignore` semantics, store check,
+  protected snapshots, v3 global CAS migration
+- **M7** — richer `gc` policies, in-TUI sort, and additional filters
 
 ## Development
 

@@ -51,6 +51,9 @@ _EN: dict[str, str] = {
     "save.help": "non-interactive snapshot create",
     "save.yes": "skip confirmation",
     "save.message": "short human-readable note attached to the snapshot",
+    "save.no_cache": "disable the per-source file hash cache for this save",
+    "save.workers": "number of worker threads to use while writing blobs",
+    "save.workers_positive": "--workers must be at least 1",
 
     # ---- list / alist ----
     "list.help": "list snapshots of the current directory",
@@ -85,6 +88,20 @@ _EN: dict[str, str] = {
     ),
     "export.overwrite": "extract even if the destination is non-empty",
 
+    # ---- portable bundles ----
+    "bundle.help": "pack all snapshots for one source into a portable bundle",
+    "bundle.source": "source directory path (or archive key with --archive)",
+    "bundle.dst": "bundle file to create, e.g. project.snapz",
+    "bundle.archive": "treat source as an archived source key",
+    "bundle.overwrite": "replace an existing bundle file",
+    "import.help": "import snapshots from a portable snapz bundle",
+    "import.bundle": "bundle file produced by `snapz bundle`",
+    "import.path": (
+        "bind imported snapshots to this existing source directory "
+        "(omit to keep them archived)"
+    ),
+    "import.overwrite": "replace snapshots with the same name in the target store",
+
     # ---- diff ----
     "diff.help": (
         "show files changed between two snapshots (or vs the live tree)"
@@ -106,6 +123,7 @@ _EN: dict[str, str] = {
     "gc.path": "target directory (default: cwd)",
     "gc.all": "garbage-collect every directory under the storage root",
     "gc.dry_run": "report what would be removed without deleting",
+    "gc.rebuild_index": "rebuild the global blob reference index before collecting",
 
     # ---- stats ----
     "stats.help": "show storage usage and dedup ratio per source directory",
@@ -178,11 +196,56 @@ _EN: dict[str, str] = {
     ),
     "find.changed_marker": "← changed",
 
+    # ---- browse (view-mode path picker; shared by cat/browse/future grep) ----
+    "cat.help": "print one file from a snapshot",
+    "cat.snapshot": "snapshot name",
+    "cat.relpath": "source-relative path inside the snapshot",
+    "cat.path": "source directory (default: cwd)",
+    "cat.raw": "write raw bytes to stdout",
+    "cat.binary_ok": "allow binary bytes when stdout is piped",
+    "cat.no_path_given": "no path given. pass a source-relative path.",
+    "cat.no_such_path": "no path {path!r} in snapshot {snap}",
+    "cat.binary_placeholder": "[binary {size}] (use --raw or pipe with --binary-ok to dump bytes)",
+    "browse.help": "browse paths inside a snapshot",
+    "browse.snapshot": "snapshot name",
+    "browse.path": "source directory (default: cwd)",
+    "browse.filter": "initial substring filter",
+    "browse.title": "browse {name}",
+    "browse.footer": "↑↓ move  ·  Enter open/drill  ·  r return path  ·  h back  ·  q quit",
+
+    # ---- tag (user-defined labels) ----
+    "tag.help": "manage user-defined snapshot tags (add / rm / list)",
+    "tag.add_help": "attach one or more tags to a snapshot",
+    "tag.rm_help": "remove one or more tags from a snapshot",
+    "tag.list_help": "list every tag and the snapshots that carry it",
+    "tag.snapshot": "snapshot name to mutate",
+    "tag.values": "one or more tag labels (whitespace-separated)",
+    "tag.path": "source directory (default: cwd)",
+    "tag.missing_name": "error: snapshot name is required",
+    "tag.missing_tags": "error: at least one tag is required",
+    "tag.added": "tagged",
+    "tag.removed": "untagged",
+    "tag.empty": "no tags on any snapshot",
+
+    # ---- prune.keep_tag flag ----
+    "prune.keep_tag": "keep snapshots carrying TAG (repeatable)",
+
+    # ---- log (operation history) ----
+    "log.help": "show the operation history for a source (or --all sources)",
+    "log.path": "source directory (default: cwd)",
+    "log.all": "read events from every source under the store root",
+    "log.limit": "limit to the N most recent events (default: all)",
+    "log.kind": "comma-separated event kinds to keep (save,restore,revert,...)",
+    "log.empty": "no events recorded",
+
     # ---- global --json ----
     "flag.json": (
         "emit machine-readable JSON to stdout instead of formatted text "
         "(suitable for piping into `jq`)"
     ),
+
+    # ---- global --minimal ----
+    "flag.minimal": "override ui_mode for this invocation: skip all TUI prompts and use plain text output",
 
     # ---- list/alist/rm: --all flag ----
     "flag.show_all": "include auto-* safety snapshots (hidden by default)",
@@ -257,6 +320,10 @@ _EN: dict[str, str] = {
     "kv.drop": "drop",
     "kv.gc": "gc",
     "kv.clean": "clean",
+    "kv.blobs": "blobs",
+    "kv.key": "key",
+    "kv.state": "state",
+    "kv.overwritten": "overwritten",
 
     # restore / revert detail wording
     "restore.will_clean": "(will be deleted: --clean)",
@@ -275,6 +342,8 @@ _EN: dict[str, str] = {
     "msg.renamed": "renamed {old}",
     "msg.restored": "restored",
     "msg.exported": "exported",
+    "msg.bundled": "bundled",
+    "msg.imported": "imported",
     "msg.reverted_from": "reverted from {name}",
     "msg.added_patterns": (
         "added {n} pattern(s) to local excludes  ({path})"
@@ -354,6 +423,8 @@ _EN: dict[str, str] = {
     "picker.title_restore": "select snapshot to restore into {path}",
     "picker.title_export": "select snapshot to export from {path}",
     "picker.title_revert": "select snapshot to revert from in {path}",
+    "picker.title_cat": "select snapshot to cat from in {path}",
+    "picker.title_browse": "select snapshot to browse in {path}",
     "picker.title_diff_a": "select snapshot A in {path}",
     "picker.title_diff_b": "select snapshot B in {path}  (or [live])",
     "picker.title_mv_old": "select snapshot to rename in {path}",
@@ -376,8 +447,8 @@ _EN: dict[str, str] = {
     # revert path picker
     "revert.picker_title": "select paths to revert  ·  {n} entries  ·  {src}",
     "revert.picker_footer": (
-        "↑↓ move  ·  space toggle  ·  a all  ·  c diffs  ·  n none  ·  "
-        "⏎/e apply ({n})  ·  q quit"
+        "↑↓ move  ·  ⏎/→ open dir  ·  ← up  ·  space toggle  ·  "
+        "a all  ·  c diffs  ·  n none  ·  e apply ({n})  ·  q quit"
     ),
 
     # generic warn glyph for inline messages
@@ -406,6 +477,9 @@ _ZH: dict[str, str] = {
     "save.help": "非交互式创建快照",
     "save.yes": "跳过确认",
     "save.message": "附加在快照上的简短备注",
+    "save.no_cache": "本次保存不使用源目录文件哈希缓存",
+    "save.workers": "写入 blob 时使用的工作线程数",
+    "save.workers_positive": "--workers 必须至少为 1",
 
     # ---- list / alist ----
     "list.help": "列出当前目录的快照",
@@ -434,6 +508,17 @@ _ZH: dict[str, str] = {
     "export.path": "持有该快照的源目录（默认:当前目录）",
     "export.overwrite": "即使目标目录非空也强制解出",
 
+    # ---- portable bundles ----
+    "bundle.help": "把某个源目录的所有快照打成可迁移 bundle",
+    "bundle.source": "源目录路径（配合 --archive 时为归档 key）",
+    "bundle.dst": "要创建的 bundle 文件，如 project.snapz",
+    "bundle.archive": "把 source 当作归档源 key",
+    "bundle.overwrite": "覆盖已存在的 bundle 文件",
+    "import.help": "从 snapz bundle 导入快照",
+    "import.bundle": "`snapz bundle` 生成的 bundle 文件",
+    "import.path": "把导入快照绑定到这个已存在的源目录（省略则保持归档态）",
+    "import.overwrite": "覆盖目标存储里同名快照",
+
     # ---- diff ----
     "diff.help": "显示两个快照（或快照与当前目录）之间的文件差异",
     "diff.a": "起点快照",
@@ -453,6 +538,7 @@ _ZH: dict[str, str] = {
     "gc.path": "目标目录（默认:当前目录）",
     "gc.all": "对存储根下所有目录执行垃圾回收",
     "gc.dry_run": "只报告会回收什么，不实际删除",
+    "gc.rebuild_index": "回收前重建全局 blob 引用索引",
 
     # ---- stats ----
     "stats.help": "按源目录展示存储用量与去重比",
@@ -505,8 +591,53 @@ _ZH: dict[str, str] = {
     "find.summary": "在 {scanned} 个 CAS 快照中匹配到 {paths} 个路径，共 {hits} 行",
     "find.changed_marker": "← 已变化",
 
+    # ---- browse (view 模式路径选择器；cat/browse/future grep 共用) ----
+    "cat.help": "打印快照中的单个文件",
+    "cat.snapshot": "快照名称",
+    "cat.relpath": "快照中的源目录相对路径",
+    "cat.path": "源目录（默认:当前目录）",
+    "cat.raw": "向 stdout 写出原始字节",
+    "cat.binary_ok": "stdout 为管道时允许写出二进制字节",
+    "cat.no_path_given": "未指定路径。请传入源目录相对路径。",
+    "cat.no_such_path": "快照 {snap} 中没有路径 {path!r}",
+    "cat.binary_placeholder": "[二进制 {size}]（用 --raw 或管道配合 --binary-ok 写出字节）",
+    "browse.help": "浏览快照中的路径",
+    "browse.snapshot": "快照名称",
+    "browse.path": "源目录（默认:当前目录）",
+    "browse.filter": "初始子串过滤条件",
+    "browse.title": "浏览 {name}",
+    "browse.footer": "↑↓ 移动  ·  Enter 打开/下钻  ·  r 返回路径  ·  h 返回  ·  q 退出",
+
+    # ---- tag (用户自定义标签) ----
+    "tag.help": "管理快照的用户标签（add / rm / list）",
+    "tag.add_help": "给快照添加若干标签",
+    "tag.rm_help": "移除快照上的若干标签",
+    "tag.list_help": "按标签列出携带该标签的所有快照",
+    "tag.snapshot": "要操作的快照名",
+    "tag.values": "一个或多个标签（空格分隔）",
+    "tag.path": "源目录（默认:当前目录）",
+    "tag.missing_name": "错误:必须提供快照名",
+    "tag.missing_tags": "错误:至少需要一个标签",
+    "tag.added": "已添加标签",
+    "tag.removed": "已移除标签",
+    "tag.empty": "尚无任何快照打了标签",
+
+    # ---- prune.keep_tag ----
+    "prune.keep_tag": "保留携带 TAG 的快照（可重复）",
+
+    # ---- log (操作历史) ----
+    "log.help": "展示某个源（或 --all 全部）上的操作历史",
+    "log.path": "源目录（默认:当前目录）",
+    "log.all": "读取存储根下所有源的事件",
+    "log.limit": "仅保留最近的 N 条事件（默认:全部）",
+    "log.kind": "用逗号分隔的事件类型白名单（save,restore,revert,...）",
+    "log.empty": "没有任何事件记录",
+
     # ---- global --json ----
     "flag.json": "输出机器可读的 JSON 到 stdout（便于 jq 等工具处理）",
+
+    # ---- global --minimal ----
+    "flag.minimal": "覆盖本次调用的 ui_mode：跳过所有 TUI 提示，使用纯文本输出",
 
     # ---- list/alist/rm: --all flag ----
     "flag.show_all": "把 auto-* 兜底快照也列出（默认隐藏）",
@@ -574,6 +705,10 @@ _ZH: dict[str, str] = {
     "kv.drop": "丢弃",
     "kv.gc": "回收",
     "kv.clean": "清理",
+    "kv.blobs": "blob 数",
+    "kv.key": "key",
+    "kv.state": "状态",
+    "kv.overwritten": "已覆盖",
 
     # restore / revert detail wording
     "restore.will_clean": "（将被删除:--clean）",
@@ -592,6 +727,8 @@ _ZH: dict[str, str] = {
     "msg.renamed": "已重命名 {old}",
     "msg.restored": "已还原",
     "msg.exported": "已导出",
+    "msg.bundled": "已打包",
+    "msg.imported": "已导入",
     "msg.reverted_from": "已从 {name} 回滚",
     "msg.added_patterns": "已向本地排除追加 {n} 条规则  （{path}）",
     "msg.added_patterns_walk": "已向本地排除追加 {n} 条规则;重新扫描中...",
@@ -659,6 +796,8 @@ _ZH: dict[str, str] = {
     "picker.title_restore": "选择要还原到 {path} 的快照",
     "picker.title_export": "选择要从 {path} 导出的快照",
     "picker.title_revert": "选择要从 {path} 回滚的快照",
+    "picker.title_cat": "选择要从 {path} 读取文件的快照",
+    "picker.title_browse": "选择要浏览的快照（{path}）",
     "picker.title_diff_a": "选择快照 A（{path}）",
     "picker.title_diff_b": "选择快照 B（{path}） 或 [当前目录]",
     "picker.title_mv_old": "选择要改名的快照（{path}）",
@@ -681,8 +820,8 @@ _ZH: dict[str, str] = {
     # revert path picker
     "revert.picker_title": "勾选要回滚的路径  ·  共 {n} 条  ·  {src}",
     "revert.picker_footer": (
-        "↑↓ 移动  ·  空格 勾选  ·  a 全选  ·  c 仅勾差异  ·  n 清空  ·  "
-        "⏎/e 应用 ({n})  ·  q 退出"
+        "↑↓ 移动  ·  ⏎/→ 进目录  ·  ← 返回  ·  空格 勾选  ·  "
+        "a 全选  ·  c 仅勾差异  ·  n 清空  ·  e 应用 ({n})  ·  q 退出"
     ),
 
     # generic warn glyph for inline messages

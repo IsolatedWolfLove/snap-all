@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import curses
 import curses.textpad as textpad
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -1072,6 +1072,92 @@ def _decode_for_diff(
     return text.splitlines(), None
 
 
+def _run_file_preview(
+    stdscr,
+    *,
+    title: str,
+    relpath: str,
+    data: Optional[bytes],
+    attrs: dict[str, int],
+) -> None:
+    """Read-only preview used by the generic manifest browser."""
+
+    lines, placeholder = _decode_for_diff(data)
+    body: list[tuple[str, str]] = []
+    if placeholder:
+        body.append(("info", placeholder))
+    else:
+        for line in lines or []:
+            body.append(("ctx", line))
+        if not body:
+            body.append(("info", t("diff.placeholder_text", size="0 B")))
+
+    kind_attrs = {
+        "info": attrs.get("dim", curses.A_DIM),
+        "ctx": 0,
+    }
+
+    scroll = 0
+    while True:
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+        header = f" {title}  ·  {relpath} "
+        try:
+            stdscr.addstr(
+                0, 0, header.ljust(width)[: width - 1],
+                attrs.get("title", curses.A_BOLD) | curses.A_REVERSE,
+            )
+        except curses.error:
+            pass
+
+        body_top = 1
+        body_height = max(1, height - body_top - 1)
+        max_scroll = max(0, len(body) - body_height)
+        scroll = max(0, min(scroll, max_scroll))
+
+        for i in range(body_height):
+            idx = scroll + i
+            if idx >= len(body):
+                break
+            kind, text = body[idx]
+            try:
+                stdscr.addstr(
+                    body_top + i, 0,
+                    _truncate(text, width - 1),
+                    kind_attrs.get(kind, 0),
+                )
+            except curses.error:
+                pass
+
+        footer = " " + t("diff.unified_footer") + " "
+        try:
+            stdscr.addstr(
+                height - 1, 0, footer.ljust(width)[: width - 1],
+                attrs.get("dim", curses.A_DIM),
+            )
+        except curses.error:
+            pass
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key in (ord("q"), 27, 10, 13, curses.KEY_ENTER):
+            return
+        if key == curses.KEY_RESIZE:
+            continue
+        if key in (curses.KEY_DOWN, ord("j")):
+            scroll += 1
+        elif key in (curses.KEY_UP, ord("k")):
+            scroll -= 1
+        elif key == curses.KEY_NPAGE or key == ord(" "):
+            scroll += body_height
+        elif key == curses.KEY_PPAGE:
+            scroll -= body_height
+        elif key == curses.KEY_HOME or key == ord("g"):
+            scroll = 0
+        elif key == curses.KEY_END or key == ord("G"):
+            scroll = max_scroll
+
+
 def _run_unified_diff_for_change(
     stdscr,
     row,
@@ -1407,6 +1493,167 @@ def run_snapshot_picker(
     return curses.wrapper(_curses_main)
 
 
+def run_archive_picker(entries: list[DirEntry], *, title: str) -> Optional[str]:
+    """Single-select picker over archived source directories."""
+
+    if not entries:
+        return None
+
+    @dataclass
+    class _ArchiveRow:
+        key: str
+        path: str
+        reason: str
+        snaps: str
+        haystack: str
+
+    all_rows = [
+        _ArchiveRow(
+            key=e.key,
+            path=e.meta.abspath,
+            reason=e.archive_reason or "archived",
+            snaps=str(len(e.snapshots)),
+            haystack=f"{e.key}\n{e.meta.abspath}\n{e.archive_reason}".casefold(),
+        )
+        for e in entries
+    ]
+
+    def _filter_rows(pattern: str) -> list[_ArchiveRow]:
+        if not pattern:
+            return all_rows
+        needle = pattern.casefold().strip()
+        return [r for r in all_rows if needle in r.haystack]
+
+    def _curses_main(stdscr) -> Optional[str]:
+        curses.curs_set(0)
+        stdscr.keypad(True)
+        attrs = _init_colors()
+        cursor = 0
+        scroll = 0
+        filter_pattern = ""
+        rows = _filter_rows(filter_pattern)
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            display_title = title
+            if filter_pattern:
+                display_title = (
+                    f"{title}  ·  "
+                    + t(
+                        "tui.filter_status",
+                        pattern=filter_pattern,
+                        n=len(rows), total=len(all_rows),
+                    )
+                )
+            try:
+                stdscr.addstr(
+                    0, 0,
+                    _truncate(" " + display_title + " ", width - 1).ljust(width - 1),
+                    attrs.get("title", curses.A_BOLD) | curses.A_REVERSE,
+                )
+            except curses.error:
+                pass
+
+            body_top = 2
+            body_height = max(1, height - body_top - 1)
+            if rows:
+                cursor = max(0, min(cursor, len(rows) - 1))
+                if cursor < scroll:
+                    scroll = cursor
+                elif cursor >= scroll + body_height:
+                    scroll = cursor - body_height + 1
+            else:
+                scroll = 0
+
+            if not rows:
+                try:
+                    stdscr.addstr(
+                        body_top, 2,
+                        "(no matches — Esc to clear filter, q to quit)",
+                        attrs.get("dim", curses.A_DIM),
+                    )
+                except curses.error:
+                    pass
+            else:
+                path_w = max(10, width - 34)
+                for i in range(body_height):
+                    idx = scroll + i
+                    if idx >= len(rows):
+                        break
+                    row = rows[idx]
+                    base = attrs.get("cursor", curses.A_REVERSE) if idx == cursor else 0
+                    caret = "\u25b8 " if idx == cursor else "  "
+                    try:
+                        stdscr.addstr(body_top + i, 0, caret, attrs.get("title", 0) | base)
+                        stdscr.addstr(
+                            body_top + i, 2,
+                            _truncate(row.path, path_w).ljust(path_w),
+                            attrs.get("name", curses.A_BOLD) | base,
+                        )
+                        stdscr.addstr(
+                            body_top + i, 2 + path_w + 2,
+                            row.snaps.rjust(5),
+                            attrs.get("num", 0) | base,
+                        )
+                        stdscr.addstr(
+                            body_top + i, 2 + path_w + 9,
+                            _truncate(row.reason, 20),
+                            attrs.get("dim", curses.A_DIM) | base,
+                        )
+                    except curses.error:
+                        pass
+
+            footer = " Enter select  ·  / filter  ·  q quit "
+            try:
+                stdscr.addstr(
+                    height - 1, 0, footer.ljust(width)[: width - 1],
+                    attrs.get("dim", curses.A_DIM),
+                )
+            except curses.error:
+                pass
+            stdscr.refresh()
+
+            key = stdscr.getch()
+            if key == ord("q"):
+                return None
+            if key == 27:
+                if filter_pattern:
+                    filter_pattern = ""
+                    rows = _filter_rows(filter_pattern)
+                    cursor = 0
+                    continue
+                return None
+            if key == ord("/"):
+                entered = _read_filter_pattern(
+                    stdscr, attrs=attrs, initial=filter_pattern,
+                )
+                if entered is not None:
+                    filter_pattern = entered
+                    rows = _filter_rows(filter_pattern)
+                    cursor = 0
+                continue
+            if key == curses.KEY_RESIZE:
+                continue
+            if not rows:
+                continue
+            if key in (curses.KEY_DOWN, ord("j")):
+                cursor = min(cursor + 1, len(rows) - 1)
+            elif key in (curses.KEY_UP, ord("k")):
+                cursor = max(cursor - 1, 0)
+            elif key == curses.KEY_NPAGE:
+                cursor = min(cursor + body_height, len(rows) - 1)
+            elif key == curses.KEY_PPAGE:
+                cursor = max(cursor - body_height, 0)
+            elif key == curses.KEY_HOME:
+                cursor = 0
+            elif key == curses.KEY_END:
+                cursor = len(rows) - 1
+            elif key in (10, 13, curses.KEY_ENTER, ord(" ")):
+                return rows[cursor].key
+
+    return curses.wrapper(_curses_main)
+
+
 def prompt_text(label: str, *, initial: str = "") -> Optional[str]:
     """Block on a single-line text prompt drawn via :mod:`curses`.
 
@@ -1435,67 +1682,260 @@ def prompt_text(label: str, *, initial: str = "") -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Revert path picker — multi-select over a manifest's entries
+# Generic path-tree browser for manifest entries
+#
+# Used by ``snapz revert`` (select mode) and ``snapz browse`` / ``snapz
+# cat`` (view mode). The pure helpers (``browse_rows``,
+# ``browse_toggle_path``, ``browse_selection_marker``) have no curses
+# dependency so they can be unit-tested directly.
 # ---------------------------------------------------------------------------
 
 
-def run_revert_picker(entries, src) -> list[str]:
-    """Curses multi-select over a snapshot's manifest *entries*.
+@dataclass(frozen=True)
+class BrowseRow:
+    """One visible row in the manifest browser."""
 
-    Returns the relative paths the user picked. ``src`` is the live
-    source path; we use it only to highlight rows whose live state
-    differs from the snapshot (so the user sees what's actually worth
-    rolling back). Passing :data:`None` skips that decoration.
+    path: str
+    name: str
+    kind: str              # "up" | "dir" | "file" | "symlink"
+    size: int | None = None
+    target: str | None = None
+    differs: bool = False
+
+
+@dataclass
+class BrowseAction:
+    """Outcome of ``browse_manifest``. *kind* is one of:
+
+    - ``"apply"``  — select-mode: user confirmed the selection.
+    - ``"file"``   — view-mode:   user opened a file (path in *path*).
+    - ``"cancel"`` — user quit with q/Esc.
     """
 
-    rows = list(entries)
-    if not rows:
-        return []
+    kind: str
+    path: str = ""
+    selected: list[str] = field(default_factory=list)
 
-    # Pre-compute "differs from live" so we don't stat() inside the
-    # render loop. Best-effort — any OSError just leaves the row
-    # un-highlighted.
+
+def _browse_parent(path: str) -> str:
+    path = path.strip().strip("/")
+    if not path or "/" not in path:
+        return ""
+    return path.rsplit("/", 1)[0]
+
+
+def _browse_descendant_paths(entries, path: str) -> set[str]:
+    path = path.strip().strip("/")
+    if not path:
+        return {e.path for e in entries}
+    prefix = path + "/"
+    return {e.path for e in entries if e.path == path or e.path.startswith(prefix)}
+
+
+def browse_toggle_path(entries, path: str, selected: set[str]) -> None:
+    """Toggle (recursively for dirs) *path*'s membership in *selected*."""
+
+    descendants = _browse_descendant_paths(entries, path)
+    if not descendants:
+        return
+    if descendants <= selected:
+        selected.difference_update(descendants)
+    else:
+        selected.update(descendants)
+
+
+def browse_rows(entries, cwd: str, differs: set[str]) -> list[BrowseRow]:
+    """Return the list of visible rows for directory *cwd*.
+
+    Directories are grouped first, files after, both case-insensitively
+    sorted. A synthetic ``../`` row is prepended when ``cwd`` is non-empty.
+    """
+
+    cwd = cwd.strip().strip("/")
+    prefix = cwd + "/" if cwd else ""
+    dirs: dict[str, tuple[str, int, bool]] = {}
+    files: list[BrowseRow] = []
+
+    for e in entries:
+        if prefix and not e.path.startswith(prefix):
+            continue
+        rest = e.path[len(prefix):] if prefix else e.path
+        if not rest:
+            continue
+        head, sep, _tail = rest.partition("/")
+        child_path = prefix + head if prefix else head
+        if sep:
+            _name, count, changed = dirs.get(child_path, (head, 0, False))
+            dirs[child_path] = (head, count + 1, changed or e.path in differs)
+            continue
+        files.append(BrowseRow(
+            path=e.path,
+            name=head,
+            kind=e.type,
+            size=e.size,
+            target=e.target,
+            differs=e.path in differs,
+        ))
+
+    rows: list[BrowseRow] = []
+    if cwd:
+        rows.append(BrowseRow(path=_browse_parent(cwd), name="../", kind="up"))
+    for path, (name, count, changed) in sorted(
+        dirs.items(), key=lambda item: item[1][0].casefold(),
+    ):
+        rows.append(BrowseRow(
+            path=path,
+            name=name + "/",
+            kind="dir",
+            size=count,
+            differs=changed,
+        ))
+    rows.extend(sorted(files, key=lambda row: row.name.casefold()))
+    return rows
+
+
+def browse_selection_marker(row: BrowseRow, entries, selected: set[str]) -> str:
+    if row.kind == "up":
+        return " "
+    descendants = _browse_descendant_paths(entries, row.path)
+    if not descendants:
+        return " "
+    if descendants <= selected:
+        return "\u2713"
+    if descendants & selected:
+        return "~"
+    return " "
+
+
+# ---- Backwards-compatible private aliases (older callers / tests) ----
+
+_RevertBrowserRow = BrowseRow
+_revert_parent = _browse_parent
+_revert_descendant_paths = _browse_descendant_paths
+_revert_toggle_path = browse_toggle_path
+_revert_browser_rows = browse_rows
+_revert_selection_marker = browse_selection_marker
+
+
+def _compute_manifest_differs(entries, src) -> set[str]:
+    """Return paths whose live content differs from the manifest.
+
+    Best-effort — any OSError just leaves the path out of the set.
+    """
+
+    if src is None:
+        return set()
+    import os as _os
     differs: set[str] = set()
-    if src is not None:
-        import os as _os
-        for e in rows:
-            try:
-                live = Path(src) / e.path
-                if e.type == "symlink":
-                    if not live.is_symlink():
-                        differs.add(e.path)
-                        continue
-                    if _os.readlink(live) != (e.target or ""):
-                        differs.add(e.path)
-                else:  # "file"
-                    if not live.is_file() or live.is_symlink():
-                        differs.add(e.path)
-                        continue
-                    if e.size is not None and live.stat().st_size != e.size:
-                        differs.add(e.path)
-            except OSError:
-                pass
+    for e in entries:
+        try:
+            live = Path(src) / e.path
+            if e.type == "symlink":
+                if not live.is_symlink():
+                    differs.add(e.path)
+                    continue
+                if _os.readlink(live) != (e.target or ""):
+                    differs.add(e.path)
+            else:  # "file"
+                if not live.is_file() or live.is_symlink():
+                    differs.add(e.path)
+                    continue
+                if e.size is not None and live.stat().st_size != e.size:
+                    differs.add(e.path)
+        except OSError:
+            continue
+    return differs
 
-    def _curses_main(stdscr) -> list[str]:
+
+def browse_manifest(
+    entries,
+    *,
+    title: str,
+    src: Optional[Path] = None,
+    mode: str = "view",              # "view" | "select"
+    preview: Optional[Callable[[str], Optional[bytes]]] = None,
+    initial_filter: str = "",
+    preselect: Optional[set[str]] = None,
+    differs: Optional[set[str]] = None,
+    footer_hint: Optional[str] = None,
+) -> BrowseAction:
+    """Interactive curses path-tree browser over *entries*.
+
+    Modes:
+
+    - ``"view"`` — read-only. Enter on a file returns
+      ``BrowseAction(kind="file", path=...)`` so the caller can preview
+      externally. q/Esc returns ``kind="cancel"``.
+    - ``"select"`` — Space toggles rows (recursively for dirs), ``e`` or
+      Enter on a non-drillable row returns
+      ``BrowseAction(kind="apply", selected=[...])``. q/Esc returns
+      ``kind="cancel"``.
+
+    In view mode, *preview* is called when Enter opens a file/symlink;
+    when omitted the function returns ``BrowseAction(kind="file")`` for
+    the caller to handle externally. *initial_filter* narrows visible
+    rows by substring-matching path/name and can be changed with ``/``.
+    *preselect* seeds the selection (select mode). *differs* highlights
+    rows that diverge from the live tree; callers that want the classic
+    ``snapz revert`` pre-selection pass ``differs`` as ``preselect``.
+    """
+
+    if mode not in {"view", "select"}:
+        raise ValueError("mode must be 'view' or 'select'")
+
+    manifest_entries = list(entries)
+    if not manifest_entries:
+        return BrowseAction(kind="cancel")
+
+    differs_set: set[str] = set(differs or ())
+    selected: set[str] = set(preselect or ())
+
+    def _filter_entries(pattern: str):
+        needle = pattern.casefold().strip()
+        if not needle:
+            return manifest_entries
+        return [
+            e for e in manifest_entries
+            if needle in e.path.casefold()
+            or needle in Path(e.path).name.casefold()
+        ]
+
+    def _curses_main(stdscr) -> BrowseAction:
+        nonlocal selected
         curses.curs_set(0)
         stdscr.keypad(True)
         attrs = _init_colors()
         cursor = 0
         scroll = 0
-        # Default: pre-select rows that differ from the live tree.
-        # User can press ``n`` to clear if they want a clean slate.
-        selected: set[str] = set(differs)
+        cwd = ""
+        filter_pattern = initial_filter
 
         while True:
+            active_entries = _filter_entries(filter_pattern)
+            active_differs = differs_set & {e.path for e in active_entries}
+            view_rows = browse_rows(active_entries, cwd, active_differs)
+            if not view_rows:
+                view_rows = (
+                    [BrowseRow(path=_browse_parent(cwd), name="../", kind="up")]
+                    if cwd else []
+                )
+            if cursor >= len(view_rows):
+                cursor = max(0, len(view_rows) - 1)
+
             stdscr.erase()
             height, width = stdscr.getmaxyx()
-            title = " " + t(
-                "revert.picker_title",
-                n=len(rows), src=str(src) if src else "",
-            ) + " "
+            location = "/" + cwd if cwd else "/"
+            banner = f" {title}  {src or ''}  {location} "
+            if filter_pattern:
+                banner += t(
+                    "tui.filter_status",
+                    pattern=filter_pattern,
+                    n=len(active_entries),
+                    total=len(manifest_entries),
+                ) + " "
             try:
                 stdscr.addstr(
-                    0, 0, title.ljust(width)[: width - 1],
+                    0, 0, banner.ljust(width)[: width - 1],
                     attrs.get("title", curses.A_BOLD) | curses.A_REVERSE,
                 )
             except curses.error:
@@ -1508,41 +1948,60 @@ def run_revert_picker(entries, src) -> list[str]:
             elif cursor >= scroll + body_height:
                 scroll = cursor - body_height + 1
 
-            name_w = max(8, min(width - 24, max(len(r.path) for r in rows)))
+            max_name = max((len(r.name) for r in view_rows), default=8)
+            name_w = max(8, min(width - 26, max_name))
             for i in range(body_height):
                 idx = scroll + i
-                if idx >= len(rows):
+                if idx >= len(view_rows):
                     break
-                row = rows[idx]
+                row = view_rows[idx]
                 base = (
                     attrs.get("cursor", curses.A_REVERSE) if idx == cursor else 0
                 )
-                marker = "\u2713" if row.path in selected else " "
-                changed = row.path in differs
+                if mode == "select":
+                    marker = browse_selection_marker(
+                        row, active_entries, selected,
+                    )
+                    marker_cell = f"  [{marker}] "
+                    name_col = 6
+                else:
+                    marker_cell = "  "
+                    name_col = 2
                 row_attr = (
-                    attrs.get("warn", curses.A_BOLD) if changed
+                    attrs.get("warn", curses.A_BOLD) if row.differs
                     else attrs.get("name", 0)
                 ) | base
+                if row.kind == "up":
+                    row_attr = attrs.get("dim", curses.A_DIM) | base
+                    info = "parent"
+                elif row.kind == "dir":
+                    info = f"{row.size or 0} entries"
+                elif row.kind == "file":
+                    info = format_size(row.size or 0)
+                else:
+                    info = f"\u2192 {row.target or ''}"
                 try:
-                    stdscr.addstr(body_top + i, 0, f"  [{marker}] ", base)
+                    stdscr.addstr(body_top + i, 0, marker_cell, base)
                     stdscr.addstr(
-                        body_top + i, 6,
-                        _truncate(row.path, name_w).ljust(name_w),
+                        body_top + i, name_col,
+                        _truncate(row.name, name_w).ljust(name_w),
                         row_attr,
                     )
-                    info = (
-                        format_size(row.size or 0)
-                        if row.type == "file" else f"\u2192 {row.target or ''}"
-                    )
                     stdscr.addstr(
-                        body_top + i, 6 + name_w + 2,
-                        _truncate(info, max(0, width - 6 - name_w - 3)),
+                        body_top + i, name_col + name_w + 2,
+                        _truncate(info, max(0, width - name_col - name_w - 3)),
                         attrs.get("dim", curses.A_DIM) | base,
                     )
                 except curses.error:
                     pass
 
-            footer = " " + t("revert.picker_footer", n=len(selected)) + " "
+            if footer_hint is not None:
+                footer_text = footer_hint
+            elif mode == "select":
+                footer_text = t("revert.picker_footer", n=len(selected))
+            else:
+                footer_text = t("browse.footer")
+            footer = " " + footer_text + " "
             try:
                 stdscr.addstr(
                     height - 1, 0, footer.ljust(width)[: width - 1],
@@ -1554,35 +2013,105 @@ def run_revert_picker(entries, src) -> list[str]:
 
             key = stdscr.getch()
             if key in (ord("q"), 27):
-                return []
+                if key == 27 and filter_pattern:
+                    filter_pattern = ""
+                    cwd = ""
+                    cursor = scroll = 0
+                    continue
+                return BrowseAction(kind="cancel")
+            if key == ord("/"):
+                entered = _read_filter_pattern(
+                    stdscr, attrs=attrs, initial=filter_pattern,
+                )
+                if entered is not None:
+                    filter_pattern = entered
+                    cwd = ""
+                    cursor = scroll = 0
+                continue
             if key == curses.KEY_RESIZE:
                 continue
-            if key in (curses.KEY_DOWN, ord("j")):
-                cursor = min(cursor + 1, len(rows) - 1)
-            elif key in (curses.KEY_UP, ord("k")):
+            if key in (curses.KEY_DOWN, ord("j")) and view_rows:
+                cursor = min(cursor + 1, len(view_rows) - 1)
+            elif key in (curses.KEY_UP, ord("k")) and view_rows:
                 cursor = max(cursor - 1, 0)
-            elif key == curses.KEY_NPAGE:
-                cursor = min(cursor + body_height, len(rows) - 1)
-            elif key == curses.KEY_PPAGE:
+            elif key == curses.KEY_NPAGE and view_rows:
+                cursor = min(cursor + body_height, len(view_rows) - 1)
+            elif key == curses.KEY_PPAGE and view_rows:
                 cursor = max(cursor - body_height, 0)
             elif key == curses.KEY_HOME:
                 cursor = 0
-            elif key == curses.KEY_END:
-                cursor = len(rows) - 1
-            elif key == ord(" "):
-                p = rows[cursor].path
-                if p in selected:
-                    selected.discard(p)
-                else:
-                    selected.add(p)
-            elif key == ord("a"):
-                selected = {r.path for r in rows}
-            elif key == ord("c"):
-                # Re-select only the rows that differ from live tree.
-                selected = set(differs)
-            elif key == ord("n"):
+            elif key == curses.KEY_END and view_rows:
+                cursor = len(view_rows) - 1
+            elif key in (curses.KEY_LEFT, curses.KEY_BACKSPACE, 8, 127, ord("h")):
+                if cwd:
+                    cwd = _browse_parent(cwd)
+                    cursor = scroll = 0
+            elif key in (curses.KEY_RIGHT, ord("l")) and view_rows:
+                row = view_rows[cursor]
+                if row.kind == "dir":
+                    cwd = row.path
+                    cursor = scroll = 0
+            elif key == ord(" ") and view_rows and mode == "select":
+                row = view_rows[cursor]
+                if row.kind != "up":
+                    browse_toggle_path(active_entries, row.path, selected)
+            elif key == ord("a") and mode == "select":
+                selected = {r.path for r in active_entries}
+            elif key == ord("c") and mode == "select":
+                selected = set(active_differs)
+            elif key == ord("n") and mode == "select":
                 selected.clear()
-            elif key in (ord("e"), 10, 13, curses.KEY_ENTER):
-                return sorted(selected)
+            elif key in (10, 13, curses.KEY_ENTER) and view_rows:
+                row = view_rows[cursor]
+                if row.kind == "dir":
+                    cwd = row.path
+                    cursor = scroll = 0
+                elif row.kind == "up" and cwd:
+                    cwd = _browse_parent(cwd)
+                    cursor = scroll = 0
+                elif mode == "select":
+                    return BrowseAction(
+                        kind="apply", selected=sorted(selected),
+                    )
+                elif mode == "view" and row.kind in ("file", "symlink"):
+                    if preview is not None:
+                        _run_file_preview(
+                            stdscr,
+                            title=title,
+                            relpath=row.path,
+                            data=preview(row.path),
+                            attrs=attrs,
+                        )
+                        continue
+                    return BrowseAction(kind="file", path=row.path)
+            elif key == ord("r") and mode == "view" and view_rows:
+                row = view_rows[cursor]
+                if row.kind in ("file", "symlink"):
+                    return BrowseAction(kind="file", path=row.path)
+            elif key == ord("e") and mode == "select":
+                return BrowseAction(kind="apply", selected=sorted(selected))
 
     return curses.wrapper(_curses_main)
+
+
+def run_revert_picker(entries, src) -> list[str]:
+    """Browse a snapshot manifest and select paths to revert.
+
+    Thin wrapper over :func:`browse_manifest` in select mode, pre-seeded
+    with the rows that differ from the live tree.
+    """
+
+    manifest_entries = list(entries)
+    if not manifest_entries:
+        return []
+
+    differs = _compute_manifest_differs(manifest_entries, src)
+    action = browse_manifest(
+        manifest_entries,
+        title=t("revert.picker_title", n=len(manifest_entries), src=""),
+        src=src,
+        mode="select",
+        preselect=set(differs),
+        differs=differs,
+    )
+    return action.selected if action.kind == "apply" else []

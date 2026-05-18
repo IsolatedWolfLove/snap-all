@@ -51,6 +51,39 @@ def test_config_effective_overlays_defaults(snap_root):
     assert eff["save_picker"] is False  # untouched -> default
 
 
+# ---------------- ui_mode ---------------------------------------------------
+
+
+def test_get_ui_mode_default_is_tui(snap_root):
+    assert preferences.get_ui_mode(snap_root) == preferences.UI_MODE_TUI
+
+
+def test_get_ui_mode_returns_minimal_when_set(snap_root):
+    preferences.set_config_value(snap_root, "ui_mode", "minimal")
+    assert preferences.get_ui_mode(snap_root) == preferences.UI_MODE_MINIMAL
+
+
+def test_get_ui_mode_falls_back_to_tui_on_invalid_value(snap_root, tmp_path):
+    # Write a config with an unrecognised ui_mode value directly to disk.
+    import json
+    cfg_path = snap_root / preferences.CONFIG_FILENAME
+    snap_root.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps({"ui_mode": "fancy"}), encoding="utf-8")
+    assert preferences.get_ui_mode(snap_root) == preferences.UI_MODE_TUI
+
+
+def test_set_ui_mode_persists(snap_root):
+    preferences.set_ui_mode(snap_root, "minimal")
+    assert preferences.get_ui_mode(snap_root) == preferences.UI_MODE_MINIMAL
+    # Verify it's actually on disk.
+    assert preferences.load_config(snap_root)["ui_mode"] == "minimal"
+
+
+def test_set_ui_mode_rejects_invalid_value(snap_root):
+    with pytest.raises(ValueError):
+        preferences.set_ui_mode(snap_root, "fancy")
+
+
 # ---------------- local excludes -------------------------------------------
 
 

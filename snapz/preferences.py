@@ -24,12 +24,24 @@ from typing import Any, Iterable
 LOCAL_EXCLUDES_FILENAME = "_local_excludes"
 CONFIG_FILENAME = "_config.json"
 
+UI_MODE_TUI = "tui"
+UI_MODE_MINIMAL = "minimal"
+
 
 # Whitelist of known config keys. Setting unknown keys is rejected so
 # typos don't silently disable behaviour, mirroring ``conda config``.
 #
 # Each spec carries a value type + default + one-liner help string.
 KNOWN_CONFIG_KEYS: dict[str, dict[str, Any]] = {
+    "ui_mode": {
+        "type": "str",
+        "default": UI_MODE_TUI,
+        "help": (
+            "UI interaction mode: ``tui`` (default, interactive curses selectors) "
+            "or ``minimal`` (plain text, no TUI prompts)."
+        ),
+        "choices": (UI_MODE_TUI, UI_MODE_MINIMAL),
+    },
     "save_picker": {
         "type": "bool",
         "default": False,
@@ -46,6 +58,32 @@ KNOWN_CONFIG_KEYS: dict[str, dict[str, Any]] = {
             "Color output mode: ``auto`` (TTY-detect, default), "
             "``always``, or ``never``."
         ),
+        "choices": ("auto", "always", "never"),
+    },
+    "retention.keep_last": {
+        "type": "int",
+        "default": 0,
+        "help": "Default ``prune --keep-last`` value; 0 disables the rule.",
+    },
+    "retention.keep_daily": {
+        "type": "int",
+        "default": 0,
+        "help": "Default ``prune --keep-daily`` value; 0 disables the rule.",
+    },
+    "retention.keep_weekly": {
+        "type": "int",
+        "default": 0,
+        "help": "Default ``prune --keep-weekly`` value; 0 disables the rule.",
+    },
+    "retention.keep_within_days": {
+        "type": "int",
+        "default": 0,
+        "help": "Default ``prune --keep-within-days`` value; 0 disables the rule.",
+    },
+    "retention.auto_prune_after_save": {
+        "type": "bool",
+        "default": False,
+        "help": "When true, apply configured retention rules after each save.",
     },
 }
 
@@ -72,7 +110,20 @@ def _coerce(key: str, value: str | bool) -> Any:
         if s in _BOOL_FALSE:
             return False
         raise ValueError(f"expected bool for {key!r}, got: {value!r}")
-    return str(value)
+    if spec["type"] == "int":
+        try:
+            parsed = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"expected integer for {key!r}, got: {value!r}") from None
+        if parsed < 0:
+            raise ValueError(f"expected non-negative integer for {key!r}")
+        return parsed
+    parsed = str(value)
+    choices = spec.get("choices")
+    if choices is not None and parsed not in choices:
+        opts = ", ".join(str(c) for c in choices)
+        raise ValueError(f"expected one of {opts} for {key!r}, got: {value!r}")
+    return parsed
 
 
 def config_path(root: Path) -> Path:
@@ -143,6 +194,29 @@ def effective_config(root: Path) -> dict[str, Any]:
     return out
 
 
+def get_ui_mode(root: Path) -> str:
+    """Return the configured UI mode, defaulting to :data:`UI_MODE_TUI`.
+
+    Reads ``ui_mode`` from the store config.  If the stored value is not one
+    of the recognised modes (e.g. a hand-edited config with a typo) the
+    default ``"tui"`` is returned so the tool stays usable.
+    """
+
+    value = get_config_value(root, "ui_mode")
+    if value in (UI_MODE_TUI, UI_MODE_MINIMAL):
+        return value
+    return UI_MODE_TUI
+
+
+def set_ui_mode(root: Path, mode: str) -> None:
+    """Persist *mode* as the ``ui_mode`` config value.
+
+    Raises :exc:`ValueError` if *mode* is not one of the recognised values.
+    """
+
+    set_config_value(root, "ui_mode", mode)
+
+
 # ---------------------------------------------------------------------------
 # Local excludes (per source dir)
 # ---------------------------------------------------------------------------
@@ -205,5 +279,4 @@ def append_local_excludes(dir_root: Path, patterns: Iterable[str]) -> int:
         pass
     # De-dup added count against pre-existing.
     return len(new)
-
 

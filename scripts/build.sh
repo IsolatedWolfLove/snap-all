@@ -4,9 +4,8 @@
 # Outputs to ``dist/``:
 #   snapz-<version>.tar.gz                  source distribution
 #   snapz_cli-<version>-py3-none-any.whl    universal wheel
-#   snapz.pyz                               shiv zipapp (single executable file,
-#                                          requires python3 >= 3.10 on target,
-#                                          ~5 MB with bundled zstandard)
+#   snapz.pyz                               shiv zipapp for the client command
+#   snapz-server.pyz                        shiv zipapp for the standalone server
 #
 # Usage:
 #   ./scripts/build.sh              # all targets (wheel + sdist + pyz)
@@ -84,7 +83,7 @@ ensure_venv() {
 }
 
 resolve_wheel() {
-    ls -1 "$DIST"/snapz_cli-*.whl 2>/dev/null | head -n 1 || true
+    ls -1t "$DIST"/snapz_cli-*.whl 2>/dev/null | head -n 1 || true
 }
 
 build_wheel() {
@@ -101,7 +100,7 @@ build_pyz() {
         build_wheel
         wheel="$(resolve_wheel)"
     fi
-    log "building shiv zipapp from $(basename "$wheel")"
+    log "building shiv zipapps from $(basename "$wheel")"
     "$VENV/bin/shiv" \
         -c snapz \
         -o "$DIST/snapz.pyz" \
@@ -109,16 +108,32 @@ build_pyz() {
         "$wheel" \
         "zstandard" >/dev/null
     chmod +x "$DIST/snapz.pyz"
+    "$VENV/bin/shiv" \
+        -c snapz-server \
+        -o "$DIST/snapz-server.pyz" \
+        -p "/usr/bin/env python3" \
+        "$wheel" \
+        "zstandard" >/dev/null
+    chmod +x "$DIST/snapz-server.pyz"
 }
 
 smoke() {
     log "smoke-testing artifacts"
     local fail=0
+    local shiv_root="${SHIV_ROOT:-$WORK/shiv-root}"
+    mkdir -p "$shiv_root"
     if [ -f "$DIST/snapz.pyz" ]; then
         log "  ./dist/snapz.pyz --version"
-        "$DIST/snapz.pyz" --version || fail=1
+        SHIV_ROOT="$shiv_root" "$DIST/snapz.pyz" --version || fail=1
     else
         warn "  $DIST/snapz.pyz missing"
+        fail=1
+    fi
+    if [ -f "$DIST/snapz-server.pyz" ]; then
+        log "  ./dist/snapz-server.pyz --version"
+        SHIV_ROOT="$shiv_root" "$DIST/snapz-server.pyz" --version || fail=1
+    else
+        warn "  $DIST/snapz-server.pyz missing"
         fail=1
     fi
     local wheel

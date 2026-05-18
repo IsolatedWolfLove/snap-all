@@ -50,6 +50,38 @@ def validate_snapshot_name(name: str) -> str:
     return name
 
 
+# Reserved tag prefixes are owned by snapz itself (e.g. stash uses the
+# ``stash`` tag exactly). Users cannot add tags starting with these.
+_RESERVED_TAG_PREFIXES: tuple[str, ...] = ("auto-",)
+_RESERVED_TAG_NAMES: frozenset[str] = frozenset({"stash"})
+
+
+def validate_tag(tag: str, *, allow_reserved: bool = False) -> str:
+    """Normalise and validate a user-supplied tag string.
+
+    Rules mirror :func:`validate_snapshot_name` so that ``--tag`` values
+    compose cleanly with the CLI. Reserved prefixes/names (used by the
+    system for ``stash`` etc.) are rejected unless *allow_reserved* is
+    True.
+    """
+
+    tag = str(tag).strip()
+    if not tag:
+        raise ValueError("tag must not be empty")
+    if not _NAME_RE.match(tag):
+        raise ValueError(
+            "invalid tag: only [A-Za-z0-9._-] are allowed and the tag "
+            "must start with an alphanumeric character"
+        )
+    if not allow_reserved:
+        if tag in _RESERVED_TAG_NAMES:
+            raise ValueError(f"tag {tag!r} is reserved for system use")
+        for prefix in _RESERVED_TAG_PREFIXES:
+            if tag.startswith(prefix):
+                raise ValueError(f"tag prefix {prefix!r} is reserved for system use")
+    return tag
+
+
 def auto_name(now: datetime | None = None) -> str:
     """Generate a default timestamped snapshot name."""
 

@@ -7,17 +7,34 @@ behaviour lives in :mod:`snapz.cli`.
 
 from __future__ import annotations
 
+import json
 import os
+import tarfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from io import BufferedWriter
+from io import BytesIO
 from pathlib import Path
+import shutil
+from contextlib import contextmanager
 from typing import Callable, Iterable, Optional
 
-from snapz import archive, cas, preferences
+from snapz import archive, cas, events, filecache, preferences
 from snapz.archive import ArchiveMember, PackResult, ProgressCallback, WalkResult
-from snapz.config import RuntimeConfig, default_config
+from snapz.config import META_SUFFIX, RuntimeConfig, default_config
 from snapz.ignore import build_matcher
-from snapz.store import ARCHIVE_SUFFIXES, DirEntry, SnapshotMeta, Store
+from snapz.store import (
+    ARCHIVE_SUFFIXES,
+    DirEntry,
+    DirMeta,
+    SnapshotMeta,
+    Store,
+    read_source_marker,
+    source_identity,
+    source_marker_path,
+    write_source_marker,
+)
 from snapz.util import (
     auto_name,
     compute_key,
@@ -25,6 +42,7 @@ from snapz.util import (
     now_iso,
     resolve_path,
     validate_snapshot_name,
+    validate_tag,
 )
 
 
@@ -33,6 +51,14 @@ class SaveOutcome:
     snapshot: SnapshotMeta
     pack_result: PackResult
     walk_result: WalkResult
+
+
+@dataclass
+class _SaveFileResult:
+    sha256: str
+    size: int
+    was_new: bool
+    blob_bytes: int
 
 
 @dataclass
@@ -61,6 +87,62 @@ class ExportOutcome:
     snapshot: SnapshotMeta
     destination: Path
     extracted_count: int
+
+
+@dataclass
+class BundleExportOutcome:
+    source: Path
+    destination: Path
+    key: str
+    snapshot_count: int
+    blob_count: int
+    size_bytes: int
+
+
+@dataclass
+class BundleImportOutcome:
+    bundle: Path
+    source: Path
+    key: str
+    snapshot_count: int
+    blob_count: int
+    imported_snapshots: list[str]
+    overwritten_snapshots: list[str]
+    archived: bool
+
+
+@dataclass
+class SourceInitOutcome:
+    source: Path
+    marker_path: Path
+    marker_id: str
+    created: bool
+
+
+@dataclass
+class RelocationCandidate:
+    key: str
+    old_path: Path
+    new_path: Path
+    method: str
+    snapshot_count: int
+
+
+@dataclass
+class RelocationSkip:
+    key: str
+    old_path: Path
+    reason: str
+    candidates: list[RelocationCandidate] = field(default_factory=list)
+
+
+@dataclass
+class AutoRelocateOutcome:
+    roots: list[Path]
+    candidates: list[RelocationCandidate]
+    relocated: list[RelocationCandidate]
+    skipped: list[RelocationSkip]
+    dry_run: bool
 
 
 @dataclass
@@ -107,6 +189,65 @@ class GcResult:
     dry_run: bool
 
 
+@dataclass
+class CheckIssue:
+    severity: str
+    code: str
+    message: str
+    path: str = ""
+    snapshot: Optional[str] = None
+    fixed: bool = False
+
+
+@dataclass
+class CheckResult:
+    dirs_scanned: int
+    issues: list[CheckIssue]
+    fixed_count: int
+    deep: bool
+
+    @property
+    def ok(self) -> bool:
+        return not any(i.severity == "error" for i in self.issues)
+
+
+@dataclass
+class MigrateOutcome:
+    dirs_scanned: int
+    blobs_migrated: int
+    bytes_migrated: int
+    blobs_skipped: int
+    dry_run: bool
+
+
+_STATS_CACHE_MISS = object()
+
+
+def _record_event(
+    store: "Store",
+    abspath: Path,
+    kind: str,
+    *,
+    snapshot: str = "",
+    **extra,
+) -> None:
+    """Append an event for *abspath*'s store folder. Never raises."""
+
+    try:
+        folder = store.dir_for(abspath)
+        key = folder.name
+    except Exception:
+        return
+    events.record(
+        folder,
+        kind,
+        source=str(abspath),
+        snapshot=snapshot,
+        key=key,
+        **extra,
+    )
+
+
 def estimate(
     path: str | Path,
     *,
@@ -116,7 +257,7 @@ def estimate(
     """Run a dry-run walk over *path* and return the projected workload."""
 
     config = config or default_config()
-    abspath = resolve_path(path)
+    abspath = _source_path(path, config=config)
     if not abspath.is_dir():
         raise NotADirectoryError(f"not a directory: {abspath}")
     matcher = build_matcher(
@@ -131,6 +272,32 @@ def estimate(
     return archive.dry_run(abspath, matcher, config, include_large=include_large)
 
 
+def _write_save_blob(
+    dir_root: Path,
+    source: Path,
+    *,
+    use_zstd: bool,
+) -> _SaveFileResult:
+    sha, blob_size, was_new = cas.write_blob(
+        dir_root,
+        source,
+        use_zstd=use_zstd,
+        global_store=True,
+    )
+    blob_bytes = 0
+    if was_new:
+        try:
+            blob_bytes = cas.find_blob(dir_root, sha).stat().st_size
+        except OSError:
+            blob_bytes = 0
+    return _SaveFileResult(
+        sha256=sha,
+        size=blob_size,
+        was_new=was_new,
+        blob_bytes=blob_bytes,
+    )
+
+
 def save(
     path: str | Path,
     name: Optional[str] = None,
@@ -141,6 +308,7 @@ def save(
     walk_result: Optional[WalkResult] = None,
     overwrite: bool = False,
     note: str = "",
+    use_file_cache: Optional[bool] = None,
 ) -> SaveOutcome:
     """Create a new snapshot of *path*.
 
@@ -149,7 +317,7 @@ def save(
     """
 
     config = config or default_config()
-    abspath = resolve_path(path)
+    abspath = _source_path(path, config=config)
     if not abspath.is_dir():
         raise NotADirectoryError(f"not a directory: {abspath}")
 
@@ -176,22 +344,77 @@ def save(
 
     store.ensure_dir(abspath)
     if overwrite:
-        store.delete_snapshot(abspath, snapshot_name)
+        _delete_snapshot_with_refs(store, abspath, snapshot_name)
 
     dir_root = store.dir_for(abspath)
     use_zstd = config.use_zstd and archive.zstd_available()
+    cache_enabled = config.use_file_cache if use_file_cache is None else use_file_cache
+    current_cache = filecache.load(dir_root) if cache_enabled else {}
+    next_cache: dict[str, filecache.CacheEntry] = {}
 
-    # Walk the planned files, hash + dedup each one into the blob store,
-    # build the manifest in memory.
+    planned: list[tuple[FileEntry, os.stat_result | None, str | None]] = []
+    to_process: list[tuple[int, FileEntry]] = []
+    for fe in walk_result.files:
+        try:
+            stat_info = fe.abspath.lstat()
+        except OSError:
+            planned.append((fe, None, None))
+            continue
+        if fe.is_symlink:
+            planned.append((fe, stat_info, None))
+            continue
+        cached_sha = filecache.lookup(current_cache, fe, stat_info)
+        if cached_sha is not None:
+            try:
+                cas.find_blob(dir_root, cached_sha)
+            except FileNotFoundError:
+                cached_sha = None
+        if cached_sha is not None:
+            planned.append((fe, stat_info, cached_sha))
+        else:
+            planned.append((fe, stat_info, None))
+            to_process.append((len(planned) - 1, fe))
+
+    file_results: dict[int, _SaveFileResult] = {}
+    worker_count = max(1, int(config.save_workers))
+    if to_process:
+        if worker_count == 1 or len(to_process) == 1:
+            for plan_index, fe in to_process:
+                try:
+                    file_results[plan_index] = _write_save_blob(
+                        dir_root,
+                        fe.abspath,
+                        use_zstd=use_zstd,
+                    )
+                except OSError:
+                    continue
+        else:
+            max_workers = min(worker_count, len(to_process))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        _write_save_blob,
+                        dir_root,
+                        fe.abspath,
+                        use_zstd=use_zstd,
+                    ): plan_index
+                    for plan_index, fe in to_process
+                }
+                for future in as_completed(futures):
+                    plan_index = futures[future]
+                    try:
+                        file_results[plan_index] = future.result()
+                    except OSError:
+                        continue
+
+    # Build the manifest in walk order after parallel blob writes finish.
     entries: list[cas.ManifestEntry] = []
     new_blob_count = 0
     new_blob_bytes = 0
     total_bytes_in = 0
 
-    for index, fe in enumerate(walk_result.files, start=1):
-        try:
-            stat_info = fe.abspath.lstat()
-        except OSError:
+    for index, (fe, stat_info, cached) in enumerate(planned, start=1):
+        if stat_info is None:
             if on_progress is not None:
                 on_progress(index, walk_result.file_count, fe)
             continue
@@ -213,29 +436,38 @@ def save(
                 target=target_str,
             ))
         else:
-            try:
-                sha, blob_size, was_new = cas.write_blob(
-                    dir_root, fe.abspath, use_zstd=use_zstd
+            if isinstance(cached, str):
+                result = _SaveFileResult(
+                    sha256=cached,
+                    size=stat_info.st_size,
+                    was_new=False,
+                    blob_bytes=0,
                 )
-            except OSError:
-                if on_progress is not None:
-                    on_progress(index, walk_result.file_count, fe)
-                continue
+            else:
+                result = file_results.get(index - 1)
+                if result is None:
+                    if on_progress is not None:
+                        on_progress(index, walk_result.file_count, fe)
+                    continue
             entries.append(cas.ManifestEntry(
                 path=fe.relpath,
                 type="file",
                 mode=mode,
                 mtime=mtime,
-                sha256=sha,
-                size=blob_size,
+                sha256=result.sha256,
+                size=result.size,
             ))
-            total_bytes_in += blob_size
-            if was_new:
+            total_bytes_in += result.size
+            if result.was_new:
                 new_blob_count += 1
-                try:
-                    new_blob_bytes += cas.blob_path(dir_root, sha).stat().st_size
-                except OSError:
-                    pass
+                new_blob_bytes += result.blob_bytes
+            if cache_enabled:
+                next_cache[fe.relpath] = filecache.CacheEntry(
+                    size=result.size,
+                    mtime=mtime,
+                    inode=int(getattr(stat_info, "st_ino", 0)),
+                    sha256=result.sha256,
+                )
 
         if on_progress is not None:
             on_progress(index, walk_result.file_count, fe)
@@ -262,6 +494,22 @@ def save(
         note=note.strip(),
     )
     store.record_snapshot(meta)
+    cas.increment_refs(
+        store.root,
+        [entry.sha256 for entry in entries if entry.sha256],
+    )
+    if cache_enabled:
+        filecache.save(dir_root, next_cache)
+    _record_event(
+        store, abspath, events.KIND_SAVE,
+        snapshot=snapshot_name,
+        file_count=len(entries),
+        size_bytes=new_blob_bytes,
+        note=(note.strip() or None),
+    )
+
+    _auto_prune_after_save(abspath, config)
+    store.refresh_cached_summary_in_dir(dir_root)
 
     pack_result = PackResult(
         archive_path=m_path,
@@ -279,7 +527,7 @@ def list_snapshots(
     config: Optional[RuntimeConfig] = None,
 ) -> list[SnapshotMeta]:
     config = config or default_config()
-    abspath = resolve_path(path)
+    abspath = _source_path(path, config=config)
     return Store(config).list_snapshots(abspath)
 
 
@@ -291,6 +539,353 @@ def list_all(
     return Store(config).list_all()
 
 
+def list_archives(
+    *,
+    config: Optional[RuntimeConfig] = None,
+) -> list[DirEntry]:
+    config = config or default_config()
+    return Store(config).list_archived()
+
+
+def relocate_source(
+    old: str | Path,
+    new: str | Path,
+    *,
+    config: Optional[RuntimeConfig] = None,
+) -> DirEntry:
+    config = config or default_config()
+    store = Store(config)
+    old_path = resolve_path(old)
+    new_path = resolve_path(new)
+    entry = store.relocate_source(old_path, new_path)
+    _record_event(
+        store, new_path, events.KIND_RELOCATE,
+        previous=str(old_path),
+        snapshot_count=len(entry.snapshots),
+    )
+    return entry
+
+
+def adopt_archive(
+    archive_key: str,
+    path: str | Path,
+    *,
+    config: Optional[RuntimeConfig] = None,
+) -> DirEntry:
+    """Bind an archived source record to an explicit local directory."""
+
+    config = config or default_config()
+    store = Store(config)
+    new_path = resolve_path(path)
+    entry = store.relocate_key(archive_key, new_path)
+    _record_event(
+        store, new_path, events.KIND_ADOPT,
+        previous_key=archive_key,
+        snapshot_count=len(entry.snapshots),
+    )
+    return entry
+
+
+def init_source(
+    path: str | Path = ".",
+    *,
+    config: Optional[RuntimeConfig] = None,
+    force: bool = False,
+) -> SourceInitOutcome:
+    """Create the opt-in ``.snapz-id`` marker used for move detection."""
+
+    config = config or default_config()
+    abspath = resolve_path(path)
+    if not abspath.is_dir():
+        raise NotADirectoryError(f"not a directory: {abspath}")
+    marker_id, created = write_source_marker(abspath, force=force)
+
+    store = Store(config)
+    registry = store._load_registry()  # noqa: SLF001
+    changed = False
+    for entry in store.find_dirs_for_source(abspath):
+        folder = store.dir_by_key(entry.key)
+        meta = store._read_dir_meta_from_folder(folder, abspath)  # noqa: SLF001
+        meta.source_marker = marker_id
+        store._write_dir_meta_to_folder(folder, meta)  # noqa: SLF001
+        reg_entry = registry.setdefault("dirs", {}).get(entry.key)
+        if reg_entry is not None:
+            reg_entry["source_marker"] = marker_id
+            changed = True
+    if changed:
+        store._save_registry(registry)  # noqa: SLF001
+
+    return SourceInitOutcome(
+        source=abspath,
+        marker_path=source_marker_path(abspath),
+        marker_id=marker_id,
+        created=created,
+    )
+
+
+_RELOCATION_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".snapz-all",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    "dist",
+    "build",
+}
+
+
+def _iter_relocation_scan_dirs(root: Path, storage_root: Path) -> Iterable[Path]:
+    storage_root = storage_root.resolve()
+    for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        try:
+            current_resolved = current.resolve()
+        except OSError:
+            current_resolved = current
+        if current_resolved == storage_root:
+            dirnames[:] = []
+            continue
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _RELOCATION_SKIP_DIRS
+            and not d.endswith(".egg-info")
+        ]
+        yield current
+
+
+def find_relocation_candidates(
+    roots: Iterable[str | Path],
+    *,
+    config: Optional[RuntimeConfig] = None,
+) -> list[RelocationCandidate]:
+    """Find archived sources that appear to have moved under *roots*.
+
+    Matches are exact only: either the source directory inode is the same
+    as the archived record, or an opt-in ``.snapz-id`` marker matches.
+    Ambiguity is handled by :func:`auto_relocate_sources`.
+    """
+
+    config = config or default_config()
+    store = Store(config)
+    root_paths = [resolve_path(r) for r in roots]
+    for root in root_paths:
+        if not root.is_dir():
+            raise NotADirectoryError(f"not a directory: {root}")
+
+    archives = store.list_archived()
+    by_source_id: dict[str, list[DirEntry]] = {}
+    by_marker: dict[str, list[DirEntry]] = {}
+    for entry in archives:
+        if entry.meta.source_id:
+            by_source_id.setdefault(entry.meta.source_id, []).append(entry)
+        if entry.meta.source_marker:
+            by_marker.setdefault(entry.meta.source_marker, []).append(entry)
+
+    found: dict[tuple[str, str], RelocationCandidate] = {}
+    for root in root_paths:
+        for candidate_dir in _iter_relocation_scan_dirs(root, store.root):
+            marker = read_source_marker(candidate_dir)
+            source_id = source_identity(candidate_dir)
+            matches: dict[str, set[str]] = {}
+            if marker:
+                for entry in by_marker.get(marker, []):
+                    matches.setdefault(entry.key, set()).add("marker")
+            if source_id:
+                for entry in by_source_id.get(source_id, []):
+                    matches.setdefault(entry.key, set()).add("inode")
+            if not matches:
+                continue
+            entries_by_key = {e.key: e for e in archives}
+            for key, methods in matches.items():
+                entry = entries_by_key.get(key)
+                if entry is None:
+                    continue
+                pair = (key, str(candidate_dir.resolve()))
+                existing = found.get(pair)
+                method = "+".join(sorted(methods))
+                if existing is not None:
+                    combined = set(existing.method.split("+")) | methods
+                    existing.method = "+".join(sorted(combined))
+                    continue
+                found[pair] = RelocationCandidate(
+                    key=entry.key,
+                    old_path=Path(entry.meta.abspath),
+                    new_path=candidate_dir.resolve(),
+                    method=method,
+                    snapshot_count=len(entry.snapshots),
+                )
+
+    return sorted(
+        found.values(),
+        key=lambda c: (str(c.old_path), str(c.new_path), c.method),
+    )
+
+
+def auto_relocate_sources(
+    roots: Iterable[str | Path],
+    *,
+    config: Optional[RuntimeConfig] = None,
+    dry_run: bool = False,
+) -> AutoRelocateOutcome:
+    """Automatically relocate archived sources with one exact match."""
+
+    config = config or default_config()
+    store = Store(config)
+    root_paths = [resolve_path(r) for r in roots]
+    candidates = find_relocation_candidates(root_paths, config=config)
+    by_key: dict[str, list[RelocationCandidate]] = {}
+    by_new_path: dict[str, list[RelocationCandidate]] = {}
+    for candidate in candidates:
+        by_key.setdefault(candidate.key, []).append(candidate)
+        by_new_path.setdefault(str(candidate.new_path), []).append(candidate)
+
+    relocated: list[RelocationCandidate] = []
+    skipped: list[RelocationSkip] = []
+    for key, matches in sorted(by_key.items()):
+        entry = store.entry_by_key(key)
+        old_path = Path(entry.meta.abspath) if entry is not None else matches[0].old_path
+        unique_paths = {str(c.new_path) for c in matches}
+        if len(unique_paths) != 1:
+            skipped.append(RelocationSkip(
+                key=key,
+                old_path=old_path,
+                reason="ambiguous-candidates",
+                candidates=matches,
+            ))
+            continue
+        candidate = matches[0]
+        path_claims = by_new_path.get(str(candidate.new_path), [])
+        claimed_keys = {c.key for c in path_claims}
+        if len(claimed_keys) != 1:
+            skipped.append(RelocationSkip(
+                key=key,
+                old_path=old_path,
+                reason="target-matches-multiple-sources",
+                candidates=path_claims,
+            ))
+            continue
+        if dry_run:
+            relocated.append(candidate)
+            continue
+        try:
+            refreshed = store.relocate_key(key, candidate.new_path)
+        except (FileNotFoundError, FileExistsError, NotADirectoryError) as exc:
+            skipped.append(RelocationSkip(
+                key=key,
+                old_path=old_path,
+                reason=str(exc),
+                candidates=[candidate],
+            ))
+            continue
+        relocated.append(RelocationCandidate(
+            key=refreshed.key,
+            old_path=candidate.old_path,
+            new_path=Path(refreshed.meta.abspath),
+            method=candidate.method,
+            snapshot_count=len(refreshed.snapshots),
+        ))
+
+    return AutoRelocateOutcome(
+        roots=root_paths,
+        candidates=candidates,
+        relocated=relocated,
+        skipped=skipped,
+        dry_run=dry_run,
+    )
+
+
+def auto_relocate_path(
+    path: str | Path,
+    *,
+    config: Optional[RuntimeConfig] = None,
+    dry_run: bool = False,
+) -> Optional[RelocationCandidate]:
+    """Relocate one archived source when *path* is an exact identity match.
+
+    This is the quiet convenience path used by normal source-oriented
+    operations. It checks only *path* itself, never a recursive search,
+    and acts only when exactly one archived source matches by inode or
+    opt-in ``.snapz-id`` marker.
+    """
+
+    config = config or default_config()
+    abspath = resolve_path(path)
+    if not abspath.is_dir():
+        return None
+
+    store = Store(config)
+    active = store.entry_by_key(store.key_for(abspath))
+    if active is not None and not active.archived:
+        return None
+
+    marker = read_source_marker(abspath)
+    current_id = source_identity(abspath)
+    matches: list[RelocationCandidate] = []
+    for entry in store.list_archived():
+        methods: set[str] = set()
+        if marker and entry.meta.source_marker == marker:
+            methods.add("marker")
+        if current_id and entry.meta.source_id == current_id:
+            methods.add("inode")
+        if not methods:
+            continue
+        matches.append(RelocationCandidate(
+            key=entry.key,
+            old_path=Path(entry.meta.abspath),
+            new_path=abspath,
+            method="+".join(sorted(methods)),
+            snapshot_count=len(entry.snapshots),
+        ))
+
+    keys = {m.key for m in matches}
+    if len(keys) != 1 or not matches:
+        return None
+
+    candidate = matches[0]
+    if dry_run:
+        return candidate
+    try:
+        refreshed = store.relocate_key(candidate.key, abspath)
+    except (FileNotFoundError, FileExistsError, NotADirectoryError):
+        return None
+    return RelocationCandidate(
+        key=refreshed.key,
+        old_path=candidate.old_path,
+        new_path=Path(refreshed.meta.abspath),
+        method=candidate.method,
+        snapshot_count=len(refreshed.snapshots),
+    )
+
+
+def _source_path(path: str | Path, *, config: RuntimeConfig) -> Path:
+    abspath = resolve_path(path)
+    if abspath.is_dir():
+        auto_relocate_path(abspath, config=config)
+    return abspath
+
+
+def _manifest_shas_for_snapshot(store: Store, abspath: Path, name: str) -> list[str]:
+    artifact = store.find_archive(abspath, name)
+    if artifact is None or not cas.is_manifest_artifact(artifact):
+        return []
+    try:
+        manifest = cas.read_manifest(artifact)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return []
+    return [entry.sha256 for entry in manifest.entries if entry.sha256]
+
+
+def _delete_snapshot_with_refs(store: Store, abspath: Path, name: str) -> bool:
+    shas = _manifest_shas_for_snapshot(store, abspath, name)
+    removed = store.delete_snapshot(abspath, name)
+    if removed and shas:
+        cas.decrement_refs(store.root, shas)
+    return removed
+
+
 def delete(
     path: str | Path,
     name: str,
@@ -298,8 +893,12 @@ def delete(
     config: Optional[RuntimeConfig] = None,
 ) -> bool:
     config = config or default_config()
-    abspath = resolve_path(path)
-    return Store(config).delete_snapshot(abspath, name)
+    abspath = _source_path(path, config=config)
+    store = Store(config)
+    removed = _delete_snapshot_with_refs(store, abspath, name)
+    if removed:
+        _record_event(store, abspath, events.KIND_DELETE, snapshot=name)
+    return removed
 
 
 def rename(
@@ -311,8 +910,131 @@ def rename(
 ) -> bool:
     validate_snapshot_name(new)
     config = config or default_config()
-    abspath = resolve_path(path)
-    return Store(config).rename_snapshot(abspath, old, new)
+    abspath = _source_path(path, config=config)
+    store = Store(config)
+    renamed = store.rename_snapshot(abspath, old, new)
+    if renamed:
+        _record_event(
+            store, abspath, events.KIND_RENAME,
+            snapshot=new, previous=old,
+        )
+    return renamed
+
+
+def protect(
+    path: str | Path,
+    name: str,
+    *,
+    config: Optional[RuntimeConfig] = None,
+) -> SnapshotMeta:
+    config = config or default_config()
+    abspath = _source_path(path, config=config)
+    store = Store(config)
+    meta = store.protect_snapshot(abspath, name, True)
+    _record_event(store, abspath, events.KIND_PROTECT, snapshot=name)
+    return meta
+
+
+def unprotect(
+    path: str | Path,
+    name: str,
+    *,
+    config: Optional[RuntimeConfig] = None,
+) -> SnapshotMeta:
+    config = config or default_config()
+    abspath = _source_path(path, config=config)
+    store = Store(config)
+    meta = store.protect_snapshot(abspath, name, False)
+    _record_event(store, abspath, events.KIND_UNPROTECT, snapshot=name)
+    return meta
+
+
+def tag_add(
+    path: str | Path,
+    name: str,
+    tags: Iterable[str],
+    *,
+    config: Optional[RuntimeConfig] = None,
+    allow_reserved: bool = False,
+) -> SnapshotMeta:
+    """Add *tags* to snapshot *name*. Existing tags are preserved."""
+
+    cleaned = [validate_tag(t, allow_reserved=allow_reserved) for t in tags]
+    if not cleaned:
+        raise ValueError("tag_add requires at least one tag")
+    config = config or default_config()
+    abspath = _source_path(path, config=config)
+    store = Store(config)
+    meta = store.read_snapshot_meta(abspath, name)
+    if meta is None:
+        raise FileNotFoundError(f"no snapshot named '{name}' under {abspath}")
+    existing = list(meta.tags)
+    seen = set(existing)
+    added: list[str] = []
+    for tag in cleaned:
+        if tag in seen:
+            continue
+        existing.append(tag)
+        seen.add(tag)
+        added.append(tag)
+    meta.tags = existing
+    store.write_snapshot_meta(meta)
+    if added:
+        _record_event(
+            store, abspath, events.KIND_TAG_ADD,
+            snapshot=name, tags=added,
+        )
+    return meta
+
+
+def tag_remove(
+    path: str | Path,
+    name: str,
+    tags: Iterable[str],
+    *,
+    config: Optional[RuntimeConfig] = None,
+) -> SnapshotMeta:
+    """Drop *tags* from snapshot *name*. Unknown tags are silently ignored."""
+
+    to_drop = {str(t).strip() for t in tags if str(t).strip()}
+    if not to_drop:
+        raise ValueError("tag_remove requires at least one tag")
+    config = config or default_config()
+    abspath = _source_path(path, config=config)
+    store = Store(config)
+    meta = store.read_snapshot_meta(abspath, name)
+    if meta is None:
+        raise FileNotFoundError(f"no snapshot named '{name}' under {abspath}")
+    removed = [t for t in meta.tags if t in to_drop]
+    meta.tags = [t for t in meta.tags if t not in to_drop]
+    store.write_snapshot_meta(meta)
+    if removed:
+        _record_event(
+            store, abspath, events.KIND_TAG_RM,
+            snapshot=name, tags=removed,
+        )
+    return meta
+
+
+def list_tags(
+    path: str | Path,
+    *,
+    config: Optional[RuntimeConfig] = None,
+) -> dict[str, list[SnapshotMeta]]:
+    """Return ``{tag: [meta, ...]}`` grouping for *path*.
+
+    Hidden auto-* snapshots are included so their system tags (if any)
+    are visible; callers that want a user-facing view should filter
+    with ``is_auto_snapshot`` themselves.
+    """
+
+    config = config or default_config()
+    abspath = _source_path(path, config=config)
+    out: dict[str, list[SnapshotMeta]] = {}
+    for snap in Store(config).list_snapshots(abspath):
+        for tag in snap.tags:
+            out.setdefault(tag, []).append(snap)
+    return out
 
 
 def show(
@@ -322,7 +1044,7 @@ def show(
     config: Optional[RuntimeConfig] = None,
 ) -> Optional[SnapshotMeta]:
     config = config or default_config()
-    abspath = resolve_path(path)
+    abspath = _source_path(path, config=config)
     return Store(config).read_snapshot_meta(abspath, name)
 
 
@@ -340,7 +1062,7 @@ def _resolve_archive(
     """Return ``(abspath, snapshot_meta, archive_path)`` or raise."""
 
     config = config or default_config()
-    abspath = resolve_path(path)
+    abspath = _source_path(path, config=config)
     store = Store(config)
     meta = store.read_snapshot_meta(abspath, name)
     if meta is None:
@@ -485,6 +1207,13 @@ def restore(
                 except OSError:
                     continue
 
+    _record_event(
+        Store(config), abspath, events.KIND_RESTORE,
+        snapshot=name,
+        pre_restore=(pre_meta.name if pre_meta else None),
+        extracted=extracted,
+        cleaned=cleaned,
+    )
     return RestoreOutcome(
         snapshot=meta,
         pre_restore=pre_meta,
@@ -497,9 +1226,8 @@ def _extract_cas(manifest_path: Path, target: Path, *, dir_root: Path) -> int:
     """Extract a CAS manifest's content over *target*. Returns entry count.
 
     Files come first (so missing parent dirs get created), then
-    symlinks. Mode and mtime are reapplied per the manifest. Mismatched
-    blob sizes are tolerated silently — the user can rerun ``snapz gc``
-    + ``snapz restore`` if the store has been corrupted.
+    symlinks. Mode and mtime are reapplied per the manifest. Missing or
+    corrupt blobs raise instead of silently producing a partial restore.
     """
 
     manifest = cas.read_manifest(manifest_path)
@@ -510,17 +1238,16 @@ def _extract_cas(manifest_path: Path, target: Path, *, dir_root: Path) -> int:
             continue
         full = target / entry.path
         full.parent.mkdir(parents=True, exist_ok=True)
-        if full.is_symlink() or full.exists():
+        if not entry.sha256:
+            raise ValueError(f"manifest entry lacks sha256: {entry.path}")
+        size = cas.read_blob_to(dir_root, entry.sha256, full)
+        if entry.size is not None and size != entry.size:
+            raise ValueError(f"blob size mismatch for {entry.path}")
+        if full.is_symlink():
             try:
                 full.unlink()
             except OSError:
                 pass
-        if not entry.sha256:
-            continue
-        try:
-            cas.read_blob_to(dir_root, entry.sha256, full)
-        except FileNotFoundError:
-            continue
         try:
             os.chmod(full, entry.mode)
         except OSError:
@@ -683,7 +1410,7 @@ def add_local_excludes(
     """
 
     config = config or default_config()
-    abspath = resolve_path(path)
+    abspath = _source_path(path, config=config)
     dir_root = Store(config).dir_for(abspath)
     return preferences.append_local_excludes(dir_root, patterns)
 
@@ -796,6 +1523,460 @@ def export(
     )
 
 
+def restore_archive(
+    archive_key: str,
+    name: str,
+    dst: str | Path,
+    *,
+    config: Optional[RuntimeConfig] = None,
+    overwrite: bool = False,
+) -> ExportOutcome:
+    """Extract an archived source snapshot into an arbitrary destination."""
+
+    config = config or default_config()
+    store = Store(config)
+    entry = store.entry_by_key(archive_key)
+    if entry is None:
+        raise FileNotFoundError(f"no archived source with key {archive_key!r}")
+    if not entry.archived:
+        raise ValueError(f"source {archive_key!r} is not archived")
+    dir_root = store.dir_by_key(archive_key)
+    meta = store.read_snapshot_meta_in_dir(dir_root, name)
+    if meta is None:
+        raise FileNotFoundError(
+            f"no snapshot named '{name}' in archived source {archive_key}"
+        )
+    artifact = store.find_archive_in_dir(dir_root, name)
+    if artifact is None:
+        raise FileNotFoundError(
+            f"snapshot meta exists but artifact missing for '{name}'"
+        )
+
+    dst_path = resolve_path(dst)
+    if dst_path.exists():
+        if not dst_path.is_dir():
+            raise NotADirectoryError(f"not a directory: {dst_path}")
+        if any(dst_path.iterdir()) and not overwrite:
+            raise FileExistsError(
+                f"destination is not empty: {dst_path} (pass --overwrite to allow)"
+            )
+    else:
+        dst_path.mkdir(parents=True, exist_ok=True)
+
+    if cas.is_manifest_artifact(artifact):
+        extracted = _extract_cas(artifact, dst_path, dir_root=dir_root)
+    else:
+        extracted = archive.unpack(artifact, dst_path)
+    return ExportOutcome(
+        snapshot=meta,
+        destination=dst_path,
+        extracted_count=extracted,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Portable bundles — export/import snapshots between snapz stores
+# ---------------------------------------------------------------------------
+
+
+BUNDLE_FORMAT_VERSION = 1
+BUNDLE_META_NAME = "bundle.json"
+
+
+def _tar_add_json(tar: tarfile.TarFile, name: str, data: dict) -> None:
+    raw = (
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+    info = tarfile.TarInfo(name)
+    info.size = len(raw)
+    info.mode = 0o600
+    tar.addfile(info, BytesIO(raw))
+
+
+def _tar_read_json(tar: tarfile.TarFile, name: str) -> dict:
+    try:
+        member = tar.getmember(name)
+    except KeyError as exc:
+        raise ValueError(f"bundle missing {name}") from exc
+    extracted = tar.extractfile(member)
+    if extracted is None:
+        raise ValueError(f"bundle member is not a file: {name}")
+    try:
+        return json.loads(extracted.read().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"bundle has invalid JSON: {name}") from exc
+
+
+def _copy_tar_member(tar: tarfile.TarFile, arcname: str, dst: Path) -> int:
+    try:
+        member = tar.getmember(arcname)
+    except KeyError as exc:
+        raise ValueError(f"bundle missing {arcname}") from exc
+    if not member.isfile():
+        raise ValueError(f"bundle member is not a file: {arcname}")
+    src = tar.extractfile(member)
+    if src is None:
+        raise ValueError(f"bundle member is not readable: {arcname}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    with open(tmp, "wb") as out:
+        shutil.copyfileobj(src, out)
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, dst)
+    return member.size
+
+
+@contextmanager
+def _open_bundle_tar_writer(path: Path):
+    if archive.zstd_available():
+        import zstandard as zstd
+
+        with open(path, "wb") as raw:
+            compressor = zstd.ZstdCompressor(level=6)
+            with compressor.stream_writer(raw) as stream:
+                writer = BufferedWriter(stream)
+                try:
+                    with tarfile.open(fileobj=writer, mode="w|") as tar:
+                        yield tar
+                finally:
+                    writer.flush()
+    else:
+        with tarfile.open(path, "w:gz") as tar:
+            yield tar
+
+
+@contextmanager
+def _open_bundle_tar_reader(path: Path):
+    head = path.open("rb").read(4)
+    if head[:4] == cas._ZSTD_MAGIC:
+        import zstandard as zstd
+
+        dctx = zstd.ZstdDecompressor()
+        with path.open("rb") as raw, dctx.stream_reader(raw) as reader:
+            data = reader.read()
+        with tarfile.open(fileobj=BytesIO(data), mode="r:") as tar:
+            yield tar
+    else:
+        with tarfile.open(path, "r:*") as tar:
+            yield tar
+
+
+def _safe_store_key(raw: object, fallback: str) -> str:
+    key = str(raw or "")
+    if not key or "/" in key or "\\" in key or key in {".", ".."}:
+        return fallback
+    if any(part == ".." for part in key.split("-")):
+        return fallback
+    return key
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(c in "0123456789abcdefABCDEF" for c in value)
+
+
+def _unique_import_key(root: Path, base_key: str) -> str:
+    if not (root / base_key).exists():
+        return base_key
+    stem = f"{base_key}--import"
+    if not (root / stem).exists():
+        return stem
+    index = 2
+    while (root / f"{stem}{index}").exists():
+        index += 1
+    return f"{stem}{index}"
+
+
+def export_bundle(
+    source: str | Path,
+    dst: str | Path,
+    *,
+    config: Optional[RuntimeConfig] = None,
+    overwrite: bool = False,
+    archived: bool = False,
+) -> BundleExportOutcome:
+    """Pack all snapshots for one source into a portable ``.snapz`` bundle.
+
+    Active sources are addressed by path. Archived sources can be exported
+    by passing ``archived=True`` and using their archive key as *source*.
+    """
+
+    config = config or default_config()
+    store = Store(config)
+
+    if archived:
+        key = str(source)
+        entry = store.entry_by_key(key)
+        if entry is None:
+            raise FileNotFoundError(f"no archived source with key {key!r}")
+        if not entry.archived:
+            raise ValueError(f"source {key!r} is not archived")
+        dir_root = store.dir_by_key(entry.key)
+        snapshots = store.list_snapshots_in_dir(dir_root)
+        source_path = Path(entry.meta.abspath)
+    else:
+        source_path = resolve_path(source)
+        key = store.key_for(source_path)
+        entry = store.entry_by_key(key)
+        if entry is None or entry.archived:
+            raise FileNotFoundError(f"no active snapshots under {source_path}")
+        dir_root = store.dir_by_key(key)
+        snapshots = store.list_snapshots(source_path)
+
+    if not snapshots:
+        raise FileNotFoundError(f"no snapshots to bundle for {source}")
+
+    dst_path = resolve_path(dst)
+    if dst_path.exists() and not overwrite:
+        raise FileExistsError(
+            f"destination exists: {dst_path} (pass --overwrite to replace)"
+        )
+    if dst_path.exists() and dst_path.is_dir():
+        raise IsADirectoryError(f"destination is a directory: {dst_path}")
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+
+    snapshot_rows: list[dict] = []
+    blob_shas: set[str] = set()
+    for snap in snapshots:
+        meta_path = dir_root / f"{snap.name}{META_SUFFIX}"
+        artifact = store.find_archive_in_dir(dir_root, snap.name)
+        if artifact is None or not meta_path.exists():
+            raise FileNotFoundError(
+                f"snapshot {snap.name!r} is missing metadata or artifact"
+            )
+        is_manifest = cas.is_manifest_artifact(artifact)
+        artifact_arc = (
+            f"source/snapshots/{artifact.name}"
+            if is_manifest
+            else f"source/{artifact.name}"
+        )
+        snapshot_rows.append({
+            "name": snap.name,
+            "meta": f"source/{meta_path.name}",
+            "artifact": artifact_arc,
+            "kind": "manifest" if is_manifest else "legacy",
+        })
+        if is_manifest:
+            manifest = cas.read_manifest(artifact)
+            for entry_obj in manifest.entries:
+                if entry_obj.sha256:
+                    blob_shas.add(entry_obj.sha256)
+
+    bundle_meta = {
+        "format_version": BUNDLE_FORMAT_VERSION,
+        "created": now_iso(),
+        "source": {
+            "key": key,
+            "abspath": entry.meta.abspath,
+            "first_seen": entry.meta.first_seen,
+            "last_used": entry.meta.last_used,
+            "snapshot_count": len(snapshots),
+            "source_id": entry.meta.source_id,
+            "source_marker": entry.meta.source_marker,
+            "archived_at": entry.meta.archived_at,
+        },
+        "snapshots": snapshot_rows,
+        "blobs": sorted(blob_shas),
+    }
+
+    tmp = dst_path.with_suffix(dst_path.suffix + ".tmp")
+    try:
+        with _open_bundle_tar_writer(tmp) as tar:
+            _tar_add_json(tar, BUNDLE_META_NAME, bundle_meta)
+            tar.add(dir_root / "_meta.json", arcname="source/_meta.json", recursive=False)
+            for row in snapshot_rows:
+                meta_name = Path(row["meta"]).name
+                tar.add(dir_root / meta_name, arcname=row["meta"], recursive=False)
+                artifact_src = (
+                    dir_root / "snapshots" / Path(row["artifact"]).name
+                    if row["kind"] == "manifest"
+                    else dir_root / Path(row["artifact"]).name
+                )
+                tar.add(artifact_src, arcname=row["artifact"], recursive=False)
+            for sha in sorted(blob_shas):
+                blob = cas.find_blob(dir_root, sha)
+                tar.add(blob, arcname=f"objects/{sha[:2]}/{sha}", recursive=False)
+        os.replace(tmp, dst_path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+    return BundleExportOutcome(
+        source=source_path,
+        destination=dst_path,
+        key=key,
+        snapshot_count=len(snapshots),
+        blob_count=len(blob_shas),
+        size_bytes=dst_path.stat().st_size,
+    )
+
+
+def import_bundle(
+    bundle: str | Path,
+    *,
+    config: Optional[RuntimeConfig] = None,
+    path: Optional[str | Path] = None,
+    overwrite: bool = False,
+    target_key: Optional[str] = None,
+) -> BundleImportOutcome:
+    """Import a portable bundle into the local snapz store.
+
+    Without *path*, imported snapshots stay archived. Passing *path* binds
+    them to an existing live directory and lets normal ``list``/``restore``
+    operations see them there.
+    """
+
+    config = config or default_config()
+    store = Store(config)
+    bundle_path = resolve_path(bundle)
+    if not bundle_path.is_file():
+        raise FileNotFoundError(f"not a bundle file: {bundle_path}")
+
+    with _open_bundle_tar_reader(bundle_path) as tar:
+        meta = _tar_read_json(tar, BUNDLE_META_NAME)
+        if int(meta.get("format_version", 0)) != BUNDLE_FORMAT_VERSION:
+            raise ValueError(
+                f"unsupported bundle format: {meta.get('format_version')!r}"
+            )
+        source_data = dict(meta.get("source") or {})
+        snapshots = list(meta.get("snapshots") or [])
+        blobs = [str(s) for s in meta.get("blobs") or []]
+        if not snapshots:
+            raise ValueError("bundle has no snapshots")
+
+        original_path = Path(str(source_data.get("abspath") or ".")).expanduser()
+        if path is not None:
+            source_path = resolve_path(path)
+            if not source_path.is_dir():
+                raise NotADirectoryError(f"not a directory: {source_path}")
+            target_key = store.key_for(source_path)
+            source_id = source_identity(source_path)
+            source_marker = read_source_marker(source_path) or str(
+                source_data.get("source_marker", "") or ""
+            )
+            archived_at = ""
+        else:
+            source_path = original_path
+            fallback_key = compute_key(source_path)
+            base_key = _safe_store_key(source_data.get("key"), fallback_key)
+            target_key = (
+                _safe_store_key(target_key, base_key)
+                if target_key is not None
+                else _unique_import_key(store.root, base_key)
+            )
+            source_id = str(source_data.get("source_id", "") or "")
+            source_marker = str(source_data.get("source_marker", "") or "")
+            archived_at = now_iso()
+
+        target_dir = store.dir_by_key(target_key)
+        existing_names = {
+            snap.name for snap in store.list_snapshots_in_dir(target_dir)
+        } if target_dir.exists() else set()
+        incoming_names = [str(row.get("name") or "") for row in snapshots]
+        for name in incoming_names:
+            validate_snapshot_name(name)
+        conflicts = sorted(existing_names & set(incoming_names))
+        if conflicts and not overwrite:
+            raise FileExistsError(
+                "snapshot(s) already exist: "
+                + ", ".join(conflicts)
+                + " (pass --overwrite to replace)"
+            )
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        cas.objects_root(target_dir).mkdir(parents=True, exist_ok=True)
+        cas.snapshots_root(target_dir).mkdir(parents=True, exist_ok=True)
+        cas.global_objects_root(store.root).mkdir(parents=True, exist_ok=True)
+
+        for sha in blobs:
+            if not _is_sha256(sha):
+                raise ValueError(f"invalid blob id in bundle: {sha!r}")
+            dst_blob = cas.global_blob_path(store.root, sha)
+            if dst_blob.exists():
+                continue
+            _copy_tar_member(tar, f"objects/{sha[:2]}/{sha}", dst_blob)
+
+        imported_names: list[str] = []
+        overwritten_names: list[str] = []
+        for row in snapshots:
+            name = str(row.get("name") or "")
+            meta_arc = str(row.get("meta") or "")
+            artifact_arc = str(row.get("artifact") or "")
+            kind = str(row.get("kind") or "")
+            snap_data = _tar_read_json(tar, meta_arc)
+            snap = SnapshotMeta.from_dict(snap_data)
+            snap.name = name
+            snap.source = str(source_path)
+            if kind == "manifest":
+                artifact_dst = cas.manifest_path(target_dir, name)
+                snap.archive = artifact_dst.name
+            elif kind == "legacy":
+                artifact_name = Path(artifact_arc).name
+                artifact_dst = target_dir / artifact_name
+                snap.archive = artifact_name
+            else:
+                raise ValueError(f"unknown snapshot artifact kind: {kind!r}")
+            if name in existing_names:
+                overwritten_names.append(name)
+                (target_dir / f"{name}{META_SUFFIX}").unlink(missing_ok=True)
+                cas.manifest_path(target_dir, name).unlink(missing_ok=True)
+                cas.compressed_manifest_path(target_dir, name).unlink(missing_ok=True)
+                for suffix in ARCHIVE_SUFFIXES:
+                    (target_dir / f"{name}{suffix}").unlink(missing_ok=True)
+            _copy_tar_member(tar, artifact_arc, artifact_dst)
+            meta_dst = target_dir / f"{name}{META_SUFFIX}"
+            meta_dst.write_text(
+                json.dumps(snap.to_dict(), indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            try:
+                os.chmod(meta_dst, 0o600)
+            except OSError:
+                pass
+            imported_names.append(name)
+
+        dir_meta_obj = DirMeta(
+            abspath=str(source_path),
+            first_seen=str(source_data.get("first_seen") or now_iso()),
+            last_used=now_iso(),
+            source_id=source_id,
+            source_marker=source_marker,
+            archived_at=archived_at,
+        )
+        store._write_dir_meta_with_cached_summary(  # noqa: SLF001
+            target_dir, dir_meta_obj,
+        )
+        dir_meta = store._registry_entry_for_meta(dir_meta_obj)  # noqa: SLF001
+        try:
+            os.chmod(store.root, 0o700)
+            os.chmod(target_dir, 0o700)
+            os.chmod(target_dir / "_meta.json", 0o600)
+        except OSError:
+            pass
+
+        registry = store._load_registry()  # noqa: SLF001
+        registry.setdefault("version", 1)
+        registry.setdefault("dirs", {})[target_key] = dir_meta
+        store._save_registry(registry)  # noqa: SLF001
+
+        entry = store.entry_by_key(target_key)
+        archived_state = True if entry is None else entry.archived
+
+    return BundleImportOutcome(
+        bundle=bundle_path,
+        source=source_path,
+        key=target_key,
+        snapshot_count=len(imported_names),
+        blob_count=len(blobs),
+        imported_snapshots=imported_names,
+        overwritten_snapshots=overwritten_names,
+        archived=archived_state,
+    )
 # ---------------------------------------------------------------------------
 # Garbage collection (M5+)
 # ---------------------------------------------------------------------------
@@ -806,6 +1987,7 @@ def gc(
     *,
     all_dirs: bool = False,
     dry_run: bool = False,
+    rebuild_index: bool = False,
     config: Optional[RuntimeConfig] = None,
 ) -> GcResult:
     """Reclaim blob storage no longer referenced by any manifest.
@@ -822,7 +2004,7 @@ def gc(
         for entry in store.list_all():
             targets.append(store.root / entry.key)
     elif path is not None:
-        abspath = resolve_path(path)
+        abspath = _source_path(path, config=config)
         targets.append(store.dir_for(abspath))
     else:
         raise ValueError("gc() requires either path= or all_dirs=True")
@@ -838,10 +2020,366 @@ def gc(
         total_blobs += blobs
         total_bytes += bytes_freed
 
+    # v3 uses a root-level blob pool shared across sources. It is safe
+    # to sweep on either path-scoped or all-dir GC because the reference
+    # set is computed across the entire storage root.
+    blobs, bytes_freed = cas.gc_global(
+        store.root,
+        dry_run=dry_run,
+        rebuild_index=rebuild_index,
+    )
+    total_blobs += blobs
+    total_bytes += bytes_freed
+
     return GcResult(
         blobs_removed=total_blobs,
         bytes_freed=total_bytes,
         dirs_scanned=scanned,
+        dry_run=dry_run,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check / migrate — store reliability tooling
+# ---------------------------------------------------------------------------
+
+
+def _dir_roots_for_scope(
+    store: Store,
+    path: Optional[str | Path],
+    *,
+    all_dirs: bool,
+) -> list[tuple[Path, Optional[Path]]]:
+    if all_dirs:
+        out: list[tuple[Path, Optional[Path]]] = []
+        if not store.root.exists():
+            return out
+        for child in store.root.iterdir():
+            if child.name == cas.OBJECTS_DIR or not child.is_dir():
+                continue
+            dir_meta_path = child / "_meta.json"
+            abspath: Optional[Path] = None
+            try:
+                data = json.loads(dir_meta_path.read_text(encoding="utf-8"))
+                raw = data.get("abspath")
+                if raw:
+                    abspath = Path(raw)
+            except (OSError, ValueError, TypeError):
+                pass
+            out.append((child, abspath))
+        return out
+    if path is None:
+        raise ValueError("operation requires either path= or all_dirs=True")
+    abspath = _source_path(path, config=store.config)
+    return [(store.dir_for(abspath), abspath)]
+
+
+def _issue(
+    issues: list[CheckIssue],
+    severity: str,
+    code: str,
+    message: str,
+    *,
+    path: Path | str = "",
+    snapshot: Optional[str] = None,
+    fixed: bool = False,
+) -> None:
+    issues.append(CheckIssue(
+        severity=severity,
+        code=code,
+        message=message,
+        path=str(path) if path else "",
+        snapshot=snapshot,
+        fixed=fixed,
+    ))
+
+
+def check(
+    path: Optional[str | Path] = None,
+    *,
+    all_dirs: bool = False,
+    deep: bool = False,
+    fix: bool = False,
+    config: Optional[RuntimeConfig] = None,
+) -> CheckResult:
+    """Validate store metadata and blob reachability.
+
+    ``fix`` only performs safe repairs: chmod known store files,
+    remove stale ``*.tmp`` files, rewrite a mismatched manifest
+    snapshot name, and rebuild the registry from readable dir metadata.
+    It does not delete snapshots or orphan blobs.
+    """
+
+    config = config or default_config()
+    store = Store(config)
+    issues: list[CheckIssue] = []
+    fixed = 0
+
+    targets = _dir_roots_for_scope(store, path, all_dirs=all_dirs)
+    registry_dirs: dict[str, dict[str, object]] = {}
+    for dir_root, abspath in targets:
+        if not dir_root.exists():
+            continue
+
+        if fix:
+            for candidate, mode in ((store.root, 0o700), (dir_root, 0o700)):
+                try:
+                    os.chmod(candidate, mode)
+                except OSError:
+                    pass
+
+        dir_meta_path = dir_root / "_meta.json"
+        try:
+            dir_meta = json.loads(dir_meta_path.read_text(encoding="utf-8"))
+            raw_abs = dir_meta.get("abspath")
+            if raw_abs:
+                abspath = Path(raw_abs)
+        except (OSError, ValueError, TypeError) as exc:
+            _issue(
+                issues, "error", "bad-dir-meta",
+                f"cannot read dir metadata: {exc}", path=dir_meta_path,
+            )
+            continue
+
+        if abspath is not None:
+            registry_dirs[dir_root.name] = {
+                "abspath": str(abspath),
+                "first_seen": dir_meta.get("first_seen", ""),
+                "last_used": dir_meta.get("last_used", ""),
+                "snapshot_count": dir_meta.get("snapshot_count", 0),
+                "snapshot_count_cached": dir_meta.get(
+                    "snapshot_count_cached",
+                    dir_meta.get("snapshot_count", 0),
+                ),
+                "on_disk_bytes_cached": dir_meta.get(
+                    "on_disk_bytes_cached", 0,
+                ),
+                "source_id": dir_meta.get("source_id", ""),
+                "source_marker": dir_meta.get("source_marker", ""),
+                "archived_at": dir_meta.get("archived_at", ""),
+            }
+
+        meta_by_name: dict[str, SnapshotMeta] = {}
+        for meta_path in dir_root.glob(f"*{META_SUFFIX}"):
+            if meta_path.name == "_meta.json":
+                continue
+            name = meta_path.name[: -len(META_SUFFIX)]
+            try:
+                meta_data = json.loads(meta_path.read_text(encoding="utf-8"))
+                meta = SnapshotMeta.from_dict(meta_data)
+            except (OSError, KeyError, ValueError, TypeError, json.JSONDecodeError):
+                meta = None
+            if meta is None:
+                _issue(
+                    issues, "error", "bad-snapshot-meta",
+                    "cannot parse snapshot metadata",
+                    path=meta_path, snapshot=name,
+                )
+                continue
+            meta_by_name[name] = meta
+            artifact = store.find_archive_in_dir(dir_root, name)
+            if artifact is None:
+                _issue(
+                    issues, "error", "missing-artifact",
+                    "snapshot metadata has no manifest/archive",
+                    path=meta_path, snapshot=name,
+                )
+                continue
+            if fix:
+                try:
+                    os.chmod(meta_path, 0o600)
+                    os.chmod(artifact, 0o600)
+                except OSError:
+                    pass
+            if not cas.is_manifest_artifact(artifact):
+                continue
+            try:
+                manifest = cas.read_manifest(artifact)
+            except (OSError, ValueError, KeyError) as exc:
+                _issue(
+                    issues, "error", "bad-manifest",
+                    f"cannot read manifest: {exc}",
+                    path=artifact, snapshot=name,
+                )
+                continue
+            if manifest.snapshot != name:
+                did_fix = False
+                if fix:
+                    manifest.snapshot = name
+                    try:
+                        cas.write_manifest(artifact, manifest)
+                        did_fix = True
+                        fixed += 1
+                    except OSError:
+                        did_fix = False
+                _issue(
+                    issues, "warn", "manifest-name-mismatch",
+                    "manifest snapshot name does not match metadata",
+                    path=artifact, snapshot=name, fixed=did_fix,
+                )
+            for entry in manifest.entries:
+                if entry.type != "file":
+                    continue
+                if not entry.sha256:
+                    _issue(
+                        issues, "error", "missing-entry-sha",
+                        f"file entry lacks sha256: {entry.path}",
+                        path=artifact, snapshot=name,
+                    )
+                    continue
+                try:
+                    if deep:
+                        size = cas.verify_blob(dir_root, entry.sha256)
+                        if entry.size is not None and size != entry.size:
+                            _issue(
+                                issues, "error", "blob-size-mismatch",
+                                f"{entry.path} expected {entry.size} bytes, got {size}",
+                                path=cas.find_blob(dir_root, entry.sha256),
+                                snapshot=name,
+                            )
+                    else:
+                        cas.find_blob(dir_root, entry.sha256)
+                except Exception as exc:
+                    _issue(
+                        issues, "error", "bad-blob",
+                        f"{entry.path}: {exc}",
+                        path=dir_root, snapshot=name,
+                    )
+
+        for manifest_path in cas.iter_manifest_paths(dir_root):
+            name = cas.manifest_name(manifest_path)
+            if name not in meta_by_name:
+                _issue(
+                    issues, "warn", "orphan-manifest",
+                    "manifest has no snapshot metadata",
+                    path=manifest_path, snapshot=name,
+                )
+
+        if fix:
+            if filecache.remove(dir_root):
+                fixed += 1
+                _issue(
+                    issues, "warn", "removed-file-cache",
+                    "removed stale file hash cache",
+                    path=filecache.cache_path(dir_root), fixed=True,
+                )
+
+            for tmp in list(dir_root.rglob("*.tmp")):
+                try:
+                    tmp.unlink()
+                    fixed += 1
+                    _issue(
+                        issues, "warn", "removed-temp",
+                        "removed stale temporary file",
+                        path=tmp, fixed=True,
+                    )
+                except OSError:
+                    pass
+
+    refs = cas.referenced_blobs_in_root(store.root)
+    for blob in cas.iter_global_blob_files(store.root):
+        if blob.name not in refs:
+            _issue(
+                issues, "warn", "orphan-blob",
+                "global blob is not referenced by any manifest; run snapz gc to reclaim it",
+                path=blob,
+            )
+
+    if fix:
+        cas.rebuild_refs_index(store.root)
+        fixed += 1
+        _issue(
+            issues, "warn", "rebuilt-refs-index",
+            "rebuilt global blob reference index",
+            path=cas.refs_index_path(store.root), fixed=True,
+        )
+        if all_dirs:
+            data = {"version": 1, "dirs": registry_dirs}
+        else:
+            data = store._load_registry()  # noqa: SLF001
+            data.setdefault("version", 1)
+            data.setdefault("dirs", {}).update(registry_dirs)
+        store._save_registry(data)  # noqa: SLF001
+        fixed += 1
+
+    return CheckResult(
+        dirs_scanned=sum(1 for d, _ in targets if d.exists()),
+        issues=issues,
+        fixed_count=fixed,
+        deep=deep,
+    )
+
+
+def migrate(
+    path: Optional[str | Path] = None,
+    *,
+    all_dirs: bool = False,
+    to: str = "v3",
+    dry_run: bool = False,
+    config: Optional[RuntimeConfig] = None,
+) -> MigrateOutcome:
+    """Move legacy v2 per-dir blobs into the v3 global object pool."""
+
+    if to != "v3":
+        raise ValueError("only migration target supported is v3")
+    config = config or default_config()
+    store = Store(config)
+    targets = _dir_roots_for_scope(store, path, all_dirs=all_dirs)
+
+    migrated = 0
+    skipped = 0
+    bytes_migrated = 0
+    for dir_root, _abspath in targets:
+        if not dir_root.exists():
+            continue
+        for blob in list(cas.iter_blob_files(dir_root, include_global=False)):
+            target = cas.global_blob_path(store.root, blob.name)
+            try:
+                size = blob.stat().st_size
+            except OSError:
+                continue
+            if target.exists():
+                skipped += 1
+                if not dry_run:
+                    try:
+                        blob.unlink()
+                    except OSError:
+                        pass
+                continue
+            migrated += 1
+            bytes_migrated += size
+            if dry_run:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(".tmp")
+            try:
+                import shutil as _shutil
+                _shutil.copy2(blob, tmp)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, target)
+                blob.unlink()
+            except OSError:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                migrated -= 1
+                bytes_migrated -= size
+        if not dry_run:
+            obj_root = cas.objects_root(dir_root)
+            if obj_root.exists():
+                for sub in list(obj_root.iterdir()):
+                    if sub.is_dir():
+                        try:
+                            sub.rmdir()
+                        except OSError:
+                            pass
+
+    return MigrateOutcome(
+        dirs_scanned=sum(1 for d, _ in targets if d.exists()),
+        blobs_migrated=migrated,
+        bytes_migrated=bytes_migrated,
+        blobs_skipped=skipped,
         dry_run=dry_run,
     )
 
@@ -863,6 +2401,7 @@ class StatsEntry:
     on_disk_bytes: int          # everything inside the per-dir folder
     blob_count: int             # entries under objects/
     blob_bytes: int             # disk size of all blobs
+    unique_logical_bytes: int   # uncompressed bytes for unique referenced blobs
     legacy_count: int           # legacy *.tar.* archives kept around
     legacy_bytes: int
     oldest: Optional[str]       # earliest snapshot ISO timestamp, if any
@@ -872,9 +2411,10 @@ class StatsEntry:
 
     @property
     def dedup_ratio(self) -> float:
-        if self.blob_bytes <= 0:
+        denominator = self.unique_logical_bytes or self.blob_bytes
+        if denominator <= 0:
             return 1.0
-        return self.logical_bytes / self.blob_bytes
+        return self.logical_bytes / denominator
 
 
 def _path_disk_bytes(path: Path) -> int:
@@ -903,12 +2443,17 @@ def _scan_dir_folder(folder: Path) -> tuple[int, int, int, int, int]:
     disk = _path_disk_bytes(folder)
     blob_count = 0
     blob_bytes = 0
-    for blob in cas.iter_blob_files(folder):
+    for sha in cas.referenced_blobs(folder):
         try:
+            blob = cas.find_blob(folder, sha)
             blob_bytes += blob.stat().st_size
         except OSError:
             continue
         blob_count += 1
+    # v3 blobs live outside the per-dir folder; include the source's
+    # referenced share so stats still answer "what keeps this source
+    # restorable?" rather than only reporting manifest metadata.
+    disk += blob_bytes
     legacy_count = 0
     legacy_bytes = 0
     for child in folder.iterdir():
@@ -923,12 +2468,29 @@ def _scan_dir_folder(folder: Path) -> tuple[int, int, int, int, int]:
     return disk, blob_count, blob_bytes, legacy_count, legacy_bytes
 
 
+def _unique_logical_bytes(folder: Path) -> int:
+    seen: set[str] = set()
+    total = 0
+    for manifest_path in cas.iter_manifest_paths(folder):
+        try:
+            manifest = cas.read_manifest(manifest_path)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        for entry in manifest.entries:
+            if not entry.sha256 or entry.sha256 in seen:
+                continue
+            seen.add(entry.sha256)
+            total += max(0, int(entry.size))
+    return total
+
+
 def _stats_for_dir(store: Store, abspath: Path, key: str) -> StatsEntry:
     snaps = store.list_snapshots(abspath)
     folder = store.dir_for(abspath)
     disk, blob_count, blob_bytes, legacy_count, legacy_bytes = _scan_dir_folder(folder)
     logical = sum(s.total_bytes_in for s in snaps)
     marginal = sum(s.size_bytes for s in snaps)
+    unique_logical = _unique_logical_bytes(folder)
     largest = max(snaps, key=lambda s: s.total_bytes_in, default=None)
     iso_values = sorted(s.created for s in snaps)
     return StatsEntry(
@@ -940,12 +2502,39 @@ def _stats_for_dir(store: Store, abspath: Path, key: str) -> StatsEntry:
         on_disk_bytes=disk,
         blob_count=blob_count,
         blob_bytes=blob_bytes,
+        unique_logical_bytes=unique_logical,
         legacy_count=legacy_count,
         legacy_bytes=legacy_bytes,
         oldest=iso_values[0] if iso_values else None,
         newest=iso_values[-1] if iso_values else None,
         largest=largest,
         snapshots=snaps,
+    )
+
+
+def _stats_from_bulk_entry(entry: DirEntry) -> StatsEntry | object:
+    """Build a fast global stats row from cached dir metadata."""
+
+    snapshot_count = entry.meta.snapshot_count_cached
+    on_disk_bytes = entry.meta.on_disk_bytes_cached
+    if snapshot_count <= 0 or on_disk_bytes <= 0:
+        return _STATS_CACHE_MISS
+    return StatsEntry(
+        abspath=Path(entry.meta.abspath),
+        key=entry.key,
+        snapshot_count=snapshot_count,
+        logical_bytes=0,
+        marginal_bytes=0,
+        on_disk_bytes=on_disk_bytes,
+        blob_count=0,
+        blob_bytes=0,
+        unique_logical_bytes=0,
+        legacy_count=0,
+        legacy_bytes=0,
+        oldest=None,
+        newest=entry.meta.last_used or None,
+        largest=None,
+        snapshots=[],
     )
 
 
@@ -965,12 +2554,16 @@ def stats(
     out: list[StatsEntry] = []
 
     if path is not None:
-        abspath = resolve_path(path)
-        out.append(_stats_for_dir(store, abspath, compute_key(abspath)))
+        abspath = _source_path(path, config=config)
+        out.append(_stats_for_dir(store, abspath, store.key_for(abspath)))
     else:
-        for entry in store.list_all():
+        for entry in store.load_all_meta_bulk():
             abspath = Path(entry.meta.abspath)
-            out.append(_stats_for_dir(store, abspath, entry.key))
+            cached = _stats_from_bulk_entry(entry)
+            if cached is _STATS_CACHE_MISS:
+                out.append(_stats_for_dir(store, abspath, entry.key))
+            else:
+                out.append(cached)
 
     out.sort(key=lambda s: s.on_disk_bytes, reverse=True)
     return out
@@ -1022,35 +2615,68 @@ def plan_prune(
     keep_within_days: Optional[int] = None,
     keep_daily: Optional[int] = None,
     keep_weekly: Optional[int] = None,
+    keep_tag: Iterable[str] = (),
     protect: Iterable[str] = (),
     config: Optional[RuntimeConfig] = None,
 ) -> PrunePlan:
     """Compute which snapshots to keep / drop under the given rules.
 
     Rules are *unioned*: a snapshot is kept if **any** rule matches.
-    Snapshots whose name appears in *protect* are always kept. Pass at
-    least one rule (and/or *protect*) — calling with no rules raises
+    Snapshots whose name appears in *protect* are always kept, as are
+    snapshots carrying any tag listed in *keep_tag*. Pass at least one
+    rule (and/or *protect* / *keep_tag*) — calling with no rules raises
     ``ValueError`` so users can't accidentally wipe everything.
     """
 
+    config = config or default_config()
+    root = Path(config.root)
+    if keep_last is None:
+        keep_last = int(preferences.get_config_value(root, "retention.keep_last") or 0) or None
+    if keep_within_days is None:
+        keep_within_days = (
+            int(preferences.get_config_value(root, "retention.keep_within_days") or 0)
+            or None
+        )
+    if keep_daily is None:
+        keep_daily = int(preferences.get_config_value(root, "retention.keep_daily") or 0) or None
+    if keep_weekly is None:
+        keep_weekly = int(preferences.get_config_value(root, "retention.keep_weekly") or 0) or None
+
+    explicit_protect = list(protect)
+    keep_tag_set = {str(t).strip() for t in keep_tag if str(t).strip()}
     if (
         keep_last is None
         and keep_within_days is None
         and keep_daily is None
         and keep_weekly is None
-        and not list(protect)
+        and not explicit_protect
+        and not keep_tag_set
     ):
         raise ValueError(
             "plan_prune requires at least one retention rule "
-            "(keep_last / keep_within_days / keep_daily / keep_weekly / protect)"
+            "(keep_last / keep_within_days / keep_daily / keep_weekly / "
+            "keep_tag / protect)"
         )
 
-    config = config or default_config()
-    abspath = resolve_path(path)
-    snaps = Store(config).list_snapshots(abspath)
-    snaps_sorted = sorted(snaps, key=lambda s: s.created, reverse=True)
+    abspath = _source_path(path, config=config)
+    store = Store(config)
+    snaps = store.list_snapshots(abspath)
 
-    keep_names: set[str] = set(name for name in protect if name)
+    def _snapshot_sort_key(meta: SnapshotMeta) -> tuple[str, int]:
+        try:
+            mtime = store.meta_path(abspath, meta.name).stat().st_mtime_ns
+        except OSError:
+            mtime = 0
+        return (meta.created, mtime)
+
+    snaps_sorted = sorted(snaps, key=_snapshot_sort_key, reverse=True)
+
+    keep_names: set[str] = {s.name for s in snaps if s.protected}
+    keep_names.update(name for name in explicit_protect if name)
+    if keep_tag_set:
+        for snap in snaps:
+            if keep_tag_set & set(snap.tags):
+                keep_names.add(snap.name)
 
     if keep_last is not None and keep_last > 0:
         for snapz in snaps_sorted[:keep_last]:
@@ -1094,7 +2720,8 @@ def plan_prune(
         "keep_within_days": keep_within_days,
         "keep_daily": keep_daily,
         "keep_weekly": keep_weekly,
-        "protect": sorted(name for name in protect if name),
+        "keep_tag": sorted(keep_tag_set),
+        "protect": sorted(keep_names),
     }
     return PrunePlan(abspath=abspath, keep=keep, drop=drop, rules=rules)
 
@@ -1117,11 +2744,15 @@ def execute_prune(
         if drop_names is not None
         else [s.name for s in plan.drop]
     )
+    protected_names = {
+        s.name for s in store.list_snapshots(plan.abspath) if s.protected
+    }
+    names = [name for name in names if name not in protected_names]
 
     deleted: list[str] = []
     if not dry_run:
         for name in names:
-            if store.delete_snapshot(plan.abspath, name):
+            if _delete_snapshot_with_refs(store, plan.abspath, name):
                 deleted.append(name)
     else:
         deleted = list(names)
@@ -1132,12 +2763,35 @@ def execute_prune(
         gc_res = gc(plan.abspath, dry_run=dry_run, config=config)
         blobs_removed = gc_res.blobs_removed
         bytes_freed = gc_res.bytes_freed
+    if deleted and not dry_run:
+        _record_event(
+            store, plan.abspath, events.KIND_PRUNE,
+            deleted=list(deleted),
+            blobs_removed=blobs_removed,
+            bytes_freed=bytes_freed,
+        )
     return PruneOutcome(
         deleted=deleted,
         blobs_removed=blobs_removed,
         bytes_freed=bytes_freed,
         dry_run=dry_run,
     )
+
+
+def _auto_prune_after_save(abspath: Path, config: RuntimeConfig) -> None:
+    try:
+        enabled = preferences.get_config_value(
+            Path(config.root), "retention.auto_prune_after_save"
+        )
+    except KeyError:
+        return
+    if not enabled:
+        return
+    try:
+        plan = plan_prune(abspath, config=config)
+    except ValueError:
+        return
+    execute_prune(plan, config=config)
 
 
 # ---------------------------------------------------------------------------
@@ -1240,20 +2894,18 @@ def revert(
     for entry in sorted(matched.values(), key=lambda e: (e.type != "file", e.path)):
         full = abspath / entry.path
         full.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            if full.is_symlink() or full.exists():
-                full.unlink()
-        except OSError:
-            pass
         if entry.type == "file":
             if not entry.sha256:
                 skipped.append((entry.path, "missing sha"))
                 continue
-            try:
-                cas.read_blob_to(dir_root, entry.sha256, full)
-            except FileNotFoundError as exc:
-                skipped.append((entry.path, str(exc)))
-                continue
+            size = cas.read_blob_to(dir_root, entry.sha256, full)
+            if entry.size is not None and size != entry.size:
+                raise ValueError(f"blob size mismatch for {entry.path}")
+            if full.is_symlink():
+                try:
+                    full.unlink()
+                except OSError:
+                    pass
             try:
                 os.chmod(full, entry.mode)
             except OSError:
@@ -1265,11 +2917,21 @@ def revert(
             reverted += 1
         elif entry.type == "symlink" and entry.target is not None:
             try:
+                if full.is_symlink() or full.exists():
+                    full.unlink()
                 os.symlink(entry.target, full)
                 reverted += 1
             except OSError as exc:
                 skipped.append((entry.path, str(exc)))
 
+    _record_event(
+        Store(config), abspath, events.KIND_REVERT,
+        snapshot=name,
+        pre_revert=(pre_meta.name if pre_meta else None),
+        reverted=reverted,
+        deleted=deleted_count,
+        paths=sorted(set(requested))[:20],
+    )
     return RevertOutcome(
         snapshot=meta,
         pre_revert=pre_meta,
@@ -1359,7 +3021,7 @@ def find(
     """
 
     config = config or default_config()
-    abspath = resolve_path(path)
+    abspath = _source_path(path, config=config)
     store = Store(config)
     snaps = store.list_snapshots(abspath)
     snaps_sorted = sorted(snaps, key=lambda s: s.created, reverse=True)
@@ -1440,7 +3102,7 @@ def find_undo_target(
     """
 
     config = config or default_config()
-    abspath = resolve_path(path)
+    abspath = _source_path(path, config=config)
     store = Store(config)
     snaps = store.list_snapshots(abspath)
     candidates = [s for s in snaps if is_undo_snapshot(s.name)]
@@ -1481,7 +3143,7 @@ def undo(
     """
 
     config = config or default_config()
-    abspath = resolve_path(path)
+    abspath = _source_path(path, config=config)
     target = find_undo_target(abspath, config=config)
     if target is None:
         raise FileNotFoundError(
@@ -1496,11 +3158,18 @@ def undo(
     # same snapshot. ``restore`` already ran by this point, so even if
     # delete fails we leave the user in a consistent (just-restored)
     # state.
-    Store(config).delete_snapshot(abspath, target.name)
+    _delete_snapshot_with_refs(Store(config), abspath, target.name)
 
     remaining = sum(
         1 for s in Store(config).list_snapshots(abspath)
         if is_undo_snapshot(s.name)
+    )
+    _record_event(
+        Store(config), abspath, events.KIND_UNDO,
+        snapshot=target.name,
+        extracted=outcome.extracted_count,
+        cleaned=outcome.cleaned_count,
+        remaining=remaining,
     )
     return UndoOutcome(
         snapshot=target,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snapz-cli"
-version = "0.2.0"
+version = "1.0.1"
 description = "Lightweight directory snapshot CLI: snapz <path> -> tar.zst archive in ~/.snapz-all/"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "snapz contributors" }]
 keywords = ["snapshot", "backup", "tar", "zstd", "cli"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Operating System :: POSIX :: Linux",
@@ -24,7 +24,9 @@ classifiers = [
     "Topic :: System :: Archiving :: Backup",
     "Topic :: Utilities",
 ]
-dependencies = []
+dependencies = [
+    "pathspec>=0.12",
+]
 
 [project.optional-dependencies]
 zstd = ["zstandard>=0.22"]
@@ -38,6 +40,7 @@ dev = [
 
 [project.scripts]
 snapz = "snapz.cli:main"
+snapz-server = "snapz_server.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

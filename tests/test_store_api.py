@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from snapz import api
+from snapz import api, cas
 from snapz.config import RuntimeConfig
 from snapz.store import Store
 from snapz.util import compute_key
@@ -120,6 +120,60 @@ def test_list_all_picks_up_multiple_dirs(tmp_path, config):
     assert compute_key(a) in by_key
     assert compute_key(b) in by_key
     assert by_key[compute_key(a)].snapshots[0].name == "first"
+
+
+def test_dir_meta_cached_fields_stay_in_sync_after_save_delete(project_dir, config):
+    first = api.save(project_dir, "v1", config=config)
+    dir_root = Path(first.pack_result.archive_path).parent.parent
+    meta_path = dir_root / "_meta.json"
+
+    after_save = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert after_save["snapshot_count"] == 1
+    assert after_save["snapshot_count_cached"] == 1
+    assert after_save["on_disk_bytes_cached"] > 0
+
+    api.delete(project_dir, "v1", config=config)
+    after_delete = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert after_delete["snapshot_count"] == 0
+    assert after_delete["snapshot_count_cached"] == 0
+    assert after_delete["on_disk_bytes_cached"] <= after_save["on_disk_bytes_cached"]
+
+
+def test_dir_meta_cached_on_disk_bytes_matches_source_store(project_dir, config):
+    first = api.save(project_dir, "v1", config=config)
+    dir_root = Path(first.pack_result.archive_path).parent.parent
+    meta = json.loads((dir_root / "_meta.json").read_text(encoding="utf-8"))
+    actual = sum(p.lstat().st_size for p in dir_root.rglob("*") if p.is_file())
+    for sha in cas.referenced_blobs(dir_root):
+        actual += cas.find_blob(dir_root, sha).stat().st_size
+    assert meta["on_disk_bytes_cached"] == actual
+
+
+def test_load_all_meta_bulk_returns_cached_counts_without_snapshot_meta(
+    tmp_path, config, monkeypatch,
+):
+    a = tmp_path / "alpha"
+    b = tmp_path / "beta"
+    a.mkdir()
+    b.mkdir()
+    (a / "f.txt").write_text("a", encoding="utf-8")
+    (b / "g.txt").write_text("b", encoding="utf-8")
+    api.save(a, "first", config=config)
+    api.save(b, "first", config=config)
+
+    store = Store(config)
+
+    def fail_list_snapshots_in_dir(_folder):
+        raise AssertionError("bulk overview should not read snapshot meta")
+
+    monkeypatch.setattr(store, "list_snapshots_in_dir", fail_list_snapshots_in_dir)
+    entries = store.load_all_meta_bulk()
+
+    by_key = {entry.key: entry for entry in entries}
+    assert by_key[compute_key(a)].snapshots == []
+    assert by_key[compute_key(a)].meta.snapshot_count_cached == 1
+    assert by_key[compute_key(a)].meta.on_disk_bytes_cached > 0
+    assert by_key[compute_key(b)].meta.snapshot_count_cached == 1
 
 
 def test_registry_records_dir_after_save(project_dir, config):

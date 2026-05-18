@@ -79,6 +79,90 @@ def test_blobs_share_across_snapshots_in_same_dir(project_dir, config):
     assert _count_blobs(dir_root) == o1.snapshot.file_count
 
 
+def test_manifest_written_in_compact_json(tmp_path):
+    path = tmp_path / "v1.manifest.json"
+    manifest = cas.Manifest(
+        snapshot="v1",
+        created="2026-01-01T00:00:00",
+        entries=[
+            cas.ManifestEntry(
+                path="a.txt",
+                type="file",
+                sha256="a" * 64,
+                size=1,
+            )
+        ],
+    )
+
+    cas.write_manifest(path, manifest)
+
+    text = path.read_text(encoding="utf-8")
+    assert "\n  " not in text
+    assert cas.read_manifest(path).entries[0].path == "a.txt"
+
+
+def test_large_manifest_is_compressed_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(cas, "MANIFEST_COMPRESS_THRESHOLD", 128)
+    path = tmp_path / "big.manifest.json"
+    manifest = cas.Manifest(
+        snapshot="big",
+        created="2026-01-01T00:00:00",
+        entries=[
+            cas.ManifestEntry(
+                path=f"file-{i}.txt",
+                type="file",
+                sha256=f"{i:064x}"[-64:],
+                size=i,
+            )
+            for i in range(20)
+        ],
+    )
+
+    cas.write_manifest(path, manifest)
+    compressed = Path(str(path) + ".zst")
+
+    if cas._zstandard is None:  # noqa: SLF001
+        assert path.exists()
+        return
+    assert compressed.exists()
+    assert not path.exists()
+    read_back = cas.read_manifest(compressed)
+    assert read_back.snapshot == "big"
+    assert len(read_back.entries) == 20
+
+
+def test_find_manifest_path_prefers_legacy_plain(tmp_path):
+    dir_root = tmp_path
+    plain = cas.manifest_path(dir_root, "v1")
+    plain.parent.mkdir(parents=True)
+    plain.write_text(
+        '{"format_version":3,"snapshot":"v1","created":"x","entries":[]}\n',
+        encoding="utf-8",
+    )
+
+    found = cas.find_manifest_path(dir_root, "v1")
+
+    assert found == plain
+    assert cas.read_manifest(found).snapshot == "v1"
+
+
+def test_find_manifest_path_falls_back_to_compressed(tmp_path, monkeypatch):
+    if cas._zstandard is None:  # noqa: SLF001
+        pytest.skip("zstandard not installed")
+    monkeypatch.setattr(cas, "MANIFEST_COMPRESS_THRESHOLD", 1)
+    dir_root = tmp_path
+    plain = cas.manifest_path(dir_root, "v1")
+    cas.write_manifest(
+        plain,
+        cas.Manifest(snapshot="v1", created="x", entries=[]),
+    )
+
+    found = cas.find_manifest_path(dir_root, "v1")
+
+    assert found.name.endswith(cas.COMPRESSED_MANIFEST_SUFFIX)
+    assert cas.read_manifest(found).snapshot == "v1"
+
+
 # ----------------- restore --------------------------------------------------
 
 
@@ -115,6 +199,32 @@ def test_cas_restore_handles_symlinks(project_dir, config):
     api.restore(project_dir, "v1", config=config, auto_save=False)
     assert link.is_symlink()
     assert os.readlink(link) == "real.txt"
+
+
+def test_restore_detects_corrupt_blob_during_stream(project_dir, config, monkeypatch):
+    api.save(project_dir, "v1", config=config)
+    target = project_dir / "src" / "main.py"
+    target.write_text("keep me\n", encoding="utf-8")
+    calls = 0
+    original = cas.verify_blob
+
+    def counting_verify_blob(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cas, "verify_blob", counting_verify_blob)
+    dir_root = _dir_root(config, project_dir)
+    manifest = cas.read_manifest(cas.manifest_path(dir_root, "v1"))
+    entry = next(e for e in manifest.entries if e.path == "src/main.py")
+    blob = cas.find_blob(dir_root, entry.sha256)
+    blob.write_bytes(b"not a compressed blob")
+
+    with pytest.raises(ValueError):
+        api.restore(project_dir, "v1", config=config, auto_save=False)
+
+    assert calls == 0
+    assert target.read_text(encoding="utf-8") == "keep me\n"
 
 
 # ----------------- GC -------------------------------------------------------
@@ -179,6 +289,65 @@ def test_gc_all_dirs_visits_every_recorded_directory(tmp_path, config):
 def test_gc_requires_path_or_all_dirs(config):
     with pytest.raises(ValueError):
         api.gc(config=config)
+
+
+def test_refs_index_increments_on_save(project_dir, config):
+    outcome = api.save(project_dir, "v1", config=config)
+    refs = cas.load_refs_index(config.root)
+    dir_root = _dir_root(config, project_dir)
+    manifest = cas.read_manifest(cas.find_manifest_path(dir_root, "v1"))
+    shas = [entry.sha256 for entry in manifest.entries if entry.sha256]
+
+    assert refs
+    assert all(refs[sha] >= 1 for sha in shas)
+    assert sum(refs.values()) == outcome.snapshot.file_count
+
+
+def test_refs_index_decrements_on_delete(project_dir, config):
+    api.save(project_dir, "v1", config=config)
+    api.save(project_dir, "v2", config=config)
+    before = dict(cas.load_refs_index(config.root))
+
+    api.delete(project_dir, "v1", config=config)
+
+    after = cas.load_refs_index(config.root)
+    assert sum(after.values()) == sum(before.values()) - api.show(
+        project_dir, "v2", config=config
+    ).file_count
+
+
+def test_gc_global_uses_refs_index_when_present(project_dir, config):
+    api.save(project_dir, "v1", config=config)
+    dir_root = _dir_root(config, project_dir)
+    manifest = cas.read_manifest(cas.find_manifest_path(dir_root, "v1"))
+    sha = next(entry.sha256 for entry in manifest.entries if entry.sha256)
+    cas.save_refs_index(config.root, {sha: 1})
+
+    result = api.gc(project_dir, config=config)
+
+    assert result.blobs_removed >= 1
+    remaining = {blob.name for blob in cas.iter_global_blob_files(config.root)}
+    assert remaining == {sha}
+
+
+def test_rebuild_refs_index(project_dir, config):
+    api.save(project_dir, "v1", config=config)
+    cas.save_refs_index(config.root, {})
+
+    refs = cas.rebuild_refs_index(config.root)
+
+    assert refs == cas.load_refs_index(config.root)
+    assert sum(refs.values()) == api.show(project_dir, "v1", config=config).file_count
+
+
+def test_gc_rebuild_index_flag(project_dir, config):
+    api.save(project_dir, "v1", config=config)
+    cas.save_refs_index(config.root, {})
+
+    result = api.gc(project_dir, config=config, rebuild_index=True)
+
+    assert result.blobs_removed == 0
+    assert cas.load_refs_index(config.root)
 
 
 # ----------------- export ---------------------------------------------------

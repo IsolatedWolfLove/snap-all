@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from snapz import api, cli
+from snapz import api, cli, filecache
 
 
 @pytest.fixture
@@ -33,6 +33,57 @@ def test_save_subcommand_overwrite(env_root, project_dir):
     cli.main(["save", str(project_dir), "-n", "v1", "-y"])
     rc = cli.main(["save", str(project_dir), "-n", "v1", "-y", "--overwrite"])
     assert rc == 0
+
+
+def test_save_subcommand_no_cache(env_root, project_dir, monkeypatch):
+    def fail_cache_load(*_args, **_kwargs):
+        raise AssertionError("cache load should be bypassed by --no-cache")
+
+    monkeypatch.setattr(filecache, "load", fail_cache_load)
+
+    rc = cli.main(["save", str(project_dir), "-n", "v1", "-y", "--no-cache"])
+
+    assert rc == 0
+
+
+def test_save_subcommand_workers_flag(env_root, project_dir, monkeypatch):
+    seen = {}
+    real_save = api.save
+
+    def spy(*args, **kwargs):
+        seen["workers"] = kwargs["config"].save_workers
+        return real_save(*args, **kwargs)
+
+    monkeypatch.setattr(api, "save", spy)
+
+    rc = cli.main(["save", str(project_dir), "-n", "v1", "-y", "--workers", "1"])
+
+    assert rc == 0
+    assert seen["workers"] == 1
+
+
+def test_save_subcommand_workers_rejects_zero(env_root, project_dir, capsys):
+    rc = cli.main(["save", str(project_dir), "-n", "v1", "-y", "--workers", "0"])
+
+    assert rc == cli.EXIT_ERROR
+    assert "workers" in capsys.readouterr().err
+
+
+def test_gc_rebuild_index_flag(env_root, project_dir, monkeypatch):
+    api.save(project_dir, "v1")
+    seen = {}
+    real_gc = api.gc
+
+    def spy(*args, **kwargs):
+        seen["rebuild_index"] = kwargs.get("rebuild_index")
+        return real_gc(*args, **kwargs)
+
+    monkeypatch.setattr(api, "gc", spy)
+
+    rc = cli.main(["gc", "--path", str(project_dir), "--rebuild-index"])
+
+    assert rc == 0
+    assert seen["rebuild_index"] is True
 
 
 def test_list_subcommand_prints_table(env_root, project_dir, capsys):

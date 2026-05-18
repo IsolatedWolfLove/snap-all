@@ -4,18 +4,19 @@
 归档放进 `~/.snapz-all/`，自带命名管理、`ncdu` 风格的交互界面，
 所有破坏性操作都先 dry-run 再二次确认。
 
-> **状态：alpha（v0.2）。** 已实现并测试：保存、查看、还原（含自动
+> **状态：正式版（v1.0.1）。** 已实现并测试：保存、查看、还原（含自动
 > 预还原快照与 `--clean`）、`ncdu` 风格 curses 界面、改名／删除、
 > **stats（容量分析）**、**prune（保留策略）**、**revert（按需回
 > 滚）**、**undo（一直回到最初）**、**find（跨快照定位文件）**、
+> **init/archive/relocate（源目录生命周期与自动迁移）**、**bundle/import（迁移快照）**、
+> 多租户 **snapz-server** 远程同步、
 > TUI 内 `/` 过滤、所有读类命令的机器可读 **`--json`** 输出，以及
 > 一键出包流水线（`scripts/build.sh` → wheel + sdist + `.pyz`）。
 > **快照是内容寻址（CAS）**，所以未变更目录再次快照几乎不占空间，
-> `snapz gc` 可在删除后回收孤儿 blob。共 220 个单元测试，在普通
-> 笔记本上 ~2 秒跑完。剩下的路线图项目是完整 `.snapzignore` 语义
-> （取反、嵌套文件）。
+> `snapz gc` 可在删除后回收孤儿 blob。共 248 个单元测试，在普通
+> 笔记本上 ~2 秒跑完。
 
-[**English README**](./README.md)
+[**English README**](./README.md) · [**详细中文使用手册**](./docs/USAGE.zh.md)
 
 ## 为什么用它
 
@@ -30,7 +31,7 @@
 
 | 模式 | 文件 | 大小 | 适用 |
 |---|---|---|---|
-| Zipapp | `dist/snapz.pyz` | ~5 MB | 单文件可执行；目标机器需要 `python3 ≥ 3.10`（Linux 通常自带） |
+| Zipapp | `dist/snapz.pyz`、`dist/snapz-server.pyz` | 单个 ~5 MB | 单文件可执行；目标机器需要 `python3 ≥ 3.10` |
 | Wheel | `dist/snapz_cli-*.whl` | ~30 KB | `pip install`、当作库用 |
 
 ### 用 release 产物安装
@@ -38,6 +39,7 @@
 ```bash
 # 1. Zipapp —— 自包含可执行（zstandard 已内嵌）
 install -m 0755 dist/snapz.pyz ~/.local/bin/snapz
+install -m 0755 dist/snapz-server.pyz ~/.local/bin/snapz-server
 
 # 2. Wheel
 pipx install "dist/snapz_cli-*.whl[zstd]"
@@ -52,7 +54,8 @@ git clone <本仓库>
 cd snapz
 python3 -m venv .venv
 .venv/bin/pip install -e .[dev]
-ln -sf "$PWD/.venv/bin/snapz" ~/.local/bin/snapz   # 全 shell 可用
+ln -sf "$PWD/.venv/bin/snapz" ~/.local/bin/snapz             # 全 shell 可用
+ln -sf "$PWD/.venv/bin/snapz-server" ~/.local/bin/snapz-server
 ```
 
 > ⚠️ **冲突提醒**：Ubuntu/Debian 在 `/usr/bin/snapz` 自带 `snapd`。
@@ -64,7 +67,7 @@ ln -sf "$PWD/.venv/bin/snapz" ~/.local/bin/snapz   # 全 shell 可用
 `scripts/build.sh` 一把梭：
 
 ```bash
-./scripts/build.sh all              # wheel + sdist + .pyz （默认）
+./scripts/build.sh all              # wheel + sdist + 客户端/服务端 .pyz（默认）
 ./scripts/build.sh wheel            # 仅 PEP 517 wheel + sdist
 ./scripts/build.sh pyz              # 仅 shiv zipapp
 ./scripts/build.sh smoke            # 对产物跑一次 --version
@@ -125,6 +128,44 @@ $ snapz mv             # 先挑老名字，再提示输入新名字
 
 # 导出到任意目录（不会触发 auto-pre-restore，绝不动源目录）
 $ snapz export v0.1 /tmp/scratch --path /tmp/proj
+
+# 可迁移 bundle（在机器/存储之间搬运快照历史）
+$ snapz bundle /tmp/proj /tmp/proj.snapz        # 打包 /tmp/proj 的全部快照
+$ snapz import /tmp/proj.snapz                  # 导入为归档历史
+$ snapz import /tmp/proj.snapz --path /tmp/proj # 绑定到一个已存在的当前目录
+
+# 通过独立多租户服务端同步
+$ snapz-server --data /srv/snapz setup
+$ snapz-server --data /srv/snapz user add acme alice
+$ snapz-server --data /srv/snapz run \
+    --host 0.0.0.0 \
+    --port 8765 \
+    --tls-cert /etc/snapz/tls/fullchain.pem \
+    --tls-key /etc/snapz/tls/privkey.pem \
+    --admin-token "$(openssl rand -hex 32)"
+# 管理界面：https://server:8765/admin
+# 跨域管理应用需要显式加 --cors-origin https://admin.example
+# 可选 mTLS 加固：服务端加 --tls-client-ca /etc/snapz/tls/client-ca.pem
+# Vben Admin 接入文件：web/vue-vben-admin-snapz/
+$ snapz login https://server:8765 --tenant acme --username alice
+# 如果启用了 mTLS：
+$ snapz login https://server:8765 --tenant acme --username alice \
+    --tls-ca /etc/snapz/tls/server-ca.pem \
+    --tls-client-cert ~/.config/snapz/client.pem \
+    --tls-client-key ~/.config/snapz/client-key.pem
+$ snapz push all                                # 上传全部当前/归档 source
+$ snapz pull all                                # 拉取全部远端 source 到本地归档
+$ snapz adopt remote-src_xxx /tmp/proj          # 把拉下来的归档绑定到目录
+
+# 源目录生命周期
+$ snapz init /tmp/proj                          # 写入 .snapz-id，支持跨盘移动识别
+$ mv /tmp/proj /tmp/proj-renamed
+$ snapz list /tmp/proj-renamed                  # 精确命中时，使用时自动绑定
+$ snapz relocate /tmp/proj /tmp/proj-renamed    # 手动绑定到改名后的目录
+$ snapz relocate --auto /tmp -y                 # 自动迁移精确 inode/.snapz-id 命中
+$ snapz relocate --auto ~ --dry-run             # 只预览，不改动
+$ snapz archive list                            # 查看被删除/重建后归档的源目录
+$ snapz archive restore <key> baseline /tmp/out # 把归档快照恢复到指定位置
 
 # 容量分析（默认 TUI；--text 输出纯文本）
 $ snapz stats                                    # 当前目录
@@ -456,7 +497,9 @@ snapz gc --dry-run        # 只报告，不删
 ## 压缩
 
 如果有装 `zstandard`，`snapz` 会用 `.tar.zst`；否则退回 `.tar.gz`
-（标准库）。要强制用 gzip：`snapz --no-zstd ...`。
+（标准库）。要强制用 gzip：`snapz --no-zstd ...`。可迁移 `.snapz`
+bundle 和远程 push 也走同样的 zstd 优先策略，服务端会在接收前校验
+bundle SHA-256。
 
 ## 当库用
 
