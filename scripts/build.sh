@@ -6,11 +6,13 @@
 #   snapz_cli-<version>-py3-none-any.whl    universal wheel
 #   snapz.pyz                               shiv zipapp for the client command
 #   snapz-server.pyz                        shiv zipapp for the standalone server
+#   snapz-cli_<version>_all.deb             Debian package with both commands
 #
 # Usage:
-#   ./scripts/build.sh              # all targets (wheel + sdist + pyz)
+#   ./scripts/build.sh              # all targets (wheel + sdist + pyz + deb)
 #   ./scripts/build.sh wheel        # sdist + wheel only
 #   ./scripts/build.sh pyz          # shiv .pyz only (rebuilds wheel if missing)
+#   ./scripts/build.sh deb          # Debian .deb package (rebuilds .pyz first)
 #   ./scripts/build.sh smoke        # run --version against the freshly built artifacts
 #   ./scripts/build.sh --clean      # delete dist/, build/, .build-venv/
 #
@@ -77,6 +79,9 @@ ensure_venv() {
     if [ ! -x "$VENV/bin/python" ]; then
         log "creating build venv at $VENV"
         "$PY_BIN" -m venv "$VENV"
+    fi
+    if ! "$VENV/bin/python" -c 'import build, shiv, zstandard' >/dev/null 2>&1; then
+        log "installing build dependencies"
         "$VENV/bin/pip" install --upgrade --quiet pip wheel build shiv zstandard
     fi
     mkdir -p "$DIST"
@@ -86,10 +91,18 @@ resolve_wheel() {
     ls -1t "$DIST"/snapz_cli-*.whl 2>/dev/null | head -n 1 || true
 }
 
+project_name() {
+    sed -n 's/^name = "\([^"]*\)".*/\1/p' "$ROOT/pyproject.toml" | head -n 1
+}
+
+project_version() {
+    sed -n 's/^version = "\([^"]*\)".*/\1/p' "$ROOT/pyproject.toml" | head -n 1
+}
+
 build_wheel() {
     ensure_venv
     log "building sdist + wheel -> $DIST"
-    "$VENV/bin/python" -m build --outdir "$DIST" >/dev/null
+    (cd "$WORK" && "$VENV/bin/python" -m build "$ROOT" --outdir "$DIST") >/dev/null
 }
 
 build_pyz() {
@@ -117,6 +130,53 @@ build_pyz() {
     chmod +x "$DIST/snapz-server.pyz"
 }
 
+build_deb() {
+    if ! command -v dpkg-deb >/dev/null 2>&1; then
+        echo "dpkg-deb not found; install dpkg-dev or dpkg first" >&2
+        exit 2
+    fi
+    build_pyz
+    local package version deb_root deb_name installed_size
+    package="$(project_name)"
+    version="$(project_version)"
+    if [ -z "$package" ] || [ -z "$version" ]; then
+        echo "cannot read project name/version from pyproject.toml" >&2
+        exit 2
+    fi
+    deb_root="$WORK/deb/${package}_${version}_all"
+    deb_name="$DIST/${package}_${version}_all.deb"
+    rm -rf "$deb_root"
+    mkdir -p \
+        "$deb_root/DEBIAN" \
+        "$deb_root/usr/bin" \
+        "$deb_root/usr/share/doc/$package"
+
+    install -m 0755 "$DIST/snapz.pyz" "$deb_root/usr/bin/snapz"
+    install -m 0755 "$DIST/snapz-server.pyz" "$deb_root/usr/bin/snapz-server"
+    install -m 0644 "$ROOT/README.md" "$deb_root/usr/share/doc/$package/README.md"
+    install -m 0644 "$ROOT/LICENSE" "$deb_root/usr/share/doc/$package/copyright"
+
+    installed_size="$(du -sk "$deb_root/usr" | awk '{print $1}')"
+    cat > "$deb_root/DEBIAN/control" <<EOF
+Package: $package
+Version: $version
+Section: utils
+Priority: optional
+Architecture: all
+Maintainer: snapz contributors
+Depends: python3 (>= 3.10)
+Installed-Size: $installed_size
+Homepage: https://github.com/IsolatedWolfLove/snap-all
+Description: Lightweight directory snapshot CLI
+ snapz creates restorable directory snapshots and stores them under
+ ~/.snapz-all. This package installs the snapz and snapz-server commands.
+EOF
+    chmod 0644 "$deb_root/DEBIAN/control"
+
+    log "building Debian package -> $deb_name"
+    dpkg-deb --build --root-owner-group "$deb_root" "$deb_name" >/dev/null
+}
+
 smoke() {
     log "smoke-testing artifacts"
     local fail=0
@@ -140,10 +200,22 @@ smoke() {
     wheel="$(resolve_wheel)"
     if [ -n "$wheel" ]; then
         log "  pip install --dry-run $(basename "$wheel")"
-        "$VENV/bin/pip" install --dry-run --quiet "$wheel" || fail=1
+        "$VENV/bin/pip" install --dry-run --no-deps --quiet "$wheel" || fail=1
     else
         warn "  wheel missing"
         fail=1
+    fi
+    local package version deb
+    package="$(project_name)"
+    version="$(project_version)"
+    deb="$DIST/${package}_${version}_all.deb"
+    if [ -f "$deb" ]; then
+        log "  dpkg-deb --info $(basename "$deb")"
+        dpkg-deb --info "$deb" >/dev/null || fail=1
+        local deb_contents="$WORK/deb-contents.txt"
+        dpkg-deb --contents "$deb" > "$deb_contents" || fail=1
+        grep -q 'usr/bin/snapz$' "$deb_contents" || fail=1
+        grep -q 'usr/bin/snapz-server$' "$deb_contents" || fail=1
     fi
     return "$fail"
 }
@@ -166,16 +238,17 @@ case "$target" in
     --clean|clean) cleanup ;;
     wheel)         build_wheel ;;
     pyz)           build_pyz ;;
+    deb)           build_deb ;;
     smoke)         smoke ;;
     all)
         cleanup
         build_wheel
-        build_pyz
+        build_deb
         smoke
         ;;
     *)
         echo "unknown target: $target" >&2
-        echo "usage: $0 [--lang en|zh] [all|wheel|pyz|smoke|--clean]" >&2
+        echo "usage: $0 [--lang en|zh] [all|wheel|pyz|deb|smoke|--clean]" >&2
         exit 2
         ;;
 esac

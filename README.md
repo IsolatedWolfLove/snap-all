@@ -14,8 +14,9 @@ destructive action.
 > automatic move detection, portable **bundle/import**, multi-tenant
 > **snapz-server** remote sync, TUI **`/` filter**, machine
 > readable **`--json`** output on every read command, and a one-command
-> release pipeline (`scripts/build.sh` → wheel + sdist + `.pyz`) are
-> all implemented and tested. **Snapshots are content-addressed**, so
+> release pipeline (`scripts/build.sh` → wheel + sdist + `.pyz` +
+> `.deb`) are all implemented and tested. **Snapshots are
+> content-addressed**, so
 > resnapping an unchanged tree costs ~0 bytes and `snapz gc` reclaims
 > orphaned blobs after deletes. New captures use a root-level v3 blob
 > pool shared across recorded source directories, while v2 per-dir CAS
@@ -37,17 +38,23 @@ Pick whichever fits your environment:
 
 | Mode | File | Size | Best for |
 |---|---|---|---|
+| Debian package | `dist/snapz-cli_*_all.deb` | ~10 MB | Ubuntu/Debian installs with `/usr/bin/snapz` and `/usr/bin/snapz-server` |
 | Zipapp | `dist/snapz.pyz`, `dist/snapz-server.pyz` | ~5 MB each | drop-in single executables; need `python3 ≥ 3.10` on target |
 | Wheel | `dist/snapz_cli-*.whl` | ~30 KB | `pip install`, library use |
 
 ### From a release artifact
 
 ```bash
-# 1. Zipapp — single self-contained executable (zstandard bundled inside)
+# 1. Debian / Ubuntu
+sudo apt install ./dist/snapz-cli_*_all.deb
+# or
+sudo dpkg -i dist/snapz-cli_*_all.deb
+
+# 2. Zipapp — single self-contained executable (zstandard bundled inside)
 install -m 0755 dist/snapz.pyz ~/.local/bin/snapz
 install -m 0755 dist/snapz-server.pyz ~/.local/bin/snapz-server
 
-# 2. Wheel
+# 3. Wheel
 pipx install "dist/snapz_cli-*.whl[zstd]"
 # or
 pip install --user "dist/snapz_cli-*.whl[zstd]"
@@ -74,9 +81,10 @@ ln -sf "$PWD/.venv/bin/snapz-server" ~/.local/bin/snapz-server
 Everything is wrapped by `scripts/build.sh`:
 
 ```bash
-./scripts/build.sh all              # wheel + sdist + client/server .pyz (default)
+./scripts/build.sh all              # wheel + sdist + client/server .pyz + .deb
 ./scripts/build.sh wheel            # PEP 517 wheel + sdist only
 ./scripts/build.sh pyz              # shiv zipapp only
+./scripts/build.sh deb              # Debian package only (rebuilds .pyz first)
 ./scripts/build.sh smoke            # run --version against the built artifacts
 ./scripts/build.sh --clean          # nuke dist/, build/, .build-venv/
 ./scripts/build.sh --lang zh all    # bake Chinese as the default --help language
@@ -88,6 +96,18 @@ and `zstandard`, then drops everything in `dist/`. It unsets
 `PYTHONPATH` first so a sourced ROS environment doesn't leak in.
 Override the host Python with
 `PYTHON=/path/to/python3 ./scripts/build.sh all`.
+
+GitHub Releases are tag-driven. After committing the version bump, push
+the branch and then push a matching `vX.Y.Z` tag:
+
+```bash
+git tag v1.0.1
+git push origin main v1.0.1
+```
+
+The release workflow verifies that the tag matches `pyproject.toml`,
+runs tests, builds `dist/`, and uploads the `.deb`, `.pyz`, wheel, and
+sdist files to the GitHub Release.
 
 A previous iteration also produced a 13 MB PyInstaller `--onefile`
 binary; it was removed because the `.pyz` is much lighter and Python is

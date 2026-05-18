@@ -11,7 +11,7 @@
 > **init/archive/relocate（源目录生命周期与自动迁移）**、**bundle/import（迁移快照）**、
 > 多租户 **snapz-server** 远程同步、
 > TUI 内 `/` 过滤、所有读类命令的机器可读 **`--json`** 输出，以及
-> 一键出包流水线（`scripts/build.sh` → wheel + sdist + `.pyz`）。
+> 一键出包流水线（`scripts/build.sh` → wheel + sdist + `.pyz` + `.deb`）。
 > **快照是内容寻址（CAS）**，所以未变更目录再次快照几乎不占空间，
 > `snapz gc` 可在删除后回收孤儿 blob。共 248 个单元测试，在普通
 > 笔记本上 ~2 秒跑完。
@@ -31,17 +31,23 @@
 
 | 模式 | 文件 | 大小 | 适用 |
 |---|---|---|---|
+| Debian 包 | `dist/snapz-cli_*_all.deb` | ~10 MB | Ubuntu/Debian 安装；提供 `/usr/bin/snapz` 和 `/usr/bin/snapz-server` |
 | Zipapp | `dist/snapz.pyz`、`dist/snapz-server.pyz` | 单个 ~5 MB | 单文件可执行；目标机器需要 `python3 ≥ 3.10` |
 | Wheel | `dist/snapz_cli-*.whl` | ~30 KB | `pip install`、当作库用 |
 
 ### 用 release 产物安装
 
 ```bash
-# 1. Zipapp —— 自包含可执行（zstandard 已内嵌）
+# 1. Debian / Ubuntu
+sudo apt install ./dist/snapz-cli_*_all.deb
+# 或
+sudo dpkg -i dist/snapz-cli_*_all.deb
+
+# 2. Zipapp —— 自包含可执行（zstandard 已内嵌）
 install -m 0755 dist/snapz.pyz ~/.local/bin/snapz
 install -m 0755 dist/snapz-server.pyz ~/.local/bin/snapz-server
 
-# 2. Wheel
+# 3. Wheel
 pipx install "dist/snapz_cli-*.whl[zstd]"
 # 或
 pip install --user "dist/snapz_cli-*.whl[zstd]"
@@ -67,9 +73,10 @@ ln -sf "$PWD/.venv/bin/snapz-server" ~/.local/bin/snapz-server
 `scripts/build.sh` 一把梭：
 
 ```bash
-./scripts/build.sh all              # wheel + sdist + 客户端/服务端 .pyz（默认）
+./scripts/build.sh all              # wheel + sdist + 客户端/服务端 .pyz + .deb
 ./scripts/build.sh wheel            # 仅 PEP 517 wheel + sdist
 ./scripts/build.sh pyz              # 仅 shiv zipapp
+./scripts/build.sh deb              # 仅 Debian 包；会先重建 .pyz
 ./scripts/build.sh smoke            # 对产物跑一次 --version
 ./scripts/build.sh --clean          # 清空 dist/、build/、.build-venv/
 ./scripts/build.sh --lang zh all    # 把中文烘进产物，使 --help 默认中文
@@ -80,6 +87,18 @@ ln -sf "$PWD/.venv/bin/snapz-server" ~/.local/bin/snapz-server
 最后把产物丢进 `dist/`。它会先清掉 `PYTHONPATH`，避免 ROS 等环境
 污染。需要换 Python 时用
 `PYTHON=/path/to/python3 ./scripts/build.sh all`。
+
+GitHub Release 由 tag 触发。提交版本号后，先推分支，再推匹配的
+`vX.Y.Z` tag：
+
+```bash
+git tag v1.0.1
+git push origin main v1.0.1
+```
+
+发布 workflow 会校验 tag 与 `pyproject.toml` 版本一致，跑测试，
+构建 `dist/`，并把 `.deb`、`.pyz`、wheel 和 sdist 上传到 GitHub
+Release。
 
 ## 速查上手
 

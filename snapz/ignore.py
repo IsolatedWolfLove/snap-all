@@ -156,31 +156,23 @@ class IgnoreMatcher:
         if not rel_path:
             return False
 
-        rules: tuple[_Rule, ...] = ()
-        for group in self.spec_groups:
-            group_rules = tuple(p for p in group.patterns if isinstance(p, _Rule))
-            rules = rules + group_rules
-            local = _local_for_group(group.base, rel_path)
-            if local is None:
-                continue
-            candidate = local.rstrip("/") + "/"
-            ignored = False
-            for pattern in group.patterns:
-                if not isinstance(pattern, _Rule):
-                    continue
-                try:
-                    matched = pattern.include if _matches_rule(pattern, local, True) else None
-                except Exception:
-                    matched = None
-                if matched is not None:
-                    ignored = bool(matched)
-            if ignored and not _has_negation_below(group.patterns, local):
-                return True
-
         if self.spec_groups:
-            return False
+            if not self.match(rel_path, is_dir=True):
+                return False
+            for group in self.spec_groups:
+                local = _local_for_group(group.base, rel_path)
+                if local is not None:
+                    if _has_negation_below(group.patterns, local):
+                        return False
+                    continue
+                if group.base and (
+                    rel_path == group.base or group.base.startswith(rel_path + "/")
+                ):
+                    if _has_negation_below(group.patterns, "."):
+                        return False
+            return True
         if self.match(rel_path, is_dir=True):
-            return not _has_negation_below(rules, rel_path)
+            return not _has_negation_below(self.rules, rel_path)
         return False
 
     def extended(self, more: Sequence[str]) -> "IgnoreMatcher":
