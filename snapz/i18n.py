@@ -256,6 +256,23 @@ _EN: dict[str, str] = {
     "log.kind": "comma-separated event kinds to keep (save,restore,revert,...)",
     "log.empty": "no events recorded",
 
+    # ---- self-management ----
+    "update.help": "update snapz from the latest GitHub source",
+    "update.source": "updating from",
+    "update.done": "snapz updated",
+    "update.failed": "update failed (pip exit code {code})",
+    "uninstall.help": "uninstall snapz and optionally delete local data",
+    "uninstall.yes": "skip uninstall confirmation",
+    "uninstall.purge_data": "with -y, delete snapshots and config without prompting",
+    "uninstall.heading": "Uninstall snapz",
+    "uninstall.delete_data": "delete all local snapshots and config data?",
+    "uninstall.confirm_package": "uninstall the snapz command now?",
+    "uninstall.data_missing": "data directory does not exist",
+    "uninstall.data_deleted": "deleted data at {path}",
+    "uninstall.done": "snapz uninstalled",
+    "uninstall.failed": "uninstall failed (pip exit code {code})",
+    "uninstall.refuse_delete_root": "refusing to delete unsafe data path: {path}",
+
     # ---- global --json ----
     "flag.json": (
         "emit machine-readable JSON to stdout instead of formatted text "
@@ -341,6 +358,9 @@ _EN: dict[str, str] = {
     "kv.clean": "clean",
     "kv.blobs": "blobs",
     "kv.key": "key",
+    "kv.package": "package",
+    "kv.data_root": "data root",
+    "kv.data_size": "data size",
     "kv.state": "state",
     "kv.overwritten": "overwritten",
 
@@ -670,6 +690,23 @@ _ZH: dict[str, str] = {
     "log.kind": "用逗号分隔的事件类型白名单（save,restore,revert,...）",
     "log.empty": "没有任何事件记录",
 
+    # ---- self-management ----
+    "update.help": "从 GitHub 最新源码更新 snapz",
+    "update.source": "更新来源",
+    "update.done": "snapz 已更新",
+    "update.failed": "更新失败（pip 退出码 {code}）",
+    "uninstall.help": "卸载 snapz，并可选择删除本地数据",
+    "uninstall.yes": "跳过卸载确认",
+    "uninstall.purge_data": "配合 -y 使用，不提示直接删除快照和配置",
+    "uninstall.heading": "卸载 snapz",
+    "uninstall.delete_data": "删除所有本地快照和配置数据?",
+    "uninstall.confirm_package": "现在卸载 snapz 命令?",
+    "uninstall.data_missing": "数据目录不存在",
+    "uninstall.data_deleted": "已删除数据目录 {path}",
+    "uninstall.done": "snapz 已卸载",
+    "uninstall.failed": "卸载失败（pip 退出码 {code}）",
+    "uninstall.refuse_delete_root": "拒绝删除不安全的数据路径:{path}",
+
     # ---- global --json ----
     "flag.json": "输出机器可读的 JSON 到 stdout（便于 jq 等工具处理）",
 
@@ -745,6 +782,9 @@ _ZH: dict[str, str] = {
     "kv.clean": "清理",
     "kv.blobs": "blob 数",
     "kv.key": "key",
+    "kv.package": "包名",
+    "kv.data_root": "数据目录",
+    "kv.data_size": "数据大小",
     "kv.state": "状态",
     "kv.overwritten": "已覆盖",
 

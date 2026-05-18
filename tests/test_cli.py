@@ -87,6 +87,103 @@ def test_gc_rebuild_index_flag(env_root, project_dir, monkeypatch):
     assert seen["rebuild_index"] is True
 
 
+def test_update_installs_latest_from_github(env_root, monkeypatch, capsys):
+    calls = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run_pip(args):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr(cli, "_run_pip", fake_run_pip)
+
+    rc = cli.main(["update"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert calls == [["install", "--upgrade", cli.SNAPZ_GITHUB_INSTALL_TARGET]]
+    assert "github.com/IsolatedWolfLove/snap-all.git" in out
+
+
+def test_uninstall_keeps_data_when_user_says_no(
+    env_root, monkeypatch, capsys
+):
+    calls = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run_pip(args):
+        calls.append(args)
+        return Result()
+
+    answers = iter(["n", "y"])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+    monkeypatch.setattr(cli, "_run_pip", fake_run_pip)
+    (env_root / "registry.json").write_text("{}", encoding="utf-8")
+
+    rc = cli.main(["uninstall"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert env_root.exists()
+    assert calls == [["uninstall", "-y", cli.SNAPZ_PACKAGE_NAME]]
+    assert "data size" in out
+    assert "GB" in out
+
+
+def test_uninstall_deletes_data_when_user_says_yes(
+    env_root, monkeypatch, capsys
+):
+    calls = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run_pip(args):
+        calls.append(args)
+        return Result()
+
+    answers = iter(["y", "y"])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+    monkeypatch.setattr(cli, "_run_pip", fake_run_pip)
+    (env_root / "registry.json").write_text("{}", encoding="utf-8")
+
+    rc = cli.main(["uninstall"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert not env_root.exists()
+    assert calls == [["uninstall", "-y", cli.SNAPZ_PACKAGE_NAME]]
+    assert "deleted data" in out
+
+
+def test_uninstall_yes_purge_data_is_non_interactive(env_root, monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run_pip(args):
+        calls.append(args)
+        return Result()
+
+    def fail_input(*_args, **_kwargs):
+        raise AssertionError("uninstall -y --purge-data should not prompt")
+
+    monkeypatch.setattr("builtins.input", fail_input)
+    monkeypatch.setattr(cli, "_run_pip", fake_run_pip)
+    (env_root / "registry.json").write_text("{}", encoding="utf-8")
+
+    rc = cli.main(["uninstall", "-y", "--purge-data"])
+
+    assert rc == 0
+    assert not env_root.exists()
+    assert calls == [["uninstall", "-y", cli.SNAPZ_PACKAGE_NAME]]
+
+
 def test_list_subcommand_prints_table(env_root, project_dir, capsys):
     cli.main(["save", str(project_dir), "-n", "v1", "-y"])
     capsys.readouterr()

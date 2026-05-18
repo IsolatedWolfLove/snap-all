@@ -60,6 +60,13 @@ pipx install "dist/snapz_cli-*.whl[zstd]"
 pip install --user "dist/snapz_cli-*.whl[zstd]"
 ```
 
+### Update / uninstall
+
+```bash
+snapz update        # reinstall the latest snapz from GitHub
+snapz uninstall     # show ~/.snapz-all size, ask whether to delete data, then uninstall
+```
+
 ### From source (development)
 
 ```bash

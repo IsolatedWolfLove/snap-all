@@ -26,6 +26,9 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tarfile
 import time
@@ -53,6 +56,12 @@ from snapz.util import (
 EXIT_OK = 0
 EXIT_USER_ABORT = 130
 EXIT_ERROR = 1
+
+SNAPZ_PACKAGE_NAME = "snapz-cli"
+SNAPZ_GITHUB_REPO = "https://github.com/IsolatedWolfLove/snap-all.git"
+SNAPZ_GITHUB_INSTALL_TARGET = (
+    f"{SNAPZ_PACKAGE_NAME}[zstd] @ git+{SNAPZ_GITHUB_REPO}"
+)
 
 
 SUGGEST_EXCLUDE_DIRS = {
@@ -132,6 +141,48 @@ def _looks_binary(data: bytes) -> bool:
     """Cheap binary heuristic for terminal-safe previews/output."""
 
     return b"\x00" in data[:8192]
+
+
+def _path_total_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file() or path.is_symlink():
+        try:
+            return path.lstat().st_size
+        except OSError:
+            return 0
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path, followlinks=False):
+        for filename in filenames:
+            try:
+                total += (Path(dirpath) / filename).lstat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _format_data_size(num_bytes: int) -> str:
+    return f"{format_size(num_bytes)} ({num_bytes / (1024 ** 3):.2f} GB)"
+
+
+def _run_pip(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "pip", *args],
+        check=False,
+        text=True,
+    )
+
+
+def _delete_data_root(root: Path) -> bool:
+    root = Path(root).expanduser()
+    if not root.exists():
+        return False
+    resolved = root.resolve()
+    unsafe_roots = {Path("/").resolve(), Path.home().resolve()}
+    if resolved in unsafe_roots:
+        raise ValueError(t("uninstall.refuse_delete_root", path=resolved))
+    shutil.rmtree(resolved)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -2701,6 +2752,98 @@ def cmd_log(args: argparse.Namespace, config: RuntimeConfig) -> int:
     return EXIT_OK
 
 
+def cmd_update(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    target = getattr(args, "target", None) or SNAPZ_GITHUB_INSTALL_TARGET
+    pip_args = ["install", "--upgrade", target]
+    print(f"{st.muted(t('update.source'))} {st.path(target)}")
+    result = _run_pip(pip_args)
+    if _wants_json(args):
+        _emit_json({
+            "updated": result.returncode == 0,
+            "target": target,
+            "command": [sys.executable, "-m", "pip", *pip_args],
+            "returncode": result.returncode,
+        })
+        return EXIT_OK if result.returncode == 0 else EXIT_ERROR
+    if result.returncode != 0:
+        _print_error(t("update.failed", code=result.returncode))
+        return EXIT_ERROR
+    print(f"{st.ok_mark()} {t('update.done')}")
+    return EXIT_OK
+
+
+def cmd_uninstall(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    data_root = Path(config.root).expanduser()
+    data_bytes = _path_total_bytes(data_root)
+    delete_data = bool(getattr(args, "purge_data", False))
+
+    if _wants_json(args):
+        if not args.yes:
+            _emit_json({
+                "uninstalled": False,
+                "reason": "needs-confirmation",
+                "package": SNAPZ_PACKAGE_NAME,
+                "data_root": data_root,
+                "data_bytes": data_bytes,
+                "data_size": _format_data_size(data_bytes),
+            })
+            return EXIT_ERROR
+    else:
+        print(st.bold(t("uninstall.heading")))
+        print(_kv(t("kv.package"), st.name(SNAPZ_PACKAGE_NAME)))
+        print(_kv(t("kv.data_root"), st.path(str(data_root))))
+        print(_kv(t("kv.data_size"), st.numeric(_format_data_size(data_bytes))))
+        if data_root.exists():
+            if args.yes:
+                delete_data = bool(getattr(args, "purge_data", False))
+            else:
+                delete_data = _confirm(
+                    t("uninstall.delete_data"),
+                    default_yes=False,
+                )
+        else:
+            print(st.muted(t("uninstall.data_missing")))
+            delete_data = False
+        if not args.yes and not _confirm(
+            t("uninstall.confirm_package"),
+            default_yes=False,
+        ):
+            print(st.muted(t("status.aborted")))
+            return EXIT_USER_ABORT
+
+    pip_args = ["uninstall", "-y", SNAPZ_PACKAGE_NAME]
+    result = _run_pip(pip_args)
+    deleted_data = False
+    data_error = ""
+    if result.returncode == 0 and delete_data:
+        try:
+            deleted_data = _delete_data_root(data_root)
+        except (OSError, ValueError) as exc:
+            data_error = str(exc)
+    if _wants_json(args):
+        _emit_json({
+            "uninstalled": result.returncode == 0,
+            "package": SNAPZ_PACKAGE_NAME,
+            "data_root": data_root,
+            "data_bytes": data_bytes,
+            "deleted_data": deleted_data,
+            "data_error": data_error,
+            "command": [sys.executable, "-m", "pip", *pip_args],
+            "returncode": result.returncode,
+        })
+        return EXIT_OK if result.returncode == 0 and not data_error else EXIT_ERROR
+    if result.returncode != 0:
+        _print_error(t("uninstall.failed", code=result.returncode))
+        return EXIT_ERROR
+    if data_error:
+        _print_error(data_error)
+        return EXIT_ERROR
+    if deleted_data:
+        print(f"{st.ok_mark()} {t('uninstall.data_deleted', path=st.path(str(data_root)))}")
+    print(f"{st.ok_mark()} {t('uninstall.done')}")
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------------------
 # Argparse plumbing
 # ---------------------------------------------------------------------------
@@ -3293,6 +3436,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_log.set_defaults(func=cmd_log)
 
+    # self-management
+    p_update = sub.add_parser("update", help=t("update.help"))
+    p_update.add_argument(
+        "--target",
+        default=SNAPZ_GITHUB_INSTALL_TARGET,
+        help=argparse.SUPPRESS,
+    )
+    p_update.set_defaults(func=cmd_update)
+
+    p_uninstall = sub.add_parser("uninstall", help=t("uninstall.help"))
+    p_uninstall.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help=t("uninstall.yes"),
+    )
+    p_uninstall.add_argument(
+        "--purge-data",
+        action="store_true",
+        help=t("uninstall.purge_data"),
+    )
+    p_uninstall.set_defaults(func=cmd_uninstall)
+
     return parser
 
 
@@ -3347,6 +3512,7 @@ def _main_impl(argv: Optional[list[str]]) -> int:
         "login", "logout", "push", "pull", "adopt",
         "stats", "prune", "revert",
         "undo", "find", "cat", "browse", "log", "tag",
+        "update", "uninstall",
     }
     enter_bare_mode = (
         not argv
