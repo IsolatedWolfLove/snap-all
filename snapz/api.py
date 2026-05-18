@@ -3023,8 +3023,7 @@ def find(
     config = config or default_config()
     abspath = _source_path(path, config=config)
     store = Store(config)
-    snaps = store.list_snapshots(abspath)
-    snaps_sorted = sorted(snaps, key=lambda s: s.created, reverse=True)
+    snaps_sorted = store.list_snapshots(abspath)
 
     by_path: dict[str, list[FindHit]] = {}
     for snap in snaps_sorted:

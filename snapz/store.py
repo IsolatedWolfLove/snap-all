@@ -529,7 +529,7 @@ class Store:
     def list_snapshots_in_dir(self, folder: Path) -> list[SnapshotMeta]:
         if not folder.is_dir():
             return []
-        out: list[SnapshotMeta] = []
+        out: list[tuple[SnapshotMeta, int]] = []
         for child in folder.iterdir():
             if not child.name.endswith(META_SUFFIX):
                 continue
@@ -540,11 +540,16 @@ class Store:
             except (OSError, json.JSONDecodeError):
                 continue
             try:
-                out.append(SnapshotMeta.from_dict(data))
+                out.append((SnapshotMeta.from_dict(data), child.stat().st_mtime_ns))
             except KeyError:
                 continue
-        out.sort(key=lambda m: m.created, reverse=True)
-        return out
+            except OSError:
+                continue
+        out.sort(
+            key=lambda item: (item[0].created, item[1], item[0].name),
+            reverse=True,
+        )
+        return [meta for meta, _mtime_ns in out]
 
     def _read_dir_entry(self, child: Path) -> Optional[DirEntry]:
         meta_path = child / DIR_META_FILENAME

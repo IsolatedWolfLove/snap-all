@@ -160,6 +160,6 @@ def format_iso(value: str | datetime) -> str:
 
 
 def now_iso() -> str:
-    """Current local time, ISO-formatted to second precision."""
+    """Current local time, ISO-formatted with microsecond precision."""
 
-    return datetime.now().replace(microsecond=0).isoformat()
+    return datetime.now().isoformat()

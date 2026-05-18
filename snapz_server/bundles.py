@@ -71,7 +71,7 @@ def list_bundle_snapshots(
     memory = _check_bundle_memory(bundle)
     with _open_bundle_tar_reader(bundle) as tar:
         meta = _read_bundle_meta(tar)
-        rows = _snapshot_rows(meta)
+        rows = _snapshot_rows_sorted(tar, meta)
         page, per_page = _normalize_page(page, per_page)
         total = len(rows)
         start = (page - 1) * per_page
@@ -318,6 +318,35 @@ def _snapshot_summary(tar: tarfile.TarFile, row: dict[str, Any]) -> dict[str, An
 
 def _snapshot_rows(meta: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(row or {}) for row in meta.get("snapshots") or []]
+
+
+def _snapshot_rows_sorted(
+    tar: tarfile.TarFile,
+    meta: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows_with_order: list[tuple[dict[str, Any], str, float, str]] = []
+    for index, row in enumerate(_snapshot_rows(meta)):
+        created = ""
+        member_mtime = 0.0
+        meta_path = str(row.get("meta") or "")
+        try:
+            member = tar.getmember(meta_path)
+            member_mtime = float(member.mtime)
+            snap = _read_json_member(tar, meta_path)
+            created = str(snap.get("created") or "")
+        except (KeyError, ValueError):
+            pass
+        rows_with_order.append((
+            row,
+            created,
+            member_mtime,
+            str(row.get("name") or index),
+        ))
+    rows_with_order.sort(
+        key=lambda item: (item[1], item[2], item[3]),
+        reverse=True,
+    )
+    return [row for row, _created, _member_mtime, _name in rows_with_order]
 
 
 def _find_snapshot_row(
