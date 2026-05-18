@@ -101,6 +101,7 @@ project_version() {
 
 build_wheel() {
     ensure_venv
+    mkdir -p "$WORK"
     log "building sdist + wheel -> $DIST"
     (cd "$WORK" && "$VENV/bin/python" -m build "$ROOT" --outdir "$DIST") >/dev/null
 }

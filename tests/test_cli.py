@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from snapz import api, cli, filecache
+from snapz import api, cas, cli, filecache, preferences
+from snapz.store import Store
 
 
 @pytest.fixture
@@ -96,6 +97,18 @@ def test_list_subcommand_prints_table(env_root, project_dir, capsys):
     assert "FILES" in out
 
 
+def test_list_timeline_groups_snapshots(env_root, project_dir, capsys):
+    cli.main(["save", str(project_dir), "-n", "v1", "-y"])
+    capsys.readouterr()
+
+    rc = cli.main(["list", str(project_dir), "--text", "--timeline"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "Today" in out
+    assert "v1" in out
+
+
 def test_alist_subcommand(env_root, project_dir, capsys):
     cli.main(["save", str(project_dir), "-n", "v1", "-y"])
     capsys.readouterr()
@@ -162,6 +175,68 @@ def test_bare_invocation_aborts_on_no(
     rc = cli.main([str(project_dir)])
     assert rc == cli.EXIT_USER_ABORT
     assert api.list_snapshots(project_dir) == []
+
+
+def test_interactive_save_can_apply_exclude_suggestions(
+    env_root, project_dir, monkeypatch, capsys
+):
+    cache_dir = project_dir / "coverage"
+    cache_dir.mkdir()
+    (cache_dir / "blob.bin").write_bytes(b"x" * (3 * 1024 * 1024))
+    answers = iter(["v1", "", "y", "y", ""])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+
+    rc = cli.main([str(project_dir)])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "Possible local excludes" in out
+    store = Store(api.default_config())
+    local = preferences.read_local_excludes(store.dir_for(project_dir.resolve()))
+    assert "coverage/" in local
+    manifest = cas.read_manifest(cas.find_manifest_path(store.dir_for(project_dir.resolve()), "v1"))
+    assert all(not entry.path.startswith("coverage/") for entry in manifest.entries)
+
+
+def test_first_interactive_save_records_source_config_defaults(
+    env_root, project_dir, monkeypatch, capsys
+):
+    answers = iter(["v1", "", "y", ""])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+
+    rc = cli.main([str(project_dir)])
+
+    assert rc == 0
+    store = Store(api.default_config())
+    source_config = preferences.read_source_config(store.dir_for(project_dir.resolve()))
+    assert source_config["configured"] is True
+    assert source_config["profile"] == "default"
+
+
+def test_first_interactive_save_can_include_build_preset(
+    env_root, project_dir, monkeypatch, capsys
+):
+    (project_dir / "build").mkdir()
+    (project_dir / "build" / "artifact.txt").write_text("keep\n", encoding="utf-8")
+    answers = iter(["v1", "build", "y", ""])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+
+    rc = cli.main([str(project_dir)])
+
+    assert rc == 0
+    store = Store(api.default_config())
+    manifest = cas.read_manifest(
+        cas.find_manifest_path(store.dir_for(project_dir.resolve()), "v1")
+    )
+    assert any(entry.path == "build/artifact.txt" for entry in manifest.entries)
+    source_config = preferences.read_source_config(store.dir_for(project_dir.resolve()))
+    assert source_config["include_presets"] == ["build"]
 
 
 def test_bare_invocation_default_name(

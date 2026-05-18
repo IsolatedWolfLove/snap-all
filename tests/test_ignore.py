@@ -8,6 +8,20 @@ def test_default_matcher_filters_pycache(project_dir):
     assert matcher.match("__pycache__/x.pyc", is_dir=False)
     assert matcher.match(".snapz-id", is_dir=False)
     assert matcher.match("./.snapz-id", is_dir=False)
+    assert matcher.match("install", is_dir=True)
+    assert matcher.match(".cache", is_dir=True)
+    assert matcher.match("log/app.log", is_dir=False)
+    assert matcher.match("logs/app.log", is_dir=False)
+
+
+def test_local_excludes_can_reinclude_default_patterns(project_dir, tmp_path):
+    local = tmp_path / "_local_excludes"
+    local.write_text("!build/\n!install/\n", encoding="utf-8")
+
+    matcher = build_matcher(project_dir, local_excludes_path=local)
+
+    assert not matcher.match("build", is_dir=True)
+    assert not matcher.match("install", is_dir=True)
 
 
 def test_default_matcher_keeps_source(project_dir):

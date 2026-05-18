@@ -5,7 +5,7 @@ a `tar.zst` archive under `~/.snapz-all/`, with named retention,
 `ncdu`-style management, and dry-run + double confirmation before any
 destructive action.
 
-> **Status — stable (v1.0.1).** Save, list, restore (auto pre-restore +
+> **Status — stable (v2.0.0).** Save, list, restore (auto pre-restore +
 > `--clean`), the `ncdu`-style curses TUI, rename/delete, **stats**,
 > **prune** (retention policies + protected snapshots), **revert**
 > (selective rollback), **undo** (chained rollback to the initial state),
@@ -101,8 +101,8 @@ GitHub Releases are tag-driven. After committing the version bump, push
 the branch and then push a matching `vX.Y.Z` tag:
 
 ```bash
-git tag v1.0.1
-git push origin main v1.0.1
+git tag v2.0.0
+git push origin main v2.0.0
 ```
 
 The release workflow verifies that the tag matches `pyproject.toml`,

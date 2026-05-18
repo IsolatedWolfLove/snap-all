@@ -29,7 +29,8 @@ import json
 import sys
 import tarfile
 import time
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -52,6 +53,40 @@ from snapz.util import (
 EXIT_OK = 0
 EXIT_USER_ABORT = 130
 EXIT_ERROR = 1
+
+
+SUGGEST_EXCLUDE_DIRS = {
+    ".cache",
+    ".parcel-cache",
+    ".turbo",
+    "coverage",
+    "tmp",
+}
+SUGGEST_EXCLUDE_SUFFIXES = {
+    ".7z",
+    ".avi",
+    ".bak",
+    ".bz2",
+    ".dmg",
+    ".gz",
+    ".iso",
+    ".log",
+    ".mov",
+    ".mp4",
+    ".tar",
+    ".tgz",
+    ".webm",
+    ".xz",
+    ".zip",
+    ".zst",
+}
+
+
+@dataclass
+class _ExcludeSuggestion:
+    pattern: str
+    bytes_total: int
+    file_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +197,137 @@ def _print_walk_summary(walk: WalkResult) -> None:
     print('\n'.join(lines), flush=True)
 
 
+def _maybe_run_first_source_config(
+    abspath: Path,
+    config: RuntimeConfig,
+    *,
+    assume_yes: bool = False,
+) -> None:
+    if assume_yes or not _stdout_is_tty():
+        return
+    store = Store(config)
+    dir_root = store.ensure_dir(abspath)
+    if preferences.source_configured(dir_root):
+        return
+
+    print()
+    print(st.bold(t("source_config.heading")))
+    print(st.muted(t("source_config.body")))
+    for key, patterns in preferences.SOURCE_EXCLUDE_PRESETS.items():
+        label = preferences.SOURCE_PRESET_LABELS.get(key, key)
+        print(f"  {st.name(key.ljust(7))} {label}  {st.muted(', '.join(patterns))}")
+
+    raw = _prompt(t("source_config.include_prompt"), default="")
+    requested = {
+        part.strip().lower()
+        for part in raw.replace(",", " ").split()
+        if part.strip()
+    }
+    include_presets = [
+        key for key in preferences.SOURCE_EXCLUDE_PRESETS
+        if key in requested
+    ]
+    include_patterns: list[str] = []
+    for key in include_presets:
+        include_patterns.extend(
+            f"!{pattern}" for pattern in preferences.SOURCE_EXCLUDE_PRESETS[key]
+        )
+    if include_patterns:
+        added = preferences.append_local_excludes(dir_root, include_patterns)
+        print(st.muted(t("source_config.added", n=added)))
+    preferences.mark_source_configured(
+        dir_root,
+        include_presets=include_presets,
+        skipped=not include_presets,
+    )
+
+
+def _suggest_excludes(walk: WalkResult) -> list[_ExcludeSuggestion]:
+    buckets: dict[str, tuple[int, int]] = {}
+    for entry in walk.files:
+        rel = entry.relpath.replace("\\", "/")
+        parts = rel.split("/")
+        pattern = ""
+        if len(parts) > 1:
+            for index, part in enumerate(parts[:-1]):
+                candidate = "/".join(parts[: index + 1])
+                if index == 0 and (
+                    part in SUGGEST_EXCLUDE_DIRS
+                    or candidate in SUGGEST_EXCLUDE_DIRS
+                ):
+                    pattern = candidate + "/"
+                    break
+        if not pattern:
+            suffixes = "".join(Path(parts[-1]).suffixes[-2:]).lower()
+            suffix = Path(parts[-1]).suffix.lower()
+            if suffixes in SUGGEST_EXCLUDE_SUFFIXES:
+                pattern = f"*{suffixes}"
+            elif suffix in SUGGEST_EXCLUDE_SUFFIXES:
+                pattern = f"*{suffix}"
+        if not pattern:
+            continue
+        bytes_total, file_count = buckets.get(pattern, (0, 0))
+        buckets[pattern] = (bytes_total + entry.size, file_count + 1)
+
+    suggestions = [
+        _ExcludeSuggestion(pattern, bytes_total, file_count)
+        for pattern, (bytes_total, file_count) in buckets.items()
+    ]
+    min_bytes = max(2 * 1024 * 1024, int(walk.total_bytes * 0.05))
+    suggestions = [
+        s for s in suggestions
+        if s.bytes_total >= min_bytes or s.file_count >= 100
+    ]
+    suggestions.sort(key=lambda s: (s.bytes_total, s.file_count), reverse=True)
+    return suggestions[:5]
+
+
+def _maybe_offer_exclude_suggestions(
+    abspath: Path,
+    walk: WalkResult,
+    config: RuntimeConfig,
+    args: argparse.Namespace,
+) -> WalkResult:
+    if getattr(args, "yes", False) or getattr(args, "include_large", False):
+        return walk
+    if not _stdout_is_tty():
+        return walk
+    suggestions = _suggest_excludes(walk)
+    if not suggestions:
+        return walk
+
+    print()
+    print(st.bold(t("suggest.heading")))
+    for suggestion in suggestions:
+        print(
+            "  "
+            f"{st.warn(suggestion.pattern.ljust(16))}  "
+            f"{st.numeric(format_size(suggestion.bytes_total)).rjust(8)}  "
+            f"{st.muted(t('label.files_count', n=f'{suggestion.file_count:,}', word=_pluralize(suggestion.file_count, 'file')))}"
+        )
+    total = sum(s.bytes_total for s in suggestions)
+    if walk.total_bytes > 0:
+        pct = total / walk.total_bytes * 100
+        print(st.muted(t("suggest.summary", pct=f"{pct:.0f}")))
+    if not _confirm(t("suggest.confirm"), default_yes=False):
+        return walk
+
+    store = Store(config)
+    dir_root = store.dir_for(abspath)
+    added = preferences.append_local_excludes(
+        dir_root, [s.pattern for s in suggestions],
+    )
+    if added <= 0:
+        print(st.muted(t("suggest.none_added")))
+        return walk
+    print(st.muted(t("suggest.added", n=added)))
+    next_walk = api.estimate(
+        abspath, config=config, include_large=args.include_large,
+    )
+    _print_walk_summary(next_walk)
+    return next_walk
+
+
 def _print_snapshot_table(
     snaps: Iterable[SnapshotMeta], *, show_auto: bool = False,
 ) -> None:
@@ -213,6 +379,66 @@ def _print_snapshot_table(
             )
         print(line)
     if hidden:
+        print(st.muted(t('status.hidden_auto', n=hidden)))
+
+
+def _timeline_bucket(created: str) -> str:
+    try:
+        dt = datetime.fromisoformat(created)
+    except ValueError:
+        return "Unknown"
+    today = datetime.now(dt.tzinfo).date()
+    day = dt.date()
+    if day == today:
+        return "Today"
+    if (today - day).days == 1:
+        return "Yesterday"
+    if day.year == today.year:
+        return day.strftime("%b %d")
+    return day.strftime("%Y-%m-%d")
+
+
+def _print_snapshot_timeline(
+    snaps: Iterable[SnapshotMeta], *, show_auto: bool = False,
+) -> None:
+    all_rows = list(snaps)
+    rows = all_rows if show_auto else [
+        s for s in all_rows if not is_auto_snapshot(s.name)
+    ]
+    hidden = len(all_rows) - len(rows)
+    if not rows:
+        if hidden:
+            print(st.muted(t('status.hidden_auto', n=hidden).strip()))
+        else:
+            print(st.muted(t('status.no_snapshots_yet')))
+        return
+
+    current_bucket = ""
+    for snapz in rows:
+        bucket = _timeline_bucket(snapz.created)
+        if bucket != current_bucket:
+            if current_bucket:
+                print()
+            print(st.bold(bucket))
+            current_bucket = bucket
+        try:
+            when = datetime.fromisoformat(snapz.created).strftime("%H:%M")
+        except ValueError:
+            when = snapz.created[:16]
+        parts = [
+            st.muted(when.rjust(5)),
+            st.name(snapz.name),
+            st.numeric(format_size(snapz.size_bytes)),
+            st.numeric(f"{snapz.file_count:,}"),
+            st.muted(snapz.compression),
+        ]
+        if snapz.tags:
+            parts.append(st.muted("#" + " #".join(snapz.tags)))
+        if snapz.note:
+            parts.append(st.muted(snapz.note))
+        print("  " + "  ".join(parts))
+    if hidden:
+        print()
         print(st.muted(t('status.hidden_auto', n=hidden)))
 
 
@@ -403,11 +629,17 @@ def cmd_save_interactive(args: argparse.Namespace, config: RuntimeConfig) -> int
             break
 
     print()
+    _maybe_run_first_source_config(abspath, config, assume_yes=args.yes)
     print(st.dim(t('status.planning')))
     walk = api.estimate(abspath, config=config, include_large=args.include_large)
     _print_walk_summary(walk)
     print()
 
+    if walk.file_count == 0:
+        print(st.warn(t('status.empty_walk')))
+        return EXIT_USER_ABORT
+
+    walk = _maybe_offer_exclude_suggestions(abspath, walk, config, args)
     if walk.file_count == 0:
         print(st.warn(t('status.empty_walk')))
         return EXIT_USER_ABORT
@@ -466,8 +698,9 @@ def cmd_save_interactive(args: argparse.Namespace, config: RuntimeConfig) -> int
     print(_kv(
         t('kv.size'),
         f"{st.numeric(format_size(snapz.size_bytes))}  "
-        f"{st.muted('\u2190')}  {st.numeric(format_size(snapz.total_bytes_in))}"
-        f"  {st.muted(f'({ratio:.1f}\u00d7 ratio)')}",
+        f"{st.muted(t('kv.full_size') + ':')}  "
+        f"{st.numeric(format_size(snapz.total_bytes_in))}"
+        f"  {st.muted(f'({ratio:.1f}\u00d7 dedup)')}",
     ))
     print(_kv(
         t('kv.files'),
@@ -503,6 +736,9 @@ def cmd_save_scripted(args: argparse.Namespace, config: RuntimeConfig) -> int:
         walk = api.estimate(abspath, config=config, include_large=args.include_large)
         print(f"\U0001f4c2 {st.path(str(abspath))}")
         _print_walk_summary(walk)
+        if walk.file_count == 0:
+            print(st.warn(t('status.empty_walk')))
+            return EXIT_USER_ABORT
         if not _confirm(t('prompt.create_snapshot'), default_yes=False):
             return EXIT_USER_ABORT
         walk_result = walk
@@ -550,7 +786,8 @@ def cmd_save_scripted(args: argparse.Namespace, config: RuntimeConfig) -> int:
     sep = f"  {st.bullet()}  "
     line = (
         f"{st.ok_mark()} {t('msg.saved')} {st.name(snapz.name)}{sep}"
-        f"{st.numeric(format_size(snapz.size_bytes))}{sep}"
+        f"{st.numeric(format_size(snapz.size_bytes))} {st.muted('new')}{sep}"
+        f"{st.numeric(format_size(snapz.total_bytes_in))} {st.muted('full')}{sep}"
         f"{st.numeric(files_phrase)}{sep}"
         f"{st.numeric(format_duration(elapsed))}"
     )
@@ -577,7 +814,10 @@ def cmd_list(args: argparse.Namespace, config: RuntimeConfig) -> int:
 
     if args.text or not _stdout_is_tty():
         print(f"\U0001f4c2 {st.path(str(path))}")
-        _print_snapshot_table(snaps, show_auto=show_auto)
+        if getattr(args, "timeline", False):
+            _print_snapshot_timeline(snaps, show_auto=show_auto)
+        else:
+            _print_snapshot_table(snaps, show_auto=show_auto)
         return EXIT_OK
 
     from snapz import tui  # local import to keep curses opt-in
@@ -686,6 +926,19 @@ def _resolve_snapshot_name(
         print(st.muted(t("picker.cancelled")))
         return None
     return chosen
+
+
+def _print_path_preview(label: str, paths: list[str], *, warn: bool = False) -> None:
+    if not paths:
+        return
+    renderer = st.warn if warn else st.path
+    shown = paths[:5]
+    print(f"  {st.muted(label)}")
+    for rel in shown:
+        print(f"    {renderer(rel)}")
+    remaining = len(paths) - len(shown)
+    if remaining > 0:
+        print(f"    {st.muted(t('restore.more_paths', n=remaining))}")
 
 
 def cmd_rm(args: argparse.Namespace, config: RuntimeConfig) -> int:
@@ -849,6 +1102,20 @@ def _restore_with_confirmation(
             f"{st.muted(t('restore.kept'))}"
         )
     print(_kv(t('kv.extras'), extras_value, label_w=label_w))
+    preview_groups = [
+        (t("restore.preview_overwrite"), estimate.overwritten_files, False),
+        (t("restore.preview_add"), estimate.new_files, False),
+    ]
+    if clean:
+        preview_groups.append(
+            (t("restore.preview_clean"), estimate.extra_files, True),
+        )
+    elif estimate.extra_files:
+        preview_groups.append(
+            (t("restore.preview_keep"), estimate.extra_files, False),
+        )
+    for label, paths, warn in preview_groups:
+        _print_path_preview(label, paths, warn=warn)
     if auto_save and path.exists():
         print(_kv(
             t('kv.pre_backup'),
@@ -1703,9 +1970,10 @@ def cmd_show(args: argparse.Namespace, config: RuntimeConfig) -> int:
     ))
     print(_kv(
         t('kv.size'),
-        f"{st.numeric(format_size(meta.size_bytes))}  {st.muted('\u2190')}  "
+        f"{st.numeric(format_size(meta.size_bytes))}  "
+        f"{st.muted(t('kv.full_size') + ':')}  "
         f"{st.numeric(format_size(meta.total_bytes_in))}  "
-        f"{st.muted(f'({ratio:.1f}\u00d7 ratio)')}",
+        f"{st.muted(f'({ratio:.1f}\u00d7 dedup)')}",
     ))
     print(_kv(t('kv.files'), st.numeric(f'{meta.file_count:,}')))
     return EXIT_OK
@@ -2508,6 +2776,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument(
         "--all", action="store_true",
         help=t("flag.show_all"),
+    )
+    p_list.add_argument(
+        "--timeline",
+        action="store_true",
+        help=t("list.timeline"),
     )
     p_list.set_defaults(func=cmd_list)
 

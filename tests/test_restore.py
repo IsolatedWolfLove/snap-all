@@ -120,6 +120,25 @@ def test_cli_restore_unknown_returns_error(env_root, project_dir, capsys):
     assert "ghost" in capsys.readouterr().err
 
 
+def test_cli_restore_preview_shows_changed_paths(
+    env_root, project_dir, monkeypatch, capsys
+):
+    cli.main(["save", str(project_dir), "-n", "v1", "-y"])
+    (project_dir / "src" / "main.py").write_text("changed\n", encoding="utf-8")
+    (project_dir / "extra.txt").write_text("extra\n", encoding="utf-8")
+    answers = iter(["n"])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+
+    rc = cli.main(["restore", "v1", "--path", str(project_dir)])
+    out = capsys.readouterr().out
+
+    assert rc == cli.EXIT_USER_ABORT
+    assert "will overwrite" in out
+    assert "src/main.py" in out
+    assert "extra files kept" in out
+    assert "extra.txt" in out
+
+
 def test_cli_restore_no_auto_save_flag(env_root, project_dir):
     cli.main(["save", str(project_dir), "-n", "v1", "-y"])
     cli.main(

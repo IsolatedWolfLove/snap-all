@@ -54,10 +54,23 @@ _EN: dict[str, str] = {
     "save.no_cache": "disable the per-source file hash cache for this save",
     "save.workers": "number of worker threads to use while writing blobs",
     "save.workers_positive": "--workers must be at least 1",
+    "source_config.heading": "Source snapshot profile",
+    "source_config.body": (
+        "snapz excludes generated files by default. Enter preset names to "
+        "include them for this source, or press Enter to keep the defaults."
+    ),
+    "source_config.include_prompt": "include presets",
+    "source_config.added": "added {n} include override(s) for this source",
+    "suggest.heading": "Possible local excludes",
+    "suggest.summary": "These account for about {pct}% of the planned snapshot.",
+    "suggest.confirm": "add these patterns to this source's local excludes?",
+    "suggest.added": "added {n} local exclude pattern(s); re-planning...",
+    "suggest.none_added": "all suggested patterns were already excluded",
 
     # ---- list / alist ----
     "list.help": "list snapshots of the current directory",
     "list.text": "force plain-text output instead of the curses TUI",
+    "list.timeline": "group text output by day",
     "alist.help": "list snapshots across all directories",
 
     # ---- rm / mv / show ----
@@ -78,6 +91,11 @@ _EN: dict[str, str] = {
     "restore.clean": (
         "delete files in the working tree that are not in the archive"
     ),
+    "restore.preview_overwrite": "will overwrite",
+    "restore.preview_add": "will add",
+    "restore.preview_clean": "will delete with --clean",
+    "restore.preview_keep": "extra files kept",
+    "restore.more_paths": "... and {n} more",
 
     # ---- export ----
     "export.help": "extract a snapshot into an arbitrary destination directory",
@@ -299,7 +317,8 @@ _EN: dict[str, str] = {
     "kv.note": "note",
     "kv.archive": "archive",
     "kv.archive_size": "archive size",
-    "kv.size": "size",
+    "kv.size": "new storage",
+    "kv.full_size": "full size",
     "kv.files": "files",
     "kv.total_size": "total size",
     "kv.ignored": "ignored",
@@ -457,7 +476,7 @@ _EN: dict[str, str] = {
     # column headers (text mode)
     "header.NAME": "NAME",
     "header.CREATED": "CREATED",
-    "header.SIZE": "SIZE",
+    "header.SIZE": "NEW",
     "header.FILES": "FILES",
     "header.NOTE": "NOTE",
     "header.DIR": "DIR",
@@ -480,10 +499,23 @@ _ZH: dict[str, str] = {
     "save.no_cache": "本次保存不使用源目录文件哈希缓存",
     "save.workers": "写入 blob 时使用的工作线程数",
     "save.workers_positive": "--workers 必须至少为 1",
+    "source_config.heading": "源目录快照配置",
+    "source_config.body": (
+        "snapz 默认排除生成文件。输入 preset 名称可为该源目录加回来，"
+        "直接回车则保持默认。"
+    ),
+    "source_config.include_prompt": "加回的 presets",
+    "source_config.added": "已为该源目录添加 {n} 条加回规则",
+    "suggest.heading": "建议加入本地排除",
+    "suggest.summary": "这些内容约占本次计划快照的 {pct}%。",
+    "suggest.confirm": "把这些模式加入该源目录的本地排除?",
+    "suggest.added": "已添加 {n} 条本地排除;重新规划...",
+    "suggest.none_added": "建议的模式都已经被排除了",
 
     # ---- list / alist ----
     "list.help": "列出当前目录的快照",
     "list.text": "强制纯文本输出，不使用 curses TUI",
+    "list.timeline": "按日期分组显示文本输出",
     "alist.help": "跨所有目录列出快照",
 
     # ---- rm / mv / show ----
@@ -500,6 +532,11 @@ _ZH: dict[str, str] = {
     "restore.yes": "跳过确认提示",
     "restore.no_auto_save": "在解包前不自动创建预还原快照",
     "restore.clean": "删除工作目录中归档里没有的文件",
+    "restore.preview_overwrite": "将覆盖",
+    "restore.preview_add": "将新增",
+    "restore.preview_clean": "--clean 将删除",
+    "restore.preview_keep": "保留的多余文件",
+    "restore.more_paths": "... 以及另外 {n} 个",
 
     # ---- export ----
     "export.help": "把快照解到任意目标目录",
@@ -684,7 +721,8 @@ _ZH: dict[str, str] = {
     "kv.note": "备注",
     "kv.archive": "归档",
     "kv.archive_size": "归档大小",
-    "kv.size": "大小",
+    "kv.size": "新增占用",
+    "kv.full_size": "完整大小",
     "kv.files": "文件数",
     "kv.total_size": "总大小",
     "kv.ignored": "已忽略",
@@ -830,7 +868,7 @@ _ZH: dict[str, str] = {
     # column headers (text mode) — keep ASCII so width math doesn't get confused
     "header.NAME": "名称",
     "header.CREATED": "创建于",
-    "header.SIZE": "大小",
+    "header.SIZE": "新增",
     "header.FILES": "文件数",
     "header.NOTE": "备注",
     "header.DIR": "目录",

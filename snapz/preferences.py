@@ -23,6 +23,30 @@ from typing import Any, Iterable
 
 LOCAL_EXCLUDES_FILENAME = "_local_excludes"
 CONFIG_FILENAME = "_config.json"
+SOURCE_CONFIG_FILENAME = "_source_config.json"
+SOURCE_CONFIG_VERSION = 1
+
+SOURCE_EXCLUDE_PRESETS: dict[str, tuple[str, ...]] = {
+    "deps": ("node_modules/", ".venv/", "venv/"),
+    "build": ("build/", "dist/", "install/", "*.egg-info/"),
+    "cache": (
+        ".cache/",
+        ".parcel-cache/",
+        ".turbo/",
+        ".yarn/cache/",
+        ".pytest_cache/",
+        ".mypy_cache/",
+        ".ruff_cache/",
+        ".tox/",
+    ),
+    "logs": ("log/", "logs/", "*.log"),
+}
+SOURCE_PRESET_LABELS: dict[str, str] = {
+    "deps": "dependency directories",
+    "build": "build/install outputs",
+    "cache": "tool caches",
+    "logs": "log files/directories",
+}
 
 UI_MODE_TUI = "tui"
 UI_MODE_MINIMAL = "minimal"
@@ -226,6 +250,65 @@ def local_excludes_path(dir_root: Path) -> Path:
     return dir_root / LOCAL_EXCLUDES_FILENAME
 
 
+def source_config_path(dir_root: Path) -> Path:
+    return dir_root / SOURCE_CONFIG_FILENAME
+
+
+def read_source_config(dir_root: Path) -> dict[str, Any]:
+    path = source_config_path(dir_root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_source_config(dir_root: Path, data: dict[str, Any]) -> None:
+    dir_root.mkdir(parents=True, exist_ok=True)
+    path = source_config_path(dir_root)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    payload = {
+        "version": SOURCE_CONFIG_VERSION,
+        **data,
+    }
+    tmp.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
+def source_configured(dir_root: Path) -> bool:
+    return bool(read_source_config(dir_root).get("configured", False))
+
+
+def mark_source_configured(
+    dir_root: Path,
+    *,
+    include_presets: Iterable[str] = (),
+    skipped: bool = False,
+) -> None:
+    save_source_config(
+        dir_root,
+        {
+            "configured": True,
+            "profile": "default" if skipped else "custom",
+            "include_presets": sorted(set(include_presets)),
+            "exclude_presets": [
+                name
+                for name in SOURCE_EXCLUDE_PRESETS
+                if name not in set(include_presets)
+            ],
+            "custom_includes": [],
+            "custom_excludes": [],
+        },
+    )
+
+
 def read_local_excludes(dir_root: Path) -> list[str]:
     """Return all non-empty, non-comment patterns currently stored."""
 
@@ -279,4 +362,3 @@ def append_local_excludes(dir_root: Path, patterns: Iterable[str]) -> int:
         pass
     # De-dup added count against pre-existing.
     return len(new)
-

@@ -4,7 +4,7 @@
 归档放进 `~/.snapz-all/`，自带命名管理、`ncdu` 风格的交互界面，
 所有破坏性操作都先 dry-run 再二次确认。
 
-> **状态：正式版（v1.0.1）。** 已实现并测试：保存、查看、还原（含自动
+> **状态：正式版（v2.0.0）。** 已实现并测试：保存、查看、还原（含自动
 > 预还原快照与 `--clean`）、`ncdu` 风格 curses 界面、改名／删除、
 > **stats（容量分析）**、**prune（保留策略）**、**revert（按需回
 > 滚）**、**undo（一直回到最初）**、**find（跨快照定位文件）**、
@@ -92,8 +92,8 @@ GitHub Release 由 tag 触发。提交版本号后，先推分支，再推匹配
 `vX.Y.Z` tag：
 
 ```bash
-git tag v1.0.1
-git push origin main v1.0.1
+git tag v2.0.0
+git push origin main v2.0.0
 ```
 
 发布 workflow 会校验 tag 与 `pyproject.toml` 版本一致，跑测试，
