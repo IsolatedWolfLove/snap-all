@@ -25,6 +25,33 @@ from snapz._cli_stats_prune import cmd_prune, cmd_stats
 from snapz import update_check
 
 
+_ARGPARSE_I18N_KEYS = {
+    "usage: ": "argparse.usage",
+    "positional arguments": "argparse.positionals",
+    "options": "argparse.options",
+    "show this help message and exit": "argparse.help",
+    "%(prog)s: error: %(message)s\n": "argparse.error_format",
+    "unrecognized arguments: %s": "argparse.unrecognized",
+    "the following arguments are required: %s": "argparse.required",
+    "invalid choice: %(value)r (choose from %(choices)s)": "argparse.invalid_choice",
+    "expected one argument": "argparse.expected_one",
+    "expected at least one argument": "argparse.expected_at_least_one",
+    "expected at most one argument": "argparse.expected_at_most_one",
+    "argument %(argument_name)s: %(message)s": "argparse.argument_message",
+    "one of the arguments %s is required": "argparse.one_required",
+    "not allowed with argument %s": "argparse.not_allowed",
+}
+
+
+def _argparse_gettext(message: str) -> str:
+    key = _ARGPARSE_I18N_KEYS.get(message)
+    return t(key) if key is not None else message
+
+
+def _install_argparse_i18n() -> None:
+    argparse._ = _argparse_gettext  # type: ignore[attr-defined]  # noqa: SLF001
+
+
 def _snapshot_name_completer(prefix, parsed_args, **kwargs):
     """argcomplete dynamic completer: list snapshot names for the target dir."""
 
@@ -36,11 +63,17 @@ def _snapshot_name_completer(prefix, parsed_args, **kwargs):
         return []
 
 def build_parser() -> argparse.ArgumentParser:
+    _install_argparse_i18n()
     parser = argparse.ArgumentParser(
         prog="snapz",
         description=t("root.description"),
     )
-    parser.add_argument("--version", action="version", version=f"snapz {__version__}")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"snapz {__version__}",
+        help=t("flag.version"),
+    )
     parser.add_argument(
         "--no-zstd",
         action="store_true",
@@ -131,12 +164,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_mv.add_argument("old", nargs="?").completer = _snapshot_name_completer  # type: ignore[attr-defined]
     p_mv.add_argument("new", nargs="?")
     p_mv.add_argument("--path", help=t("mv.path"))
+    p_mv.add_argument(
+        "--all", action="store_true",
+        help=t("flag.show_all"),
+    )
     p_mv.set_defaults(func=cmd_mv)
 
     # show
     p_show = sub.add_parser("show", help=t("show.help"))
     p_show.add_argument("name", nargs="?").completer = _snapshot_name_completer  # type: ignore[attr-defined]
     p_show.add_argument("--path", help=t("show.path"))
+    p_show.add_argument(
+        "--all", action="store_true",
+        help=t("flag.show_all"),
+    )
     p_show.set_defaults(func=cmd_show)
 
     # restore
@@ -146,6 +187,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_restore.add_argument("name", nargs="?").completer = _snapshot_name_completer  # type: ignore[attr-defined]
     p_restore.add_argument("--path", help=t("restore.path"))
+    p_restore.add_argument(
+        "--all", action="store_true",
+        help=t("flag.show_all"),
+    )
     p_restore.add_argument(
         "-y", "--yes", action="store_true", help=t("restore.yes")
     )
@@ -168,6 +213,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_export.add_argument("name", nargs="?", help=t("export.name")).completer = _snapshot_name_completer  # type: ignore[attr-defined]
     p_export.add_argument("dst", help=t("export.dst"))
+    p_export.add_argument(
+        "--all", action="store_true",
+        help=t("flag.show_all"),
+    )
     p_export.add_argument(
         "--path",
         help=t("export.path"),
@@ -216,44 +265,44 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.set_defaults(func=cmd_import)
 
     # remote login/logout
-    p_login = sub.add_parser("login", help="log in to a snapz-server remote")
-    p_login.add_argument("server", help="server URL, e.g. http://127.0.0.1:8765")
-    p_login.add_argument("--tenant", help="tenant name")
-    p_login.add_argument("--username", help="username")
-    p_login.add_argument("--password", help="password (prompts when omitted)")
-    p_login.add_argument("--device", help="device name recorded on the server")
+    p_login = sub.add_parser("login", help=t("login.help"))
+    p_login.add_argument("server", help=t("login.server"))
+    p_login.add_argument("--tenant", help=t("login.tenant"))
+    p_login.add_argument("--username", help=t("login.username"))
+    p_login.add_argument("--password", help=t("login.password"))
+    p_login.add_argument("--device", help=t("login.device"))
     p_login.add_argument(
         "--tls-ca",
-        help="CA bundle for verifying the HTTPS server certificate",
+        help=t("login.tls_ca"),
     )
     p_login.add_argument(
         "--tls-client-cert",
-        help="PEM client certificate for mTLS",
+        help=t("login.tls_client_cert"),
     )
     p_login.add_argument(
         "--tls-client-key",
-        help="PEM private key for the mTLS client certificate",
+        help=t("login.tls_client_key"),
     )
     p_login.set_defaults(func=cmd_login)
 
-    p_logout = sub.add_parser("logout", help="remove the saved remote token")
+    p_logout = sub.add_parser("logout", help=t("logout.help"))
     p_logout.set_defaults(func=cmd_logout)
 
     # remote sync
-    p_push = sub.add_parser("push", help="push snapshots to the configured remote")
-    p_push.add_argument("scope", choices=["all"], help="push all local sources")
+    p_push = sub.add_parser("push", help=t("push.help"))
+    p_push.add_argument("scope", choices=["all"], help=t("push.scope"))
     p_push.set_defaults(func=cmd_push)
 
-    p_pull = sub.add_parser("pull", help="pull snapshots from the configured remote")
-    p_pull.add_argument("scope", choices=["all"], help="pull all remote sources")
+    p_pull = sub.add_parser("pull", help=t("pull.help"))
+    p_pull.add_argument("scope", choices=["all"], help=t("pull.scope"))
     p_pull.set_defaults(func=cmd_pull)
 
     p_adopt = sub.add_parser(
         "adopt",
-        help="bind an archived source, such as a pulled remote archive, to a path",
+        help=t("adopt.help"),
     )
-    p_adopt.add_argument("archive_key")
-    p_adopt.add_argument("path")
+    p_adopt.add_argument("archive_key", help=t("adopt.archive_key"))
+    p_adopt.add_argument("path", help=t("adopt.path"))
     p_adopt.set_defaults(func=cmd_adopt)
 
     # diff
@@ -268,6 +317,10 @@ def build_parser() -> argparse.ArgumentParser:
     ).completer = _snapshot_name_completer  # type: ignore[attr-defined]
     p_diff.add_argument(
         "--path", help=t("diff.path"),
+    )
+    p_diff.add_argument(
+        "--all", action="store_true",
+        help=t("flag.show_all"),
     )
     p_diff.add_argument(
         "--text", action="store_true",
@@ -316,106 +369,119 @@ def build_parser() -> argparse.ArgumentParser:
     # check
     p_check = sub.add_parser(
         "check",
-        help="validate store metadata and blob reachability",
+        help=t("check.help"),
     )
-    p_check.add_argument("path", nargs="?")
-    p_check.add_argument("--all", action="store_true")
-    p_check.add_argument("--deep", action="store_true")
-    p_check.add_argument("--fix", action="store_true")
+    p_check.add_argument("path", nargs="?", help=t("check.path"))
+    p_check.add_argument("--all", action="store_true", help=t("check.all"))
+    p_check.add_argument("--deep", action="store_true", help=t("check.deep"))
+    p_check.add_argument("--fix", action="store_true", help=t("check.fix"))
     p_check.set_defaults(func=cmd_check)
 
     # migrate
     p_migrate = sub.add_parser(
         "migrate",
-        help="migrate legacy per-directory blobs to the v3 global CAS pool",
+        help=t("migrate.help"),
     )
-    p_migrate.add_argument("path", nargs="?")
-    p_migrate.add_argument("--all", action="store_true")
-    p_migrate.add_argument("--to", default="v3", choices=["v3"])
-    p_migrate.add_argument("--dry-run", action="store_true")
+    p_migrate.add_argument("path", nargs="?", help=t("migrate.path"))
+    p_migrate.add_argument("--all", action="store_true", help=t("migrate.all"))
+    p_migrate.add_argument("--to", default="v3", choices=["v3"], help=t("migrate.to"))
+    p_migrate.add_argument("--dry-run", action="store_true", help=t("migrate.dry_run"))
     p_migrate.set_defaults(func=cmd_migrate)
 
     # init source marker
     p_init = sub.add_parser(
         "init",
-        help="write a .snapz-id marker for reliable move detection",
+        help=t("init.help"),
     )
-    p_init.add_argument("path", nargs="?", help="source directory (default: cwd)")
+    p_init.add_argument("path", nargs="?", help=t("init.path"))
     p_init.add_argument(
         "--force",
         action="store_true",
-        help="replace an existing .snapz-id marker",
+        help=t("init.force"),
     )
     p_init.set_defaults(func=cmd_init)
 
     # Compatibility alias for the user's requested spelling.
     p_initd = sub.add_parser("initd", help=argparse.SUPPRESS)
-    p_initd.add_argument("path", nargs="?")
-    p_initd.add_argument("--force", action="store_true")
+    p_initd.add_argument("path", nargs="?", help=t("init.path"))
+    p_initd.add_argument("--force", action="store_true", help=t("init.force"))
     p_initd.set_defaults(func=cmd_init)
+    sub._choices_actions = [  # type: ignore[attr-defined]  # noqa: SLF001
+        action
+        for action in sub._choices_actions  # type: ignore[attr-defined]  # noqa: SLF001
+        if action.dest != "initd"
+    ]
 
     # relocate source binding after a directory rename
     p_relocate = sub.add_parser(
         "relocate",
-        help="move snapshots from an old source path to a renamed live directory",
+        help=t("relocate.help"),
     )
     p_relocate.add_argument(
         "paths",
         nargs="*",
-        help="OLD NEW for manual relocation, or ROOT... with --auto",
+        help=t("relocate.paths"),
     )
     p_relocate.add_argument(
         "--auto",
         action="store_true",
-        help="scan roots for moved archived sources and relocate exact matches",
+        help=t("relocate.auto"),
     )
     p_relocate.add_argument(
         "--dry-run",
         action="store_true",
-        help="show automatic matches without moving store bindings",
+        help=t("relocate.dry_run"),
     )
     p_relocate.add_argument(
         "-y", "--yes",
         action="store_true",
-        help="apply automatic relocation without prompting",
+        help=t("relocate.yes"),
     )
     p_relocate.set_defaults(func=cmd_relocate)
 
     # archive sources whose original directory is missing or recreated
     p_archive = sub.add_parser(
         "archive",
-        help="list archived sources and restore archived snapshots",
+        help=t("archive.help"),
     )
     archive_sub = p_archive.add_subparsers(dest="archive_op")
-    p_archive_list = archive_sub.add_parser("list", help="list archived sources")
+    p_archive_list = archive_sub.add_parser("list", help=t("archive.list_help"))
     p_archive_list.set_defaults(func=cmd_archive)
     p_archive_restore = archive_sub.add_parser(
         "restore",
-        help="restore an archived snapshot to a destination path",
+        help=t("archive.restore_help"),
     )
     p_archive_restore.add_argument(
         "archive",
         nargs="?",
-        help="archive key or original source path",
+        help=t("archive.archive_arg"),
     )
-    p_archive_restore.add_argument("name", nargs="?", help="snapshot name")
-    p_archive_restore.add_argument("dst", nargs="?", help="destination path")
+    p_archive_restore.add_argument("name", nargs="?", help=t("archive.snapshot"))
+    p_archive_restore.add_argument("dst", nargs="?", help=t("archive.dst"))
     p_archive_restore.add_argument(
         "--overwrite",
         action="store_true",
-        help="extract even if the destination is non-empty",
+        help=t("archive.overwrite"),
     )
     p_archive_restore.set_defaults(func=cmd_archive)
 
     # protect / unprotect
-    p_protect = sub.add_parser("protect", help="mark a snapshot as protected")
+    p_protect = sub.add_parser("protect", help=t("protect.help"))
     p_protect.add_argument("name", nargs="?").completer = _snapshot_name_completer  # type: ignore[attr-defined]
-    p_protect.add_argument("--path", help="target directory (default: cwd)")
+    p_protect.add_argument("--path", help=t("protect.path"))
+    p_protect.add_argument(
+        "--all", action="store_true",
+        help=t("flag.show_all"),
+    )
     p_protect.set_defaults(func=cmd_protect)
 
-    p_unprotect = sub.add_parser("unprotect", help="remove snapshot protection")
+    p_unprotect = sub.add_parser("unprotect", help=t("unprotect.help"))
     p_unprotect.add_argument("name", nargs="?").completer = _snapshot_name_completer  # type: ignore[attr-defined]
-    p_unprotect.add_argument("--path", help="target directory (default: cwd)")
+    p_unprotect.add_argument("--path", help=t("protect.path"))
+    p_unprotect.add_argument(
+        "--all", action="store_true",
+        help=t("flag.show_all"),
+    )
     p_unprotect.set_defaults(func=cmd_protect)
 
     # stats
@@ -503,6 +569,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--path", help=t("revert.path"),
     )
     p_revert.add_argument(
+        "--all", action="store_true",
+        help=t("flag.show_all"),
+    )
+    p_revert.add_argument(
         "-y", "--yes", action="store_true",
         help=t("revert.yes"),
     )
@@ -553,6 +623,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_cat.add_argument("relpath", nargs="?", help=t("cat.relpath"))
     p_cat.add_argument("--path", help=t("cat.path"))
     p_cat.add_argument(
+        "--all", action="store_true",
+        help=t("flag.show_all"),
+    )
+    p_cat.add_argument(
         "--raw",
         action="store_true",
         help=t("cat.raw"),
@@ -568,6 +642,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_browse = sub.add_parser("browse", help=t("browse.help"))
     p_browse.add_argument("name", nargs="?", help=t("browse.snapshot")).completer = _snapshot_name_completer  # type: ignore[attr-defined]
     p_browse.add_argument("--path", help=t("browse.path"))
+    p_browse.add_argument(
+        "--all", action="store_true",
+        help=t("flag.show_all"),
+    )
     p_browse.add_argument(
         "--filter",
         default="",
@@ -632,6 +710,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=t("uninstall.purge_data"),
     )
     p_uninstall.set_defaults(func=cmd_uninstall)
+
+    sub.metavar = "{" + ",".join(  # type: ignore[attr-defined]  # noqa: SLF001
+        action.dest
+        for action in sub._choices_actions  # type: ignore[attr-defined]  # noqa: SLF001
+    ) + "}"
 
     return parser
 

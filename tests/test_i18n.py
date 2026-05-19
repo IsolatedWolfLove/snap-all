@@ -100,8 +100,18 @@ def test_cli_help_zh_flips_descriptions(monkeypatch, capsys):
     # appear in Chinese.
     assert "轻量的目录快照工具" in out
     assert "非交互式创建快照" in out
+    assert "用法:" in out
+    assert "位置参数" in out
+    assert "选项" in out
+    assert "显示这条帮助信息并退出" in out
+    assert "显示程序版本并退出" in out
+    assert "登录 snapz-server 远端" in out
+    assert "initd" not in out
     # English originals should be gone.
     assert "Lightweight directory snapshot tool" not in out
+    assert "positional arguments" not in out
+    assert "show program's version number and exit" not in out
+    assert "log in to a snapz-server remote" not in out
 
 
 def test_cli_subcommand_help_zh(monkeypatch, capsys):
@@ -119,6 +129,17 @@ def test_cli_subcommand_help_zh(monkeypatch, capsys):
             cli.main([sub, "--help"])
         out = capsys.readouterr().out
         assert needle in out, f"{sub} --help missing {needle!r}; got:\n{out}"
+
+
+def test_cli_argparse_error_zh(monkeypatch, capsys):
+    monkeypatch.setenv("SNAPZ_LANG", "zh")
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["show", "--bogus"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "用法:" in err
+    assert "错误:" in err
+    assert "无法识别的参数" in err
 
 
 # ----------------- runtime output respects SNAPZ_LANG ----------------------

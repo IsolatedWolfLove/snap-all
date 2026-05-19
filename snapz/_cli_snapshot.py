@@ -42,6 +42,7 @@ def cmd_mv(args: argparse.Namespace, config: RuntimeConfig) -> int:
     path = resolve_path(args.path or ".")
     old = _resolve_snapshot_name(
         path, args.old, config, title_key="picker.title_mv_old",
+        show_auto=bool(getattr(args, "all", False)),
     )
     if old is None:
         return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
@@ -82,6 +83,7 @@ def cmd_restore(args: argparse.Namespace, config: RuntimeConfig) -> int:
     path = resolve_path(args.path or ".")
     name = _resolve_snapshot_name(
         path, args.name, config, title_key="picker.title_restore",
+        show_auto=bool(getattr(args, "all", False)),
     )
     if name is None:
         return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
@@ -233,6 +235,7 @@ def cmd_export(args: argparse.Namespace, config: RuntimeConfig) -> int:
     dst = resolve_path(args.dst)
     name = _resolve_snapshot_name(
         src, args.name, config, title_key="picker.title_export",
+        show_auto=bool(getattr(args, "all", False)),
     )
     if name is None:
         return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
@@ -268,6 +271,7 @@ def cmd_show(args: argparse.Namespace, config: RuntimeConfig) -> int:
     path = resolve_path(args.path or ".")
     name = _resolve_snapshot_name(
         path, args.name, config, title_key="picker.title_show",
+        show_auto=bool(getattr(args, "all", False)),
     )
     if name is None:
         return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
@@ -303,6 +307,7 @@ def cmd_protect(args: argparse.Namespace, config: RuntimeConfig) -> int:
     path = resolve_path(args.path or ".")
     name = _resolve_snapshot_name(
         path, args.name, config, title_key="picker.title_show",
+        show_auto=bool(getattr(args, "all", False)),
     )
     if name is None:
         return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR

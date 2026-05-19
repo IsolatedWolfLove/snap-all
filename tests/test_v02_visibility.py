@@ -115,6 +115,21 @@ def test_show_json(env_root, project_dir, capsys):
     assert payload["file_count"] > 0
 
 
+def test_show_all_accepts_hidden_auto_snapshot(env_root, project_dir, capsys):
+    _make_state_with_auto(env_root, project_dir)
+    capsys.readouterr()
+    auto_name = next(
+        snap.name for snap in api.list_snapshots(project_dir)
+        if snap.name.startswith("auto-pre-restore-")
+    )
+
+    rc = cli.main(["show", auto_name, "--path", str(project_dir), "--all"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert auto_name in out
+
+
 def test_save_json_emits_structured_outcome(env_root, project_dir, capsys):
     rc = cli.main([
         "save", str(project_dir), "-n", "v1", "-y", "--json",

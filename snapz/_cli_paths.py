@@ -39,6 +39,7 @@ def cmd_revert(args: argparse.Namespace, config: RuntimeConfig) -> int:
     src = resolve_path(args.path or ".")
     name = _resolve_snapshot_name(
         src, args.name, config, title_key="picker.title_revert",
+        show_auto=bool(getattr(args, "all", False)),
     )
     if name is None:
         return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
@@ -261,14 +262,36 @@ def cmd_cat(args: argparse.Namespace, config: RuntimeConfig) -> int:
     src = resolve_path(args.path or ".")
     name = _resolve_snapshot_name(
         src, args.name, config, title_key="picker.title_cat",
+        show_auto=bool(getattr(args, "all", False)),
     )
     if name is None:
         return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
 
     relpath = (args.relpath or "").strip().strip("/")
     if not relpath:
-        _print_error(t("cat.no_path_given"))
-        return EXIT_ERROR
+        if _wants_json(args) or getattr(args, "raw", False) or not _stdout_is_tty():
+            _print_error(t("cat.no_path_given"))
+            return EXIT_ERROR
+        try:
+            _abspath, meta, manifest = api._load_manifest_or_raise(  # noqa: SLF001
+                src, name, config=config,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            _print_error(str(exc))
+            return EXIT_ERROR
+        from snapz import tui
+        action = tui.browse_manifest(
+            manifest.entries,
+            title=t("browse.title", name=meta.name),
+            src=src,
+            mode="view",
+            preview=None,
+            footer_hint=t("cat.browse_footer"),
+        )
+        if action.kind != "file":
+            print(st.muted(t("picker.cancelled")))
+            return EXIT_USER_ABORT
+        relpath = action.path
 
     try:
         data = api.read_snapshot_bytes(src, name, relpath, config=config)
@@ -314,6 +337,7 @@ def cmd_browse(args: argparse.Namespace, config: RuntimeConfig) -> int:
     src = resolve_path(args.path or ".")
     name = _resolve_snapshot_name(
         src, args.name, config, title_key="picker.title_browse",
+        show_auto=bool(getattr(args, "all", False)),
     )
     if name is None:
         return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
@@ -362,6 +386,7 @@ def cmd_browse(args: argparse.Namespace, config: RuntimeConfig) -> int:
                 raw=False,
                 binary_ok=False,
                 json=False,
+                all=bool(getattr(args, "all", False)),
             ),
             config,
         )

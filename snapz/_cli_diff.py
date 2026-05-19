@@ -30,6 +30,7 @@ def cmd_diff(args: argparse.Namespace, config: RuntimeConfig) -> int:
 
     a_name = _resolve_snapshot_name(
         src, args.a, config, title_key="picker.title_diff_a",
+        show_auto=bool(getattr(args, "all", False)),
     )
     if a_name is None:
         return EXIT_USER_ABORT if _stdout_is_tty() else EXIT_ERROR
@@ -41,6 +42,9 @@ def cmd_diff(args: argparse.Namespace, config: RuntimeConfig) -> int:
     b_name = args.b
     if not b_name and not args.a and _stdout_is_tty():
         snaps = api.list_snapshots(src, config=config)
+        snaps = _filter_user_visible(
+            snaps, show_auto=bool(getattr(args, "all", False)),
+        )
         from snapz import tui
         chosen = tui.run_snapshot_picker(
             [s for s in snaps if s.name != a_name],
@@ -110,4 +114,3 @@ def cmd_diff(args: argparse.Namespace, config: RuntimeConfig) -> int:
     )
     print(st.muted(f"\n{counts}"))
     return EXIT_OK
-

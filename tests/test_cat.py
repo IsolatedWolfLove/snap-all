@@ -6,7 +6,8 @@ import json
 
 import pytest
 
-from snapz import cli
+from snapz import api, cli
+from snapz._tui_browser import BrowseAction
 
 
 @pytest.fixture
@@ -88,3 +89,48 @@ def test_cat_json_reports_metadata_without_content(env_root, project_dir, capsys
         "bytes": len("# demo\n".encode()),
         "binary": False,
     }
+
+
+def test_cat_interactive_missing_relpath_opens_file_picker(
+    env_root, project_dir, monkeypatch, capsys
+):
+    cli.main(["save", str(project_dir), "-n", "v1", "-y"])
+    capsys.readouterr()
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    calls = []
+
+    def fake_browse(entries, **kwargs):
+        calls.append((list(entries), kwargs))
+        return BrowseAction(kind="file", path="README.md")
+
+    monkeypatch.setattr("snapz.tui.browse_manifest", fake_browse)
+
+    rc = cli.main(["cat", "v1", "--path", str(project_dir)])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert out == "# demo\n"
+    assert calls
+    assert calls[0][1]["mode"] == "view"
+    assert calls[0][1]["preview"] is None
+
+
+def test_cat_all_accepts_hidden_auto_snapshot(env_root, project_dir, capsys):
+    cli.main(["save", str(project_dir), "-n", "v1", "-y"])
+    (project_dir / "README.md").write_text("patched\n", encoding="utf-8")
+    cli.main(["restore", "v1", "--path", str(project_dir), "-y"])
+    capsys.readouterr()
+    auto_name = next(
+        snap.name for snap in api.list_snapshots(project_dir)
+        if snap.name.startswith("auto-pre-restore-")
+    )
+
+    rc = cli.main([
+        "cat", auto_name, "README.md", "--path", str(project_dir), "--all",
+    ])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert out == "patched\n"
