@@ -87,6 +87,11 @@ ensure_venv() {
     mkdir -p "$DIST"
 }
 
+check_py310_compat() {
+    log "checking Python 3.10 f-string compatibility"
+    "$PY_BIN" "$ROOT/tools/check_py310_fstrings.py" "$ROOT/snapz" "$ROOT/snapz_server"
+}
+
 resolve_wheel() {
     ls -1t "$DIST"/snapz_cli-*.whl 2>/dev/null | head -n 1 || true
 }
@@ -100,6 +105,7 @@ project_version() {
 }
 
 build_wheel() {
+    check_py310_compat
     ensure_venv
     mkdir -p "$WORK"
     log "building sdist + wheel -> $DIST"
@@ -181,6 +187,7 @@ EOF
 smoke() {
     log "smoke-testing artifacts"
     local fail=0
+    check_py310_compat || fail=1
     local shiv_root="${SHIV_ROOT:-$WORK/shiv-root}"
     mkdir -p "$shiv_root"
     if [ -f "$DIST/snapz.pyz" ]; then

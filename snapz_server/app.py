@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import html
 import json
 import os
 import sqlite3
-import ssl
 import tarfile
 import tempfile
 from http import HTTPStatus
@@ -18,7 +16,6 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 from urllib.parse import parse_qs, urlparse
 
-from snapz.api import _open_bundle_tar_reader, BUNDLE_META_NAME
 from snapz.util import format_size
 from snapz_server import db
 from snapz_server.admin_ui import ADMIN_UI_HTML
@@ -29,10 +26,41 @@ from snapz_server.bundles import (
     rename_bundle_snapshot,
     validate_bundle_file,
 )
+from snapz_server.payloads import (
+    decode_meta_header as _decode_meta_header,
+    read_bundle_meta as _read_bundle_meta,
+)
+from snapz_server.routes import (
+    admin_device_id_from_revoke_path as _admin_device_id_from_revoke_path,
+    admin_source_ref_from_path as _admin_source_ref_from_path,
+    admin_source_snapshot_ref_from_path as _admin_source_snapshot_ref_from_path,
+    admin_source_snapshots_ref_from_path as _admin_source_snapshots_ref_from_path,
+    admin_user_id_from_devices_path as _admin_user_id_from_devices_path,
+    admin_user_id_from_password_path as _admin_user_id_from_password_path,
+    admin_user_id_from_path as _admin_user_id_from_path,
+    admin_user_id_from_revoke_devices_path as _admin_user_id_from_revoke_devices_path,
+    is_sha256 as _is_sha256,
+    safe_id as _safe_id,
+    safe_snapshot_name as _safe_snapshot_name,
+    source_id_from_bundle_path as _source_id_from_bundle_path,
+)
+from snapz_server.serializers import (
+    admin_device_dict as _admin_device_dict,
+    admin_source_dict as _admin_source_dict,
+    admin_user_dict as _admin_user_dict,
+    ctx_dict as _ctx_dict,
+    row_dict as _row_dict,
+)
+from snapz_server.server_config import (
+    DEFAULT_MAX_BUNDLE_BYTES,
+    enable_tls as _enable_tls,
+    resolve_cors_origins as _resolve_cors_origins,
+    resolve_max_bundle_bytes as _resolve_max_bundle_bytes,
+    resolve_tls_path as _resolve_tls_path,
+)
 
 MAX_JSON_BYTES = 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
-DEFAULT_MAX_BUNDLE_BYTES = 10 * 1024 * 1024 * 1024
 
 
 class SnapzHTTPServer(ThreadingHTTPServer):
@@ -84,54 +112,6 @@ def make_server(
     )
     _enable_tls(server)
     return server
-
-
-def _resolve_cors_origins(origins: Iterable[str] | None = None) -> tuple[str, ...]:
-    raw: list[str] = []
-    if origins is not None:
-        raw.extend(str(item) for item in origins)
-    env = os.environ.get("SNAPZ_SERVER_CORS_ORIGIN", "")
-    if env:
-        raw.extend(env.split(","))
-    cleaned = tuple(origin.strip().rstrip("/") for origin in raw if origin.strip())
-    return cleaned
-
-
-def _resolve_max_bundle_bytes(value: int | None = None) -> int:
-    if value is None:
-        raw = os.environ.get("SNAPZ_SERVER_MAX_BUNDLE_MB", "")
-        if raw:
-            try:
-                value = int(raw) * 1024 * 1024
-            except ValueError:
-                value = DEFAULT_MAX_BUNDLE_BYTES
-        else:
-            value = DEFAULT_MAX_BUNDLE_BYTES
-    return max(1, int(value))
-
-
-def _resolve_tls_path(value: str | None, *, env_name: str) -> str:
-    raw = value if value is not None else os.environ.get(env_name, "")
-    return str(raw or "").strip()
-
-
-def _enable_tls(server: SnapzHTTPServer) -> None:
-    certfile = server.tls_certfile
-    keyfile = server.tls_keyfile
-    client_ca = server.tls_client_ca
-    if client_ca and (not certfile or not keyfile):
-        raise ValueError("TLS client CA requires TLS certfile and keyfile")
-    if not certfile and not keyfile:
-        return
-    if not certfile or not keyfile:
-        raise ValueError("both TLS certfile and keyfile are required")
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-    if client_ca:
-        context.load_verify_locations(cafile=client_ca)
-        context.verify_mode = ssl.CERT_REQUIRED
-    server.socket = context.wrap_socket(server.socket, server_side=True)
 
 
 class SnapzHandler(BaseHTTPRequestHandler):
@@ -923,215 +903,3 @@ class SnapzHandler(BaseHTTPRequestHandler):
             raw,
             content_type="text/html; charset=utf-8",
         )
-
-
-def _source_id_from_bundle_path(path: str) -> str:
-    parts = path.strip("/").split("/")
-    if len(parts) != 4 or parts[:2] != ["api", "sources"] or parts[3] != "bundle":
-        return ""
-    value = parts[2]
-    if not value or any(not (c.isalnum() or c in "_-") for c in value):
-        return ""
-    return value
-
-
-def _admin_user_id_from_path(path: str) -> str:
-    parts = path.strip("/").split("/")
-    if len(parts) != 4 or parts[:3] != ["api", "admin", "users"]:
-        return ""
-    return _safe_id(parts[3])
-
-
-def _admin_user_id_from_password_path(path: str) -> str:
-    parts = path.strip("/").split("/")
-    if len(parts) != 5 or parts[:3] != ["api", "admin", "users"]:
-        return ""
-    if parts[4] != "password":
-        return ""
-    return _safe_id(parts[3])
-
-
-def _admin_user_id_from_devices_path(path: str) -> str:
-    parts = path.strip("/").split("/")
-    if len(parts) != 5 or parts[:3] != ["api", "admin", "users"]:
-        return ""
-    if parts[4] != "devices":
-        return ""
-    return _safe_id(parts[3])
-
-
-def _admin_user_id_from_revoke_devices_path(path: str) -> str:
-    parts = path.strip("/").split("/")
-    if len(parts) != 6 or parts[:3] != ["api", "admin", "users"]:
-        return ""
-    if parts[4:] != ["devices", "revoke"]:
-        return ""
-    return _safe_id(parts[3])
-
-
-def _admin_device_id_from_revoke_path(path: str) -> str:
-    parts = path.strip("/").split("/")
-    if len(parts) != 5 or parts[:3] != ["api", "admin", "devices"]:
-        return ""
-    if parts[4] != "revoke":
-        return ""
-    return _safe_id(parts[3])
-
-
-def _admin_source_ref_from_path(path: str) -> tuple[str, str] | None:
-    parts = path.strip("/").split("/")
-    if len(parts) != 5 or parts[:3] != ["api", "admin", "sources"]:
-        return None
-    tenant_id = _safe_id(parts[3])
-    source_id = _safe_id(parts[4])
-    if not tenant_id or not source_id:
-        return None
-    return tenant_id, source_id
-
-
-def _admin_source_snapshots_ref_from_path(path: str) -> tuple[str, str] | None:
-    parts = path.strip("/").split("/")
-    if len(parts) != 6 or parts[:3] != ["api", "admin", "sources"]:
-        return None
-    if parts[5] != "snapshots":
-        return None
-    tenant_id = _safe_id(parts[3])
-    source_id = _safe_id(parts[4])
-    if not tenant_id or not source_id:
-        return None
-    return tenant_id, source_id
-
-
-def _admin_source_snapshot_ref_from_path(path: str) -> tuple[str, str, str] | None:
-    parts = path.strip("/").split("/")
-    if len(parts) != 7 or parts[:3] != ["api", "admin", "sources"]:
-        return None
-    if parts[5] != "snapshots":
-        return None
-    tenant_id = _safe_id(parts[3])
-    source_id = _safe_id(parts[4])
-    snapshot_name = _safe_snapshot_name(parts[6])
-    if not tenant_id or not source_id or not snapshot_name:
-        return None
-    return tenant_id, source_id, snapshot_name
-
-
-def _safe_snapshot_name(value: str) -> str:
-    if not value or any(not (c.isalnum() or c in "_.-") for c in value):
-        return ""
-    return value
-
-
-def _is_sha256(value: str) -> bool:
-    return len(value) == 64 and all(c in "0123456789abcdefABCDEF" for c in value)
-
-
-def _safe_id(value: str) -> str:
-    if not value or any(not (c.isalnum() or c in "_-") for c in value):
-        return ""
-    return value
-
-
-def _decode_meta_header(raw: str) -> dict[str, Any]:
-    if not raw:
-        raise ValueError("missing X-Snapz-Source-Meta")
-    try:
-        decoded = base64.b64decode(raw.encode("ascii"), validate=True)
-        data = json.loads(decoded.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        raise ValueError("invalid X-Snapz-Source-Meta") from exc
-    if not isinstance(data, dict):
-        raise ValueError("source metadata must be an object")
-    return data
-
-
-def _read_bundle_meta(bundle: Path) -> dict[str, Any]:
-    with _open_bundle_tar_reader(bundle) as tar:
-        try:
-            member = tar.getmember(BUNDLE_META_NAME)
-        except KeyError as exc:
-            raise ValueError(f"bundle missing {BUNDLE_META_NAME}") from exc
-        extracted = tar.extractfile(member)
-        if extracted is None:
-            raise ValueError(f"bundle member is not readable: {BUNDLE_META_NAME}")
-        try:
-            data = json.loads(extracted.read().decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"bundle has invalid JSON: {BUNDLE_META_NAME}") from exc
-    if not isinstance(data, dict):
-        raise ValueError("bundle metadata must be an object")
-    return data
-
-
-def _ctx_dict(ctx: db.AuthContext) -> dict[str, str]:
-    return {
-        "tenant_id": ctx.tenant_id,
-        "tenant": ctx.tenant_name,
-        "user_id": ctx.user_id,
-        "username": ctx.username,
-        "device_id": ctx.device_id,
-        "device_name": ctx.device_name,
-    }
-
-
-def _admin_user_dict(row: Any) -> dict[str, Any]:
-    return {
-        "id": row["id"],
-        "tenant_id": row["tenant_id"],
-        "tenant": row["tenant"],
-        "username": row["username"],
-        "disabled": bool(row["disabled"]),
-        "created_at": row["created_at"],
-        "device_count": int(row["device_count"]),
-        "active_device_count": int(row["active_device_count"]),
-        "last_seen_at": row["last_seen_at"],
-    }
-
-
-def _admin_device_dict(row: Any) -> dict[str, Any]:
-    return {
-        "id": row["id"],
-        "tenant_id": row["tenant_id"],
-        "tenant": row["tenant"],
-        "user_id": row["user_id"],
-        "username": row["username"],
-        "name": row["name"],
-        "created_at": row["created_at"],
-        "last_seen_at": row["last_seen_at"],
-        "revoked_at": row["revoked_at"],
-        "revoked": bool(row["revoked_at"]),
-    }
-
-
-def _admin_source_dict(row: Any) -> dict[str, Any]:
-    return {
-        "id": row["id"],
-        "tenant_id": row["tenant_id"],
-        "tenant": row["tenant"],
-        "source_marker": row["source_marker"],
-        "origin_store_key": row["origin_store_key"],
-        "display_name": row["display_name"],
-        "path_hint": row["path_hint"],
-        "snapshot_count": int(row["snapshot_count"]),
-        "bundle_bytes": int(row["bundle_bytes"]),
-        "pushed_by_device": row["pushed_by_device"],
-        "pushed_by_device_name": row["pushed_by_device_name"],
-        "pushed_by_user_id": row["pushed_by_user_id"],
-        "pushed_by_username": row["pushed_by_username"],
-        "updated_at": row["updated_at"],
-    }
-
-
-def _row_dict(row: Any) -> dict[str, Any]:
-    return {
-        "id": row["id"],
-        "tenant_id": row["tenant_id"],
-        "source_marker": row["source_marker"],
-        "origin_store_key": row["origin_store_key"],
-        "display_name": row["display_name"],
-        "path_hint": row["path_hint"],
-        "snapshot_count": int(row["snapshot_count"]),
-        "bundle_bytes": int(row["bundle_bytes"]),
-        "pushed_by_device": row["pushed_by_device"],
-        "updated_at": row["updated_at"],
-    }
