@@ -113,8 +113,10 @@ git push origin main v2.0.0
 ```
 
 The release workflow verifies that the tag matches `pyproject.toml`,
-runs tests, builds `dist/`, and uploads the `.deb`, `.pyz`, wheel, and
-sdist files to the GitHub Release.
+runs tests, builds the English `dist/`, then rebuilds with `--lang zh`
+and uploads the standard `.deb`, `.pyz`, wheel, and sdist files plus
+Chinese-default `snapz-zh.pyz`, `snapz-server-zh.pyz`, and
+`snapz-cli_<version>_all.zh.deb` files to the GitHub Release.
 
 A previous iteration also produced a 13 MB PyInstaller `--onefile`
 binary; it was removed because the `.pyz` is much lighter and Python is
@@ -251,6 +253,8 @@ $ snapz migrate --all --to v3                    # move old blobs into the globa
 $ snapz config list                              # show defaults + overrides
 $ snapz config set save_picker true              # enable post-walk picker in
                                                 # interactive `snapz save`
+$ snapz config set update_check.enabled false    # disable daily background
+                                                # GitHub update checks
 $ snapz config get save_picker
 $ snapz config unset save_picker
 ```

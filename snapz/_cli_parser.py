@@ -22,6 +22,7 @@ from snapz._cli_paths import cmd_browse, cmd_cat, cmd_find, cmd_revert, cmd_tag,
 from snapz._cli_save import cmd_save_interactive, cmd_save_scripted
 from snapz._cli_snapshot import cmd_export, cmd_mv, cmd_protect, cmd_restore, cmd_rm, cmd_show
 from snapz._cli_stats_prune import cmd_prune, cmd_stats
+from snapz import update_check
 
 
 def _snapshot_name_completer(prefix, parsed_args, **kwargs):
@@ -637,6 +638,9 @@ def build_parser() -> argparse.ArgumentParser:
 def _main_impl(argv: Optional[list[str]]) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
+    if argv[:1] == [update_check.WORKER_COMMAND]:
+        return update_check.run_worker_cli(argv[1:])
+
     parser = build_parser()
 
     # Optional shell-completion hook. Only fires when invoked through
@@ -673,6 +677,16 @@ def _main_impl(argv: Optional[list[str]]) -> int:
             print(t('bare.too_many_args', argv=argv), file=sys.stderr)
             return EXIT_ERROR
         config = default_config()
+        try:
+            st.configure(str(preferences.get_config_value(Path(config.root), "color")))
+        except (KeyError, ValueError):
+            st.configure("auto")
+        update_check.maybe_start(
+            Path(config.root),
+            current_version=__version__,
+            argv0=sys.argv[0],
+            command=None,
+        )
         ns = argparse.Namespace(
             path=path,
             yes=False,
@@ -734,5 +748,13 @@ def _main_impl(argv: Optional[list[str]]) -> int:
     if not hasattr(args, "func"):
         parser.print_help()
         return EXIT_OK
+
+    update_check.maybe_start(
+        Path(config.root),
+        current_version=__version__,
+        argv0=sys.argv[0],
+        command=getattr(args, "command", None),
+        json_requested=_wants_json(args),
+    )
 
     return args.func(args, config)

@@ -84,6 +84,15 @@ KNOWN_CONFIG_KEYS: dict[str, dict[str, Any]] = {
         ),
         "choices": ("auto", "always", "never"),
     },
+    "update_check.enabled": {
+        "type": "bool",
+        "default": True,
+        "help": (
+            "When true, the first snapz invocation each day starts a "
+            "non-blocking GitHub update check. If a newer version is found, "
+            "the next invocation prints an update notice."
+        ),
+    },
     "retention.keep_last": {
         "type": "int",
         "default": 0,

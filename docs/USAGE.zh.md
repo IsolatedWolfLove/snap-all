@@ -598,6 +598,7 @@ snapz config set color never
 snapz config set color always
 snapz config set save_picker true
 snapz config set ui_mode minimal
+snapz config set update_check.enabled false
 ```
 
 取消覆盖，回到默认值：
@@ -614,6 +615,7 @@ snapz config unset save_picker
 | `ui_mode` | `tui` | UI 模式，取值 `tui` 或 `minimal` |
 | `save_picker` | `false` | 保存时是否打开选择器，帮助把条目加入本地排除 |
 | `color` | `auto` | 彩色输出：`auto`、`always`、`never` |
+| `update_check.enabled` | `true` | 每天第一次启动是否后台检查 GitHub 更新；有更新时下次启动提示 |
 | `retention.keep_last` | `0` | prune 默认保留最新 N 个 |
 | `retention.keep_daily` | `0` | prune 默认按天保留 N 个 |
 | `retention.keep_weekly` | `0` | prune 默认按周保留 N 个 |

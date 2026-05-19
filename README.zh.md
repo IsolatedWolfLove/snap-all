@@ -104,8 +104,10 @@ git push origin main v2.0.0
 ```
 
 发布 workflow 会校验 tag 与 `pyproject.toml` 版本一致，跑测试，
-构建 `dist/`，并把 `.deb`、`.pyz`、wheel 和 sdist 上传到 GitHub
-Release。
+先构建英文 `dist/`，再用 `--lang zh` 重建中文版，并把标准 `.deb`、
+`.pyz`、wheel、sdist，以及默认中文的 `snapz-zh.pyz`、
+`snapz-server-zh.pyz`、`snapz-cli_<version>_all.zh.deb` 上传到
+GitHub Release。
 
 ## 速查上手
 
@@ -227,6 +229,7 @@ $ snapz find src/main.py --json | jq             # 结构化结果，方便脚�
 # 持久化偏好（~/.snapz-all/_config.json）
 $ snapz config list                              # 列出默认值与覆盖
 $ snapz config set save_picker true              # 开启交互 save 的事后选择器
+$ snapz config set update_check.enabled false    # 关闭每日后台更新检查
 $ snapz config get save_picker
 $ snapz config unset save_picker
 ```

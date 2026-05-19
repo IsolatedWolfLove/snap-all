@@ -261,6 +261,11 @@ _EN: dict[str, str] = {
     "update.source": "updating from",
     "update.done": "snapz updated",
     "update.failed": "update failed (pip exit code {code})",
+    "update_check.notice": (
+        "snapz {latest} is available (current {current}). Run `snapz update` "
+        "to upgrade. Disable this check with "
+        "`snapz config set update_check.enabled false`."
+    ),
     "uninstall.help": "uninstall snapz and optionally delete local data",
     "uninstall.yes": "skip uninstall confirmation",
     "uninstall.purge_data": "with -y, delete snapshots and config without prompting",
@@ -695,6 +700,10 @@ _ZH: dict[str, str] = {
     "update.source": "更新来源",
     "update.done": "snapz 已更新",
     "update.failed": "更新失败（pip 退出码 {code}）",
+    "update_check.notice": (
+        "snapz {latest} 可更新（当前 {current}）。运行 `snapz update` 更新；"
+        "可用 `snapz config set update_check.enabled false` 关闭检查。"
+    ),
     "uninstall.help": "卸载 snapz，并可选择删除本地数据",
     "uninstall.yes": "跳过卸载确认",
     "uninstall.purge_data": "配合 -y 使用，不提示直接删除快照和配置",
