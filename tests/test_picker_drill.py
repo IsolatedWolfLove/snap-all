@@ -72,6 +72,13 @@ def test_read_live_bytes_directory_returns_none(project_dir):
     assert api.read_live_bytes(project_dir, "src") is None
 
 
+def test_read_live_bytes_rejects_parent_traversal(project_dir, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+
+    assert api.read_live_bytes(project_dir, "../outside.txt") is None
+
+
 # ---------------------------------------------------------------------------
 # Non-TTY: missing snapshot name should produce a friendly error, not crash.
 # We force isatty() to False so the picker path is bypassed regardless of

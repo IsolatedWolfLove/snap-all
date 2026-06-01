@@ -12,10 +12,13 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+import pytest
+
 from snapz import api, cas, remote
 from snapz.config import RuntimeConfig
 from snapz_server import db
 from snapz_server.app import make_server
+from snapz_server.routes import admin_source_snapshot_ref_from_path, safe_snapshot_name
 
 
 def _start_server(
@@ -120,6 +123,14 @@ def _upload_bundle(
         data = json.loads(exc.read().decode("utf-8"))
         assert exc.code == expect
         return data
+
+
+@pytest.mark.parametrize("bad", [".", "..", ".hidden", "-snap", "_snap"])
+def test_server_rejects_parent_directory_snapshot_names(bad):
+    assert safe_snapshot_name(bad) == ""
+    assert admin_source_snapshot_ref_from_path(
+        f"/api/admin/sources/tenant/source/snapshots/{bad}"
+    ) is None
 
 
 def test_admin_api_requires_enabled_admin_token(tmp_path):

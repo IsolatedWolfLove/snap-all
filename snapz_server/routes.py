@@ -95,7 +95,9 @@ def admin_source_snapshot_ref_from_path(path: str) -> tuple[str, str, str] | Non
 
 
 def safe_snapshot_name(value: str) -> str:
-    if not value or any(not (c.isalnum() or c in "_.-") for c in value):
+    if not value or not value[0].isalnum():
+        return ""
+    if any(not (c.isalnum() or c in "_.-") for c in value):
         return ""
     return value
 

@@ -7,6 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Iterable, Optional
 
 from snapz import archive, cas, events, filecache, preferences
@@ -1143,6 +1144,24 @@ def restore(
     )
 
 
+def _safe_snapshot_target_path(target: Path, relpath: str) -> Path:
+    rel = PurePosixPath(str(relpath).rstrip("/"))
+    if (
+        not rel.parts
+        or rel.is_absolute()
+        or any(part in {"", ".", ".."} for part in rel.parts)
+    ):
+        raise ValueError(f"unsafe snapshot path: {relpath!r}")
+    full = Path(target, *rel.parts)
+    base = Path(target).resolve()
+    parent = full.parent.resolve(strict=False)
+    try:
+        parent.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(f"unsafe snapshot path: {relpath!r}") from exc
+    return full
+
+
 def _extract_cas(manifest_path: Path, target: Path, *, dir_root: Path) -> int:
     """Extract a CAS manifest's content over *target*. Returns entry count.
 
@@ -1383,8 +1402,10 @@ def read_live_bytes(path: str | Path, relpath: str) -> Optional[bytes]:
     """
 
     abspath = resolve_path(path)
-    relpath = relpath.strip().rstrip("/")
-    target = abspath / relpath
+    try:
+        target = _safe_snapshot_target_path(abspath, relpath)
+    except ValueError:
+        return None
     try:
         if target.is_symlink():
             return os.readlink(target).encode("utf-8", errors="replace")
