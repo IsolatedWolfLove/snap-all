@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -285,7 +286,11 @@ def check(
                 if fix:
                     manifest.snapshot = name
                     try:
-                        cas.write_manifest(artifact, manifest)
+                        cas.write_manifest(
+                            artifact,
+                            manifest,
+                            zstd_level=config.zstd_level,
+                        )
                         did_fix = True
                         fixed += 1
                     except OSError:
@@ -298,31 +303,80 @@ def check(
             for entry in manifest.entries:
                 if entry.type != "file":
                     continue
-                if not entry.sha256:
+                refs = cas.entry_blob_refs(entry)
+                if not refs:
                     _issue(
                         issues, "error", "missing-entry-sha",
                         f"file entry lacks sha256: {entry.path}",
                         path=artifact, snapshot=name,
                     )
                     continue
-                try:
-                    if deep:
-                        size = cas.verify_blob(dir_root, entry.sha256)
-                        if entry.size is not None and size != entry.size:
+                if entry.chunks:
+                    total_size = 0
+                    file_hash = hashlib.sha256() if deep and entry.sha256 else None
+                    for chunk in entry.chunks:
+                        try:
+                            if deep:
+                                data = cas.read_blob_bytes(dir_root, chunk.sha256)
+                                size = len(data)
+                                actual_chunk = hashlib.sha256(data).hexdigest()
+                                if actual_chunk != chunk.sha256:
+                                    raise ValueError(
+                                        f"blob {chunk.sha256[:12]} checksum mismatch"
+                                    )
+                                if file_hash is not None:
+                                    file_hash.update(data)
+                                total_size += size
+                                if size != chunk.size:
+                                    _issue(
+                                        issues, "error", "blob-size-mismatch",
+                                        f"{entry.path} chunk expected {chunk.size} bytes, got {size}",
+                                        path=cas.find_blob(dir_root, chunk.sha256),
+                                        snapshot=name,
+                                    )
+                            else:
+                                cas.find_blob(dir_root, chunk.sha256)
+                        except Exception as exc:
                             _issue(
-                                issues, "error", "blob-size-mismatch",
-                                f"{entry.path} expected {entry.size} bytes, got {size}",
-                                path=cas.find_blob(dir_root, entry.sha256),
-                                snapshot=name,
+                                issues, "error", "bad-blob",
+                                f"{entry.path}: {exc}",
+                                path=dir_root, snapshot=name,
                             )
-                    else:
-                        cas.find_blob(dir_root, entry.sha256)
-                except Exception as exc:
-                    _issue(
-                        issues, "error", "bad-blob",
-                        f"{entry.path}: {exc}",
-                        path=dir_root, snapshot=name,
-                    )
+                    if deep and entry.size is not None and total_size != entry.size:
+                        _issue(
+                            issues, "error", "blob-size-mismatch",
+                            f"{entry.path} expected {entry.size} bytes, got {total_size}",
+                            path=artifact, snapshot=name,
+                        )
+                    if (
+                        deep
+                        and file_hash is not None
+                        and file_hash.hexdigest() != entry.sha256
+                    ):
+                        _issue(
+                            issues, "error", "blob-checksum-mismatch",
+                            f"{entry.path} checksum mismatch",
+                            path=artifact, snapshot=name,
+                        )
+                else:
+                    try:
+                        if deep:
+                            size = cas.verify_blob(dir_root, entry.sha256)
+                            if entry.size is not None and size != entry.size:
+                                _issue(
+                                    issues, "error", "blob-size-mismatch",
+                                    f"{entry.path} expected {entry.size} bytes, got {size}",
+                                    path=cas.find_blob(dir_root, entry.sha256),
+                                    snapshot=name,
+                                )
+                        else:
+                            cas.find_blob(dir_root, entry.sha256)
+                    except Exception as exc:
+                        _issue(
+                            issues, "error", "bad-blob",
+                            f"{entry.path}: {exc}",
+                            path=dir_root, snapshot=name,
+                        )
 
         for manifest_path in cas.iter_manifest_paths(dir_root):
             name = cas.manifest_name(manifest_path)

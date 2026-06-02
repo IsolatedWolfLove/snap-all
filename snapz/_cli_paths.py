@@ -408,8 +408,12 @@ def cmd_tag(args: argparse.Namespace, config: RuntimeConfig) -> int:
         try:
             if action == "add":
                 meta = api.tag_add(path, name, tags, config=config)
+                shown_tags = meta.tags
             else:
+                before = api.show(path, name, config=config)
                 meta = api.tag_remove(path, name, tags, config=config)
+                before_tags = before.tags if before is not None else []
+                shown_tags = [tag for tag in before_tags if tag not in meta.tags]
         except (FileNotFoundError, ValueError) as exc:
             _print_error(str(exc))
             return EXIT_ERROR
@@ -417,7 +421,7 @@ def cmd_tag(args: argparse.Namespace, config: RuntimeConfig) -> int:
             _emit_json({"snapshot": meta.name, "tags": meta.tags})
             return EXIT_OK
         label = t('tag.added') if action == "add" else t('tag.removed')
-        tag_str = ",".join(meta.tags) if meta.tags else "-"
+        tag_str = ",".join(shown_tags) if shown_tags else "-"
         print(f"{st.ok_mark()} {label}: {st.name(meta.name)}  [{st.muted(tag_str)}]")
         return EXIT_OK
 

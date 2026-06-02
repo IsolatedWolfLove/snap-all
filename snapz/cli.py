@@ -21,6 +21,7 @@ from snapz._cli_bundle_remote import (
     cmd_pull,
     cmd_push,
 )
+from snapz._cli_completion import cmd_completion
 from snapz._cli_common import (
     EXIT_ERROR,
     EXIT_OK,
@@ -69,7 +70,7 @@ from snapz._cli_maintenance import (
     cmd_migrate,
     cmd_relocate,
 )
-from snapz._cli_parser import _main_impl, _snapshot_name_completer, build_parser
+from snapz._cli_parser import _main_impl, _snapshot_name_completer, _tag_completer, build_parser
 from snapz._cli_paths import (
     _print_find_text,
     _print_revert_outcome,

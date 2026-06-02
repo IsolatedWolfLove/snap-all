@@ -61,6 +61,25 @@ _GZIP_MAGIC = b"\x1f\x8b"
 
 
 @dataclass
+class ChunkRef:
+    sha256: str
+    size: int
+
+    def to_dict(self) -> dict:
+        return {
+            "sha256": self.sha256,
+            "size": self.size,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ChunkRef":
+        return cls(
+            sha256=str(d["sha256"]),
+            size=int(d.get("size", 0)),
+        )
+
+
+@dataclass
 class ManifestEntry:
     path: str               # source-relative path
     type: str               # "file" | "symlink"
@@ -69,6 +88,7 @@ class ManifestEntry:
     sha256: Optional[str] = None    # files only
     size: Optional[int] = None      # files only (uncompressed bytes)
     target: Optional[str] = None    # symlinks only
+    chunks: list[ChunkRef] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         out: dict = {
@@ -83,10 +103,13 @@ class ManifestEntry:
             out["size"] = self.size
         if self.target is not None:
             out["target"] = self.target
+        if self.chunks:
+            out["chunks"] = [chunk.to_dict() for chunk in self.chunks]
         return out
 
     @classmethod
     def from_dict(cls, d: dict) -> "ManifestEntry":
+        raw_chunks = d.get("chunks") or []
         return cls(
             path=d["path"],
             type=d["type"],
@@ -95,6 +118,11 @@ class ManifestEntry:
             sha256=d.get("sha256"),
             size=d.get("size"),
             target=d.get("target"),
+            chunks=[
+                ChunkRef.from_dict(chunk)
+                for chunk in raw_chunks
+                if isinstance(chunk, dict)
+            ],
         )
 
 
@@ -222,6 +250,83 @@ def hash_file(path: Path, *, chunk_size: int = 64 * 1024) -> tuple[str, int]:
     return h.hexdigest(), size
 
 
+def _compress_bytes(
+    raw: bytes,
+    *,
+    use_zstd: bool,
+    zstd_level: int,
+    gzip_level: int,
+) -> bytes:
+    if use_zstd and _zstandard is not None:
+        return _zstandard.ZstdCompressor(level=zstd_level).compress(raw)
+    return gzip.compress(raw, compresslevel=gzip_level)
+
+
+def write_blob_bytes(
+    dir_root: Path,
+    data: bytes,
+    *,
+    use_zstd: bool = True,
+    global_store: bool = False,
+    zstd_level: int = 10,
+    gzip_level: int = 9,
+) -> tuple[str, int, bool]:
+    """Store raw *data* as one compressed blob.
+
+    Returns ``(sha256, uncompressed_size, was_new)``.
+    """
+
+    sha = hashlib.sha256(data).hexdigest()
+    size = len(data)
+    target = (
+        global_blob_path(dir_root.parent, sha)
+        if global_store
+        else legacy_blob_path(dir_root, sha)
+    )
+    if target.exists():
+        return sha, size, False
+
+    target_root = global_objects_root(dir_root.parent) if global_store else objects_root(dir_root)
+    target_root.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".blob-",
+        suffix=".tmp",
+        dir=str(target_root),
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as raw_out:
+            raw_out.write(
+                _compress_bytes(
+                    data,
+                    use_zstd=use_zstd,
+                    zstd_level=zstd_level,
+                    gzip_level=gzip_level,
+                )
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        try:
+            os.link(tmp, target)
+        except FileExistsError:
+            return sha, size, False
+        return sha, size, True
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def write_blob(
     dir_root: Path,
     src: Path,
@@ -229,6 +334,8 @@ def write_blob(
     use_zstd: bool = True,
     global_store: bool = False,
     precomputed_sha: Optional[str] = None,
+    zstd_level: int = 10,
+    gzip_level: int = 9,
 ) -> tuple[str, int, bool]:
     """Hash *src*, store as a blob under ``objects/`` if not already present.
 
@@ -260,10 +367,14 @@ def write_blob(
     try:
         with os.fdopen(fd, "wb") as raw_out:
             if use_zstd and _zstandard is not None:
-                cctx = _zstandard.ZstdCompressor(level=3)
+                cctx = _zstandard.ZstdCompressor(level=zstd_level)
                 writer = cctx.stream_writer(raw_out, closefd=False)
             else:
-                writer = gzip.GzipFile(fileobj=raw_out, mode="wb", compresslevel=6)
+                writer = gzip.GzipFile(
+                    fileobj=raw_out,
+                    mode="wb",
+                    compresslevel=gzip_level,
+                )
             with writer:
                 with open(src, "rb") as in_f:
                     while True:
@@ -353,7 +464,11 @@ def read_blob_bytes(dir_root: Path, sha256: str) -> bytes:
     """
 
     raw = find_blob(dir_root, sha256).read_bytes()
-    return _decode_blob_bytes(raw, sha256)
+    data = _decode_blob_bytes(raw, sha256)
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != sha256:
+        raise ValueError(f"blob {sha256[:12]} checksum mismatch")
+    return data
 
 
 def read_blob_to(dir_root: Path, sha256: str, dst: Path) -> int:
@@ -405,12 +520,51 @@ def read_blob_to(dir_root: Path, sha256: str, dst: Path) -> int:
         raise
 
 
+def read_blobs_to(
+    dir_root: Path,
+    chunks: Iterable[ChunkRef],
+    dst: Path,
+    *,
+    expected_sha256: str | None = None,
+) -> int:
+    """Decompress *chunks* into *dst* in order. Returns bytes written."""
+
+    tmp = dst.with_name(dst.name + ".tmp")
+    size = 0
+    h = hashlib.sha256() if expected_sha256 else None
+    try:
+        with open(tmp, "wb") as out:
+            for chunk in chunks:
+                data = read_blob_bytes(dir_root, chunk.sha256)
+                if chunk.size is not None and len(data) != chunk.size:
+                    raise ValueError(f"blob {chunk.sha256[:12]} size mismatch")
+                size += len(data)
+                if h is not None:
+                    h.update(data)
+                out.write(data)
+        if h is not None and h.hexdigest() != expected_sha256:
+            raise ValueError("chunked file checksum mismatch")
+        os.replace(tmp, dst)
+        return size
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Manifests
 # ---------------------------------------------------------------------------
 
 
-def write_manifest(path: Path, manifest: Manifest) -> None:
+def write_manifest(
+    path: Path,
+    manifest: Manifest,
+    *,
+    zstd_level: int = 10,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "format_version": manifest.format_version,
@@ -425,7 +579,7 @@ def write_manifest(path: Path, manifest: Manifest) -> None:
     if len(raw) > MANIFEST_COMPRESS_THRESHOLD and _zstandard is not None:
         if target.name.endswith(MANIFEST_SUFFIX):
             target = Path(str(target) + ".zst")
-        raw = _zstandard.ZstdCompressor(level=3).compress(raw)
+        raw = _zstandard.ZstdCompressor(level=zstd_level).compress(raw)
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_bytes(raw)
     try:
@@ -457,6 +611,19 @@ def read_manifest(path: Path) -> Manifest:
     )
 
 
+def entry_blob_refs(entry: ManifestEntry) -> list[str]:
+    if entry.chunks:
+        return [chunk.sha256 for chunk in entry.chunks if chunk.sha256]
+    return [entry.sha256] if entry.sha256 else []
+
+
+def manifest_blob_refs(manifest: Manifest) -> list[str]:
+    refs: list[str] = []
+    for entry in manifest.entries:
+        refs.extend(entry_blob_refs(entry))
+    return refs
+
+
 # ---------------------------------------------------------------------------
 # GC helpers
 # ---------------------------------------------------------------------------
@@ -471,9 +638,7 @@ def referenced_blobs(dir_root: Path) -> set[str]:
             m = read_manifest(m_file)
         except (OSError, json.JSONDecodeError, KeyError):
             continue
-        for e in m.entries:
-            if e.sha256:
-                refs.add(e.sha256)
+        refs.update(manifest_blob_refs(m))
     return refs
 
 
@@ -599,9 +764,8 @@ def rebuild_refs_index(storage_root: Path) -> dict[str, int]:
                     manifest = read_manifest(manifest_path)
                 except (OSError, json.JSONDecodeError, KeyError, ValueError):
                     continue
-                for entry in manifest.entries:
-                    if entry.sha256:
-                        refs[entry.sha256] = refs.get(entry.sha256, 0) + 1
+                for sha in manifest_blob_refs(manifest):
+                    refs[sha] = refs.get(sha, 0) + 1
     save_refs_index(storage_root, refs)
     return refs
 

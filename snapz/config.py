@@ -13,6 +13,12 @@ from pathlib import Path
 
 DEFAULT_ROOT = Path("~/.snapz-all").expanduser()
 DEFAULT_LARGE_FILE_BYTES = 100 * 1024 * 1024  # 100 MiB
+DEFAULT_ZSTD_LEVEL = 10
+DEFAULT_GZIP_LEVEL = 9
+DEFAULT_CHUNK_FILE_BYTES = 8 * 1024 * 1024
+DEFAULT_CHUNK_MIN_BYTES = 256 * 1024
+DEFAULT_CHUNK_AVG_BYTES = 1024 * 1024
+DEFAULT_CHUNK_MAX_BYTES = 4 * 1024 * 1024
 REGISTRY_FILENAME = "registry.json"
 DIR_META_FILENAME = "_meta.json"
 ARCHIVE_SUFFIX_ZSTD = ".tar.zst"
@@ -31,6 +37,25 @@ def _default_save_workers() -> int:
     except ValueError:
         return fallback
     return max(1, parsed)
+
+
+def _env_int(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return max(min_value, min(max_value, parsed))
+
+
+def _default_zstd_level() -> int:
+    return _env_int("SNAPZ_ZSTD_LEVEL", DEFAULT_ZSTD_LEVEL, min_value=1, max_value=22)
+
+
+def _default_gzip_level() -> int:
+    return _env_int("SNAPZ_GZIP_LEVEL", DEFAULT_GZIP_LEVEL, min_value=1, max_value=9)
 
 
 def storage_root() -> Path:
@@ -59,9 +84,15 @@ class RuntimeConfig:
     apply_snapzignore: bool = True
     use_file_cache: bool = True
     save_workers: int = field(default_factory=_default_save_workers)
+    zstd_level: int = field(default_factory=_default_zstd_level)
+    gzip_level: int = field(default_factory=_default_gzip_level)
+    chunk_file_bytes: int = DEFAULT_CHUNK_FILE_BYTES
+    chunk_min_bytes: int = DEFAULT_CHUNK_MIN_BYTES
+    chunk_avg_bytes: int = DEFAULT_CHUNK_AVG_BYTES
+    chunk_max_bytes: int = DEFAULT_CHUNK_MAX_BYTES
 
     def with_root(self, root: Path) -> "RuntimeConfig":
-        return RuntimeConfig(
+        return type(self)(
             root=Path(root),
             large_file_bytes=self.large_file_bytes,
             follow_symlinks=self.follow_symlinks,
@@ -71,6 +102,12 @@ class RuntimeConfig:
             apply_snapzignore=self.apply_snapzignore,
             use_file_cache=self.use_file_cache,
             save_workers=self.save_workers,
+            zstd_level=self.zstd_level,
+            gzip_level=self.gzip_level,
+            chunk_file_bytes=self.chunk_file_bytes,
+            chunk_min_bytes=self.chunk_min_bytes,
+            chunk_avg_bytes=self.chunk_avg_bytes,
+            chunk_max_bytes=self.chunk_max_bytes,
         )
 
 

@@ -103,12 +103,13 @@ def _copy_tar_member(tar: tarfile.TarFile, arcname: str, dst: Path) -> int:
 
 
 @contextmanager
-def _open_bundle_tar_writer(path: Path):
-    if archive.zstd_available():
+def _open_bundle_tar_writer(path: Path, config: Optional[RuntimeConfig] = None):
+    config = config or default_config()
+    if config.use_zstd and archive.zstd_available():
         import zstandard as zstd
 
         with open(path, "wb") as raw:
-            compressor = zstd.ZstdCompressor(level=6)
+            compressor = zstd.ZstdCompressor(level=config.zstd_level)
             with compressor.stream_writer(raw) as stream:
                 writer = BufferedWriter(stream)
                 try:
@@ -117,7 +118,7 @@ def _open_bundle_tar_writer(path: Path):
                 finally:
                     writer.flush()
     else:
-        with tarfile.open(path, "w:gz") as tar:
+        with tarfile.open(path, "w:gz", compresslevel=config.gzip_level) as tar:
             yield tar
 
 
@@ -233,9 +234,7 @@ def export_bundle(
         })
         if is_manifest:
             manifest = cas.read_manifest(artifact)
-            for entry_obj in manifest.entries:
-                if entry_obj.sha256:
-                    blob_shas.add(entry_obj.sha256)
+            blob_shas.update(cas.manifest_blob_refs(manifest))
 
     bundle_meta = {
         "format_version": BUNDLE_FORMAT_VERSION,
@@ -256,7 +255,7 @@ def export_bundle(
 
     tmp = dst_path.with_suffix(dst_path.suffix + ".tmp")
     try:
-        with _open_bundle_tar_writer(tmp) as tar:
+        with _open_bundle_tar_writer(tmp, config) as tar:
             _tar_add_json(tar, BUNDLE_META_NAME, bundle_meta)
             tar.add(dir_root / "_meta.json", arcname="source/_meta.json", recursive=False)
             for row in snapshot_rows:
@@ -376,6 +375,8 @@ def import_bundle(
 
         imported_names: list[str] = []
         overwritten_names: list[str] = []
+        imported_refs: list[str] = []
+        overwritten_refs: list[str] = []
         for row in snapshots:
             name = str(row.get("name") or "")
             meta_arc = str(row.get("meta") or "")
@@ -396,12 +397,27 @@ def import_bundle(
                 raise ValueError(f"unknown snapshot artifact kind: {kind!r}")
             if name in existing_names:
                 overwritten_names.append(name)
+                old_artifact = store.find_archive_in_dir(target_dir, name)
+                if old_artifact is not None and cas.is_manifest_artifact(old_artifact):
+                    try:
+                        overwritten_refs.extend(
+                            cas.manifest_blob_refs(cas.read_manifest(old_artifact))
+                        )
+                    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                        pass
                 (target_dir / f"{name}{META_SUFFIX}").unlink(missing_ok=True)
                 cas.manifest_path(target_dir, name).unlink(missing_ok=True)
                 cas.compressed_manifest_path(target_dir, name).unlink(missing_ok=True)
                 for suffix in ARCHIVE_SUFFIXES:
                     (target_dir / f"{name}{suffix}").unlink(missing_ok=True)
             _copy_tar_member(tar, artifact_arc, artifact_dst)
+            if kind == "manifest":
+                try:
+                    imported_refs.extend(
+                        cas.manifest_blob_refs(cas.read_manifest(artifact_dst))
+                    )
+                except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                    raise ValueError(f"imported manifest is invalid: {name}") from exc
             meta_dst = target_dir / f"{name}{META_SUFFIX}"
             meta_dst.write_text(
                 json.dumps(snap.to_dict(), indent=2, ensure_ascii=False) + "\n",
@@ -436,6 +452,10 @@ def import_bundle(
         registry.setdefault("version", 1)
         registry.setdefault("dirs", {})[target_key] = dir_meta
         store._save_registry(registry)  # noqa: SLF001
+        if overwritten_refs:
+            cas.decrement_refs(store.root, overwritten_refs)
+        if imported_refs:
+            cas.increment_refs(store.root, imported_refs)
 
         entry = store.entry_by_key(target_key)
         archived_state = True if entry is None else entry.archived

@@ -61,6 +61,23 @@ def test_bundle_import_with_path_binds_to_live_directory(project_dir, config, tm
     assert (target / "README.md").read_text(encoding="utf-8") == "# demo\n"
 
 
+def test_bundle_import_updates_refs_index_for_gc(project_dir, config, tmp_path):
+    api.save(project_dir, "v1", config=config)
+    bundle = tmp_path / "project.snapz"
+    api.export_bundle(project_dir, bundle, config=config)
+    fresh = RuntimeConfig(root=tmp_path / "fresh-store")
+    cas.save_refs_index(fresh.root, {})
+
+    imported = api.import_bundle(bundle, config=fresh)
+    result = api.gc(all_dirs=True, config=fresh)
+
+    assert result.blobs_removed == 0
+    assert cas.load_refs_index(fresh.root)
+    restored = tmp_path / "restored"
+    api.restore_archive(imported.key, "v1", restored, config=fresh)
+    assert (restored / "README.md").read_text(encoding="utf-8") == "# demo\n"
+
+
 def test_bundle_import_requires_overwrite_for_name_conflicts(project_dir, config, tmp_path):
     api.save(project_dir, "v1", config=config)
     bundle = tmp_path / "project.snapz"
@@ -96,6 +113,33 @@ def test_bundle_includes_shared_blobs_once(project_dir, config, tmp_path):
     refs = cas.referenced_blobs(Store(config).dir_for(project_dir.resolve()))
     assert len(object_members) == len(refs)
     assert outcome.blob_count == len(refs)
+
+
+def test_bundle_includes_chunked_file_blobs(project_dir, config, tmp_path):
+    big = project_dir / "big.bin"
+    big.write_bytes((b"alpha" * 70000) + (b"beta" * 70000) + (b"gamma" * 70000))
+    cfg = RuntimeConfig(
+        root=config.root,
+        use_zstd=False,
+        use_file_cache=False,
+        chunk_file_bytes=128 * 1024,
+        chunk_min_bytes=32 * 1024,
+        chunk_avg_bytes=64 * 1024,
+        chunk_max_bytes=128 * 1024,
+    )
+    api.save(project_dir, "v1", config=cfg)
+    bundle = tmp_path / "project.snapz"
+    expected = big.read_bytes()
+
+    outcome = api.export_bundle(project_dir, bundle, config=cfg)
+    fresh = RuntimeConfig(root=tmp_path / "fresh")
+    imported = api.import_bundle(bundle, config=fresh, path=project_dir)
+    project_dir.joinpath("big.bin").write_text("corrupt\n", encoding="utf-8")
+    api.restore(project_dir, "v1", config=fresh, auto_save=False)
+
+    assert outcome.blob_count > 1
+    assert imported.blob_count == outcome.blob_count
+    assert big.read_bytes() == expected
 
 
 def test_bundle_import_rejects_invalid_blob_id(tmp_path):
@@ -134,6 +178,24 @@ def test_bundle_prefers_zstd_when_available(project_dir, config, tmp_path):
     with open(bundle, "rb") as fh:
         magic = fh.read(4)
     assert magic == b"\x28\xb5\x2f\xfd"
+
+
+def test_bundle_gzip_fallback_uses_high_compression(project_dir, config, tmp_path):
+    (project_dir / "bulk.txt").write_text(
+        ("bundle compression\n" * 8000),
+        encoding="utf-8",
+    )
+    low_cfg = RuntimeConfig(root=tmp_path / "low-store", use_zstd=False, gzip_level=1)
+    high_cfg = RuntimeConfig(root=tmp_path / "high-store", use_zstd=False, gzip_level=9)
+    api.save(project_dir, "v1", config=low_cfg)
+    api.save(project_dir, "v1", config=high_cfg)
+    low_bundle = tmp_path / "low.snapz"
+    high_bundle = tmp_path / "high.snapz"
+
+    api.export_bundle(project_dir, low_bundle, config=low_cfg)
+    api.export_bundle(project_dir, high_bundle, config=high_cfg)
+
+    assert high_bundle.stat().st_size < low_bundle.stat().st_size
 
 
 def test_cli_bundle_and_import_with_path(env_root, project_dir, tmp_path, monkeypatch, capsys):

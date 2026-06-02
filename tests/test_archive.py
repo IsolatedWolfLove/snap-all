@@ -1,3 +1,5 @@
+import tarfile
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -87,3 +89,86 @@ def test_pack_invokes_progress_callback(project_dir, config, tmp_path):
 
     archive.pack(project_dir, target, walk, config=config, on_progress=cb)
     assert seen == list(range(1, walk.file_count + 1))
+
+
+def test_gzip_pack_defaults_to_high_compression(project_dir, config, tmp_path):
+    repeated = project_dir / "repeated.txt"
+    repeated.write_text(("snapz compression ratio\n" * 8000), encoding="utf-8")
+    matcher = build_matcher(project_dir)
+    high_config = RuntimeConfig(root=config.root, use_zstd=False)
+    low_config = RuntimeConfig(root=config.root, use_zstd=False, gzip_level=1)
+    walk = archive.dry_run(project_dir, matcher, high_config)
+    high = tmp_path / "high.tar.gz"
+    low = tmp_path / "low.tar.gz"
+
+    archive.pack(project_dir, high, walk, config=high_config)
+    archive.pack(project_dir, low, walk, config=low_config)
+
+    assert high.stat().st_size < low.stat().st_size
+
+
+def test_unpack_rejects_paths_outside_target(tmp_path):
+    target = tmp_path / "bad.tar.gz"
+    with tarfile.open(target, "w:gz") as tar:
+        info = tarfile.TarInfo("../escaped.txt")
+        data = b"bad\n"
+        info.size = len(data)
+        tar.addfile(info, fileobj=BytesIO(data))
+
+    with pytest.raises(ValueError, match="unsafe archive member path"):
+        archive.unpack(target, tmp_path / "out")
+
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_unpack_rejects_symlink_escape(tmp_path):
+    target = tmp_path / "bad.tar.gz"
+    with tarfile.open(target, "w:gz") as tar:
+        link = tarfile.TarInfo("link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = ".."
+        tar.addfile(link)
+
+        info = tarfile.TarInfo("link/escaped.txt")
+        data = b"bad\n"
+        info.size = len(data)
+        tar.addfile(info, fileobj=BytesIO(data))
+
+    with pytest.raises(ValueError, match="unsafe archive symlink target"):
+        archive.unpack(target, tmp_path / "out")
+
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_unpack_rejects_escaped_symlink_itself(tmp_path):
+    target = tmp_path / "bad.tar.gz"
+    with tarfile.open(target, "w:gz") as tar:
+        link = tarfile.TarInfo("link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../escaped.txt"
+        tar.addfile(link)
+
+    with pytest.raises(ValueError, match="unsafe archive symlink target"):
+        archive.unpack(target, tmp_path / "out")
+
+    assert not (tmp_path / "out" / "link").exists()
+
+
+def test_unpack_allows_relative_symlink_within_target(tmp_path):
+    target = tmp_path / "ok.tar.gz"
+    with tarfile.open(target, "w:gz") as tar:
+        info = tarfile.TarInfo("README.md")
+        data = b"ok\n"
+        info.size = len(data)
+        tar.addfile(info, fileobj=BytesIO(data))
+
+        link = tarfile.TarInfo("src/link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../README.md"
+        tar.addfile(link)
+
+    out = tmp_path / "out"
+    archive.unpack(target, out)
+
+    assert (out / "src" / "link").is_symlink()
+    assert (out / "src" / "link").read_text(encoding="utf-8") == "ok\n"

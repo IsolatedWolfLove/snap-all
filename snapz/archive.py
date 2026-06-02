@@ -19,6 +19,7 @@ import tarfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Callable, Iterator, Optional
 
 from snapz.config import ARCHIVE_SUFFIX_GZIP, ARCHIVE_SUFFIX_ZSTD, RuntimeConfig
@@ -181,18 +182,22 @@ ProgressCallback = Callable[[int, int, FileEntry], None]
 
 
 @contextmanager
-def _open_tar_writer(target: Path, compression: str) -> Iterator[tarfile.TarFile]:
+def _open_tar_writer(
+    target: Path,
+    compression: str,
+    config: RuntimeConfig,
+) -> Iterator[tarfile.TarFile]:
     target.parent.mkdir(parents=True, exist_ok=True)
     if compression == "zstd":
         if _zstandard is None:  # pragma: no cover - guarded by pick_compression
             raise RuntimeError("zstandard not available")
-        cctx = _zstandard.ZstdCompressor(level=3, threads=-1)
+        cctx = _zstandard.ZstdCompressor(level=config.zstd_level, threads=-1)
         with open(target, "wb") as raw:
             with cctx.stream_writer(raw, closefd=False) as compressor:
                 with tarfile.open(fileobj=compressor, mode="w|") as tar:
                     yield tar
     elif compression == "gzip":
-        with tarfile.open(target, "w:gz", compresslevel=6) as tar:
+        with tarfile.open(target, "w:gz", compresslevel=config.gzip_level) as tar:
             yield tar
     else:  # pragma: no cover - defensive
         raise ValueError(f"unknown compression: {compression}")
@@ -216,7 +221,7 @@ def pack(
     compression, _ = pick_compression(config)
     total = walk_result.file_count
 
-    with _open_tar_writer(target_path, compression) as tar:
+    with _open_tar_writer(target_path, compression, config) as tar:
         for index, entry in enumerate(walk_result.files, start=1):
             try:
                 tar.add(str(entry.abspath), arcname=entry.relpath, recursive=False)
@@ -291,6 +296,54 @@ def list_archive_members(archive_path: Path) -> list[ArchiveMember]:
     return members
 
 
+def _validate_tar_member_path(name: str) -> None:
+    rel = PurePosixPath(name)
+    if (
+        not name
+        or rel.is_absolute()
+        or any(part in {"", ".", ".."} for part in rel.parts)
+    ):
+        raise ValueError(f"unsafe archive member path: {name!r}")
+
+
+def _tar_member_target(target_dir: Path, member: tarfile.TarInfo) -> Path:
+    _validate_tar_member_path(member.name)
+    return Path(target_dir, *PurePosixPath(member.name).parts)
+
+
+def _ensure_extract_target_within(target_dir: Path, member: tarfile.TarInfo) -> None:
+    target = _tar_member_target(target_dir, member)
+    base = target_dir.resolve()
+    parent = target.parent.resolve(strict=False)
+    try:
+        parent.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(f"unsafe archive member path: {member.name!r}") from exc
+    if member.issym():
+        link_target = PurePosixPath(member.linkname)
+        if not member.linkname or link_target.is_absolute():
+            raise ValueError(f"unsafe archive symlink target: {member.linkname!r}")
+        resolved_link_target = Path(target.parent, *link_target.parts).resolve(
+            strict=False
+        )
+        try:
+            resolved_link_target.relative_to(base)
+        except ValueError as exc:
+            raise ValueError(
+                f"unsafe archive symlink target: {member.linkname!r}"
+            ) from exc
+    if member.islnk():
+        _validate_tar_member_path(member.linkname)
+        link_target = Path(target_dir, *PurePosixPath(member.linkname).parts)
+        if link_target.exists():
+            try:
+                link_target.resolve().relative_to(base)
+            except ValueError as exc:
+                raise ValueError(
+                    f"unsafe archive hardlink target: {member.linkname!r}"
+                ) from exc
+
+
 def unpack(archive_path: Path, target_dir: Path) -> int:
     """Extract *archive_path* into *target_dir*. Returns file count."""
 
@@ -316,6 +369,7 @@ def unpack(archive_path: Path, target_dir: Path) -> int:
             with dctx.stream_reader(raw) as reader:
                 with tarfile.open(fileobj=reader, mode="r|") as tar:
                     for member in tar:
+                        _ensure_extract_target_within(target_dir, member)
                         tar.extract(member, path=target_dir, **extract_kwargs)
                         count += 1
         return count
@@ -323,6 +377,7 @@ def unpack(archive_path: Path, target_dir: Path) -> int:
         with tarfile.open(archive_path, "r:gz") as tar:
             members = tar.getmembers()
             for member in members:
+                _ensure_extract_target_within(target_dir, member)
                 tar.extract(member, path=target_dir, **extract_kwargs)
             return len(members)
     else:

@@ -11,7 +11,13 @@ from snapz import cas, events
 from snapz.config import RuntimeConfig, default_config
 from snapz.store import SnapshotMeta, Store
 from snapz.util import auto_name
-from snapz._api_core import _load_manifest_or_raise, _record_event, save
+from snapz._api_core import (
+    _load_manifest_or_raise,
+    _record_event,
+    _safe_snapshot_target_path,
+    _safe_snapshot_symlink_target,
+    save,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +97,11 @@ def revert(
         # anything that isn't being restored from the manifest.
         keep_relpaths = set(matched.keys())
         for req in requested:
-            target_root = abspath / req
+            try:
+                target_root = _safe_snapshot_target_path(abspath, req)
+            except ValueError:
+                skipped.append((req, "unsafe path"))
+                continue
             if not target_root.exists():
                 continue
             if target_root.is_file() or target_root.is_symlink():
@@ -112,13 +122,25 @@ def revert(
     reverted = 0
     # Files first so dir creation is implicit; symlinks last.
     for entry in sorted(matched.values(), key=lambda e: (e.type != "file", e.path)):
-        full = abspath / entry.path
+        try:
+            full = _safe_snapshot_target_path(abspath, entry.path)
+        except ValueError:
+            skipped.append((entry.path, "unsafe path"))
+            continue
         full.parent.mkdir(parents=True, exist_ok=True)
         if entry.type == "file":
-            if not entry.sha256:
-                skipped.append((entry.path, "missing sha"))
-                continue
-            size = cas.read_blob_to(dir_root, entry.sha256, full)
+            if entry.chunks:
+                size = cas.read_blobs_to(
+                    dir_root,
+                    entry.chunks,
+                    full,
+                    expected_sha256=entry.sha256,
+                )
+            else:
+                if not entry.sha256:
+                    skipped.append((entry.path, "missing sha"))
+                    continue
+                size = cas.read_blob_to(dir_root, entry.sha256, full)
             if entry.size is not None and size != entry.size:
                 raise ValueError(f"blob size mismatch for {entry.path}")
             if full.is_symlink():
@@ -137,10 +159,13 @@ def revert(
             reverted += 1
         elif entry.type == "symlink" and entry.target is not None:
             try:
+                _safe_snapshot_symlink_target(abspath, full, entry.target)
                 if full.is_symlink() or full.exists():
                     full.unlink()
                 os.symlink(entry.target, full)
                 reverted += 1
+            except ValueError as exc:
+                skipped.append((entry.path, str(exc)))
             except OSError as exc:
                 skipped.append((entry.path, str(exc)))
 

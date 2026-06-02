@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from snapz._cli_common import *
+from snapz._cli_list import _print_snapshot_table
 from dataclasses import dataclass
 
 @dataclass

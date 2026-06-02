@@ -264,6 +264,24 @@ def test_bare_invocation_runs_interactive_with_inputs(
     assert api.list_snapshots(project_dir)[0].name == "v1"
 
 
+def test_bare_invocation_lists_existing_snapshots_before_prompt(
+    env_root, project_dir, monkeypatch, capsys
+):
+    assert cli.main(["save", str(project_dir), "-n", "v1", "-y"]) == 0
+    capsys.readouterr()
+
+    answers = iter(["v2", "y", ""])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+
+    rc = cli.main([str(project_dir)])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "existing 1 snapshot" in out
+    assert "v1" in out
+    assert "saved v2" in out
+
+
 def test_bare_invocation_aborts_on_no(
     env_root, project_dir, monkeypatch, capsys
 ):

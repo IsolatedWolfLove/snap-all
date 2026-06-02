@@ -321,6 +321,28 @@ _EN: dict[str, str] = {
     "log.kind": "comma-separated event kinds to keep (save,restore,revert,...)",
     "log.empty": "no events recorded",
 
+    # ---- shell completion ----
+    "completion.help": "generate or install shell completion for bash/zsh",
+    "completion.action": "shell to print, or install",
+    "completion.shell": "shell to install when using `install`",
+    "completion.rcfile": "shell startup file to append to",
+    "completion.argcomplete_missing": (
+        "shell completion requires argcomplete. Install with "
+        "`pip install snapz-cli[completion]` or `pip install argcomplete`."
+    ),
+    "completion.unsupported_shell": "unsupported shell: {shell}",
+    "completion.detect_failed": (
+        "could not detect bash or zsh. Pass `--shell bash` or `--shell zsh`."
+    ),
+    "completion.installed": (
+        "installed snapz {shell} completion in {path}. Restart the shell or "
+        "source that file."
+    ),
+    "completion.already_installed": (
+        "snapz completion already appears to be installed in {path}"
+    ),
+    "completion.unknown_action": "unknown completion action: {action}",
+
     # ---- self-management ----
     "update.help": "update snapz from the latest GitHub source",
     "update.source": "updating from",
@@ -824,6 +846,25 @@ _ZH: dict[str, str] = {
     "log.limit": "仅保留最近的 N 条事件（默认:全部）",
     "log.kind": "用逗号分隔的事件类型白名单（save,restore,revert,...）",
     "log.empty": "没有任何事件记录",
+
+    # ---- shell completion ----
+    "completion.help": "生成或安装 bash/zsh 的 shell 补全",
+    "completion.action": "要输出的 shell，或 install",
+    "completion.shell": "install 时要安装到的 shell",
+    "completion.rcfile": "要追加写入的 shell 启动文件",
+    "completion.argcomplete_missing": (
+        "shell 补全需要 argcomplete。请运行 "
+        "`pip install snapz-cli[completion]` 或 `pip install argcomplete`。"
+    ),
+    "completion.unsupported_shell": "不支持的 shell: {shell}",
+    "completion.detect_failed": (
+        "无法判断当前是 bash 还是 zsh。请传 `--shell bash` 或 `--shell zsh`。"
+    ),
+    "completion.installed": (
+        "已把 snapz {shell} 补全安装到 {path}。重启 shell 或 source 该文件后生效。"
+    ),
+    "completion.already_installed": "{path} 中看起来已经安装过 snapz 补全",
+    "completion.unknown_action": "未知的 completion 操作: {action}",
 
     # ---- self-management ----
     "update.help": "从 GitHub 最新源码更新 snapz",

@@ -8,12 +8,14 @@ fixtures as the rest of the suite, so the storage root stays in
 
 from __future__ import annotations
 
+import gzip
 import os
 from pathlib import Path
 
 import pytest
 
 from snapz import api, cas
+from snapz.config import RuntimeConfig
 from snapz.store import Store
 
 
@@ -163,6 +165,101 @@ def test_find_manifest_path_falls_back_to_compressed(tmp_path, monkeypatch):
     assert cas.read_manifest(found).snapshot == "v1"
 
 
+def test_zstd_writers_use_configured_level(tmp_path, monkeypatch):
+    seen: list[int] = []
+
+    class FakeWriter:
+        def __init__(self, raw):
+            self.raw = raw
+
+        def write(self, data):
+            return self.raw.write(data)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeCompressor:
+        def __init__(self, *, level):
+            seen.append(level)
+
+        def stream_writer(self, raw, closefd=False):
+            return FakeWriter(raw)
+
+        def compress(self, raw):
+            return cas._ZSTD_MAGIC + raw[4:]
+
+    class FakeZstd:
+        ZstdCompressor = FakeCompressor
+
+    monkeypatch.setattr(cas, "_zstandard", FakeZstd)
+    dir_root = tmp_path / "store" / "source"
+    dir_root.mkdir(parents=True)
+    src = tmp_path / "payload.txt"
+    src.write_text("payload\n", encoding="utf-8")
+
+    cas.write_blob(dir_root, src, use_zstd=True, zstd_level=17)
+    cas.write_manifest(
+        cas.manifest_path(dir_root, "v1"),
+        cas.Manifest(
+            snapshot="v1",
+            created="x",
+            entries=[
+                cas.ManifestEntry(
+                    path="payload.txt",
+                    type="file",
+                    sha256="a" * 64,
+                    size=8,
+                )
+            ],
+        ),
+        zstd_level=17,
+    )
+
+    assert set(seen) == {17}
+
+
+def test_write_blob_uses_configured_gzip_level(tmp_path):
+    dir_root = tmp_path / "store" / "source"
+    dir_root.mkdir(parents=True)
+    src = tmp_path / "payload.txt"
+    src.write_text(("snapz gzip compression\n" * 5000), encoding="utf-8")
+
+    sha_low, _size_low, _new_low = cas.write_blob(
+        dir_root,
+        src,
+        use_zstd=False,
+        gzip_level=1,
+    )
+    low_size = cas.legacy_blob_path(dir_root, sha_low).stat().st_size
+    cas.legacy_blob_path(dir_root, sha_low).unlink()
+
+    sha_high, _size_high, _new_high = cas.write_blob(
+        dir_root,
+        src,
+        use_zstd=False,
+        gzip_level=9,
+    )
+    high_size = cas.legacy_blob_path(dir_root, sha_high).stat().st_size
+
+    assert sha_high == sha_low
+    assert high_size < low_size
+
+
+def test_read_blob_bytes_verifies_checksum(tmp_path):
+    dir_root = tmp_path / "store" / "source"
+    dir_root.mkdir(parents=True)
+    sha = "0" * 64
+    blob = cas.global_blob_path(tmp_path / "store", sha)
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(gzip.compress(b"payload\n"))
+
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        cas.read_blob_bytes(dir_root, sha)
+
+
 # ----------------- restore --------------------------------------------------
 
 
@@ -199,6 +296,79 @@ def test_cas_restore_handles_symlinks(project_dir, config):
     api.restore(project_dir, "v1", config=config, auto_save=False)
     assert link.is_symlink()
     assert os.readlink(link) == "real.txt"
+
+
+def test_cas_restore_allows_relative_symlink_within_target(project_dir, config):
+    real = project_dir / "README.md"
+    link = project_dir / "src" / "readme-link"
+    link.symlink_to("../README.md")
+    api.save(project_dir, "v1", config=config)
+
+    link.unlink()
+    api.restore(project_dir, "v1", config=config, auto_save=False)
+
+    assert link.is_symlink()
+    assert link.read_text(encoding="utf-8") == real.read_text(encoding="utf-8")
+
+
+def test_large_file_uses_content_defined_chunks(project_dir, config):
+    big = project_dir / "big.bin"
+    big.write_bytes((b"alpha" * 70000) + (b"beta" * 70000) + (b"gamma" * 70000))
+    cfg = RuntimeConfig(
+        root=config.root,
+        use_zstd=False,
+        use_file_cache=False,
+        chunk_file_bytes=128 * 1024,
+        chunk_min_bytes=32 * 1024,
+        chunk_avg_bytes=64 * 1024,
+        chunk_max_bytes=128 * 1024,
+    )
+
+    api.save(project_dir, "v1", config=cfg)
+    dir_root = _dir_root(cfg, project_dir)
+    manifest = cas.read_manifest(cas.find_manifest_path(dir_root, "v1"))
+    entry = next(e for e in manifest.entries if e.path == "big.bin")
+
+    assert entry.sha256
+    assert entry.chunks
+    assert len(entry.chunks) > 1
+    assert sum(chunk.size for chunk in entry.chunks) == big.stat().st_size
+    assert api.read_snapshot_bytes(project_dir, "v1", "big.bin", config=cfg) == big.read_bytes()
+
+
+def test_large_file_small_edit_reuses_most_chunks(project_dir, config):
+    big = project_dir / "big.bin"
+    payload = bytearray((b"alpha" * 70000) + (b"beta" * 70000) + (b"gamma" * 70000))
+    big.write_bytes(payload)
+    cfg = RuntimeConfig(
+        root=config.root,
+        use_zstd=False,
+        use_file_cache=False,
+        chunk_file_bytes=128 * 1024,
+        chunk_min_bytes=32 * 1024,
+        chunk_avg_bytes=64 * 1024,
+        chunk_max_bytes=128 * 1024,
+    )
+
+    api.save(project_dir, "v1", config=cfg)
+    payload[len(payload) // 2: len(payload) // 2 + 4] = b"EDIT"
+    big.write_bytes(payload)
+    outcome = api.save(project_dir, "v2", config=cfg)
+    dir_root = _dir_root(cfg, project_dir)
+    first = cas.read_manifest(cas.find_manifest_path(dir_root, "v1"))
+    second = cas.read_manifest(cas.find_manifest_path(dir_root, "v2"))
+    first_entry = next(e for e in first.entries if e.path == "big.bin")
+    second_entry = next(e for e in second.entries if e.path == "big.bin")
+    first_chunks = {chunk.sha256 for chunk in first_entry.chunks}
+    second_chunks = {chunk.sha256 for chunk in second_entry.chunks}
+
+    assert first_entry.sha256 != second_entry.sha256
+    assert first_chunks & second_chunks
+    assert outcome.snapshot.size_bytes < big.stat().st_size
+
+    big.write_text("corrupt\n", encoding="utf-8")
+    api.restore(project_dir, "v2", config=cfg, auto_save=False)
+    assert big.read_bytes() == bytes(payload)
 
 
 def test_restore_detects_corrupt_blob_during_stream(project_dir, config, monkeypatch):

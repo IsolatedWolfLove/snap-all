@@ -730,7 +730,11 @@ class Store:
             try:
                 manifest = cas.read_manifest(new_artifact)
                 manifest.snapshot = new
-                cas.write_manifest(new_artifact, manifest)
+                cas.write_manifest(
+                    new_artifact,
+                    manifest,
+                    zstd_level=self.config.zstd_level,
+                )
             except (OSError, json.JSONDecodeError, KeyError):
                 pass
         else:

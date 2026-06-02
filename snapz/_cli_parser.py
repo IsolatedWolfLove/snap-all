@@ -13,6 +13,7 @@ from snapz._cli_bundle_remote import (
     cmd_pull,
     cmd_push,
 )
+from snapz._cli_completion import SUPPORTED_COMPLETION_SHELLS, cmd_completion
 from snapz._cli_config import cmd_config
 from snapz._cli_diff import cmd_diff
 from snapz._cli_list import cmd_alist, cmd_list
@@ -52,15 +53,63 @@ def _install_argparse_i18n() -> None:
     argparse._ = _argparse_gettext  # type: ignore[attr-defined]  # noqa: SLF001
 
 
+def _completion_path(parsed_args: argparse.Namespace) -> Path:
+    raw = getattr(parsed_args, "path", None) or "."
+    return resolve_path(raw)
+
+
+def _snapshot_description(snap: SnapshotMeta) -> str:
+    details = [format_iso(snap.created)]
+    note = snap.note.strip()
+    if note:
+        details.append(note)
+    if snap.tags:
+        details.append("tags: " + ",".join(snap.tags))
+    if snap.protected:
+        details.append("protected")
+    return " | ".join(details)
+
+
 def _snapshot_name_completer(prefix, parsed_args, **kwargs):
     """argcomplete dynamic completer: list snapshot names for the target dir."""
 
     try:
-        raw = getattr(parsed_args, "path", None) or "."
-        snaps = api.list_snapshots(Path(raw))
-        return [s.name for s in snaps if s.name.startswith(prefix)]
+        config = default_config()
+        snaps = Store(config).list_snapshots(_completion_path(parsed_args))
+        snaps = _filter_user_visible(
+            snaps,
+            show_auto=bool(getattr(parsed_args, "all", False)),
+        )
+        return {
+            s.name: _snapshot_description(s)
+            for s in snaps
+            if s.name.startswith(prefix)
+        }
     except Exception:
-        return []
+        return {}
+
+
+def _tag_completer(prefix, parsed_args, **kwargs):
+    """argcomplete dynamic completer: list tags for the target dir/snapshot."""
+
+    try:
+        config = default_config()
+        snaps = Store(config).list_snapshots(_completion_path(parsed_args))
+        name = getattr(parsed_args, "name", None)
+        if name:
+            snaps = [snap for snap in snaps if snap.name == name]
+        tags: dict[str, int] = {}
+        for snap in snaps:
+            for tag in snap.tags:
+                tags[tag] = tags.get(tag, 0) + 1
+        return {
+            tag: f"{count} snapshot" + ("" if count == 1 else "s")
+            for tag, count in sorted(tags.items())
+            if tag.startswith(prefix)
+        }
+    except Exception:
+        return {}
+
 
 def build_parser() -> argparse.ArgumentParser:
     _install_argparse_i18n()
@@ -530,7 +579,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_prune.add_argument(
         "--keep-tag", action="append", metavar="TAG", default=None,
         help=t("prune.keep_tag"),
-    )
+    ).completer = _tag_completer  # type: ignore[attr-defined]
     p_prune.add_argument(
         "--protect", action="append", metavar="NAME",
         help=t("prune.protect"),
@@ -657,13 +706,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_tag = sub.add_parser("tag", help=t("tag.help"))
     tag_sub = p_tag.add_subparsers(dest="tag_action")
     p_tag_add = tag_sub.add_parser("add", help=t("tag.add_help"))
-    p_tag_add.add_argument("name", help=t("tag.snapshot"))
-    p_tag_add.add_argument("tags", nargs="+", help=t("tag.values"))
+    p_tag_add.add_argument("name", help=t("tag.snapshot")).completer = _snapshot_name_completer  # type: ignore[attr-defined]
+    p_tag_add.add_argument("tags", nargs="+", help=t("tag.values")).completer = _tag_completer  # type: ignore[attr-defined]
     p_tag_add.add_argument("--path", help=t("tag.path"))
     p_tag_add.set_defaults(func=cmd_tag, tag_action="add")
     p_tag_rm = tag_sub.add_parser("rm", help=t("tag.rm_help"))
-    p_tag_rm.add_argument("name", help=t("tag.snapshot"))
-    p_tag_rm.add_argument("tags", nargs="+", help=t("tag.values"))
+    p_tag_rm.add_argument("name", help=t("tag.snapshot")).completer = _snapshot_name_completer  # type: ignore[attr-defined]
+    p_tag_rm.add_argument("tags", nargs="+", help=t("tag.values")).completer = _tag_completer  # type: ignore[attr-defined]
     p_tag_rm.add_argument("--path", help=t("tag.path"))
     p_tag_rm.set_defaults(func=cmd_tag, tag_action="rm")
     p_tag_list = tag_sub.add_parser("list", help=t("tag.list_help"))
@@ -688,6 +737,26 @@ def build_parser() -> argparse.ArgumentParser:
         help=t("log.kind"),
     )
     p_log.set_defaults(func=cmd_log)
+
+    # shell completion
+    p_completion = sub.add_parser("completion", help=t("completion.help"))
+    p_completion.add_argument(
+        "completion_action",
+        nargs="?",
+        default="bash",
+        choices=[*SUPPORTED_COMPLETION_SHELLS, "install"],
+        help=t("completion.action"),
+    )
+    p_completion.add_argument(
+        "--shell",
+        choices=SUPPORTED_COMPLETION_SHELLS,
+        help=t("completion.shell"),
+    )
+    p_completion.add_argument(
+        "--rcfile",
+        help=t("completion.rcfile"),
+    )
+    p_completion.set_defaults(func=cmd_completion)
 
     # self-management
     p_update = sub.add_parser("update", help=t("update.help"))
@@ -748,7 +817,7 @@ def _main_impl(argv: Optional[list[str]]) -> int:
         "login", "logout", "push", "pull", "adopt",
         "stats", "prune", "revert",
         "undo", "find", "cat", "browse", "log", "tag",
-        "update", "uninstall",
+        "completion", "update", "uninstall",
     }
     enter_bare_mode = (
         not argv
@@ -806,6 +875,12 @@ def _main_impl(argv: Optional[list[str]]) -> int:
             apply_snapzignore=config.apply_snapzignore,
             use_file_cache=config.use_file_cache,
             save_workers=config.save_workers,
+            zstd_level=config.zstd_level,
+            gzip_level=config.gzip_level,
+            chunk_file_bytes=config.chunk_file_bytes,
+            chunk_min_bytes=config.chunk_min_bytes,
+            chunk_avg_bytes=config.chunk_avg_bytes,
+            chunk_max_bytes=config.chunk_max_bytes,
         )
 
     workers = getattr(args, "workers", None)
@@ -823,6 +898,12 @@ def _main_impl(argv: Optional[list[str]]) -> int:
             apply_snapzignore=config.apply_snapzignore,
             use_file_cache=config.use_file_cache,
             save_workers=workers,
+            zstd_level=config.zstd_level,
+            gzip_level=config.gzip_level,
+            chunk_file_bytes=config.chunk_file_bytes,
+            chunk_min_bytes=config.chunk_min_bytes,
+            chunk_avg_bytes=config.chunk_avg_bytes,
+            chunk_max_bytes=config.chunk_max_bytes,
         )
 
     if json_requested:

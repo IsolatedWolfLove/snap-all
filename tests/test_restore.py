@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from snapz import api, archive, cli
+from snapz import api, archive, cas, cli
 
 
 def _all_snapshot_names(project_dir, config):
@@ -94,6 +94,55 @@ def test_manifest_records_relative_paths_and_hashes(project_dir, config):
         if e.type == "file":
             assert e.sha256 and len(e.sha256) == 64
             assert e.size is not None and e.size >= 0
+
+
+def test_restore_rejects_manifest_paths_outside_target(project_dir, config, tmp_path):
+    outcome = api.save(project_dir, "v1", config=config)
+    dir_root = api.Store(config).dir_for(project_dir.resolve())
+    manifest_path = outcome.pack_result.archive_path
+    manifest = cas.read_manifest(manifest_path)
+    sha = next(e.sha256 for e in manifest.entries if e.type == "file" and e.sha256)
+    manifest.entries = [
+        cas.ManifestEntry(path="../escaped.txt", type="file", sha256=sha, size=0),
+    ]
+    cas.write_manifest(manifest_path, manifest)
+
+    with pytest.raises(ValueError, match="unsafe snapshot path"):
+        api._extract_cas(manifest_path, tmp_path / "restore", dir_root=dir_root)
+
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_restore_rejects_symlink_target_outside_target(project_dir, config, tmp_path):
+    outcome = api.save(project_dir, "v1", config=config)
+    dir_root = api.Store(config).dir_for(project_dir.resolve())
+    manifest_path = outcome.pack_result.archive_path
+    manifest = cas.read_manifest(manifest_path)
+    manifest.entries = [
+        cas.ManifestEntry(
+            path="link",
+            type="symlink",
+            target="../escaped.txt",
+        ),
+    ]
+    cas.write_manifest(manifest_path, manifest)
+
+    with pytest.raises(ValueError, match="unsafe snapshot symlink target"):
+        api._extract_cas(manifest_path, tmp_path / "restore", dir_root=dir_root)
+
+    assert not (tmp_path / "restore" / "link").exists()
+
+
+def test_restore_preserves_manifest_path_whitespace(project_dir, config):
+    spaced = project_dir / " leading.txt"
+    spaced.write_text("space\n", encoding="utf-8")
+    api.save(project_dir, "v1", config=config)
+
+    spaced.unlink()
+    api.restore(project_dir, "v1", config=config, auto_save=False)
+
+    assert spaced.read_text(encoding="utf-8") == "space\n"
+    assert not (project_dir / "leading.txt").exists()
 
 
 # ---------- CLI ----------

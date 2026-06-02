@@ -227,8 +227,10 @@ def test_cli_tag_add_list_rm_text(
     assert "release" in out and "ci" in out and "v1" in out
 
     rc = cli.main(["tag", "rm", "v1", "ci", "--path", str(project_dir)])
+    out = capsys.readouterr().out
     assert rc == 0
-    capsys.readouterr()
+    assert "ci" in out
+    assert "release" not in out
 
     rc = cli.main([
         "tag", "list", "--path", str(project_dir), "--json",

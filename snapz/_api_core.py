@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +46,71 @@ class _SaveFileResult:
     size: int
     was_new: bool
     blob_bytes: int
+    new_blob_count: int = 0
+    chunks: list[cas.ChunkRef] = field(default_factory=list)
+
+
+def _rotl(value: int, bits: int) -> int:
+    return ((value << bits) | (value >> (64 - bits))) & 0xFFFFFFFFFFFFFFFF
+
+
+def _splitmix64(value: int) -> int:
+    value = (value + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+    return value ^ (value >> 31)
+
+
+_BUZHASH_TABLE = tuple(_splitmix64(i) for i in range(256))
+
+
+def _iter_content_defined_chunks(
+    source: Path,
+    *,
+    min_bytes: int,
+    avg_bytes: int,
+    max_bytes: int,
+    read_size: int = 64 * 1024,
+) -> Iterable[bytes]:
+    """Yield content-defined chunks using a small buzhash rolling window."""
+
+    min_bytes = max(1, int(min_bytes))
+    avg_bytes = max(min_bytes + 1, int(avg_bytes))
+    max_bytes = max(avg_bytes, int(max_bytes))
+    mask = max(1, avg_bytes - 1)
+    window_size = 64
+    window = bytearray()
+    window_pos = 0
+    rolling = 0
+    chunk = bytearray()
+
+    with open(source, "rb") as in_f:
+        while True:
+            data = in_f.read(read_size)
+            if not data:
+                break
+            for value in data:
+                chunk.append(value)
+                if len(window) < window_size:
+                    window.append(value)
+                    rolling = _rotl(rolling, 1) ^ _BUZHASH_TABLE[value]
+                else:
+                    old = window[window_pos]
+                    window[window_pos] = value
+                    window_pos = (window_pos + 1) % window_size
+                    rolling = (
+                        _rotl(rolling, 1)
+                        ^ _rotl(_BUZHASH_TABLE[old], window_size)
+                        ^ _BUZHASH_TABLE[value]
+                    )
+                length = len(chunk)
+                if length < min_bytes:
+                    continue
+                if length >= max_bytes or (rolling & mask) == 0:
+                    yield bytes(chunk)
+                    chunk.clear()
+    if chunk:
+        yield bytes(chunk)
 
 
 @dataclass
@@ -197,12 +263,61 @@ def _write_save_blob(
     source: Path,
     *,
     use_zstd: bool,
+    zstd_level: int,
+    gzip_level: int,
+    chunk_file_bytes: int,
+    chunk_min_bytes: int,
+    chunk_avg_bytes: int,
+    chunk_max_bytes: int,
 ) -> _SaveFileResult:
+    stat_size = source.stat().st_size
+    if chunk_file_bytes > 0 and stat_size >= chunk_file_bytes:
+        file_hash = hashlib.sha256()
+        chunks: list[cas.ChunkRef] = []
+        new_blob_bytes = 0
+        new_blob_count = 0
+        was_new_any = False
+        size = 0
+        for data in _iter_content_defined_chunks(
+            source,
+            min_bytes=chunk_min_bytes,
+            avg_bytes=chunk_avg_bytes,
+            max_bytes=chunk_max_bytes,
+        ):
+            file_hash.update(data)
+            sha, chunk_size, was_new = cas.write_blob_bytes(
+                dir_root,
+                data,
+                use_zstd=use_zstd,
+                global_store=True,
+                zstd_level=zstd_level,
+                gzip_level=gzip_level,
+            )
+            chunks.append(cas.ChunkRef(sha256=sha, size=chunk_size))
+            size += chunk_size
+            if was_new:
+                was_new_any = True
+                new_blob_count += 1
+                try:
+                    new_blob_bytes += cas.find_blob(dir_root, sha).stat().st_size
+                except OSError:
+                    pass
+        return _SaveFileResult(
+            sha256=file_hash.hexdigest(),
+            size=size,
+            was_new=was_new_any,
+            blob_bytes=new_blob_bytes,
+            new_blob_count=new_blob_count,
+            chunks=chunks,
+        )
+
     sha, blob_size, was_new = cas.write_blob(
         dir_root,
         source,
         use_zstd=use_zstd,
         global_store=True,
+        zstd_level=zstd_level,
+        gzip_level=gzip_level,
     )
     blob_bytes = 0
     if was_new:
@@ -215,6 +330,7 @@ def _write_save_blob(
         size=blob_size,
         was_new=was_new,
         blob_bytes=blob_bytes,
+        new_blob_count=1 if was_new else 0,
     )
 
 
@@ -284,6 +400,12 @@ def save(
             planned.append((fe, stat_info, None))
             continue
         cached_sha = filecache.lookup(current_cache, fe, stat_info)
+        if (
+            cached_sha is not None
+            and config.chunk_file_bytes > 0
+            and stat_info.st_size >= config.chunk_file_bytes
+        ):
+            cached_sha = None
         if cached_sha is not None:
             try:
                 cas.find_blob(dir_root, cached_sha)
@@ -305,6 +427,12 @@ def save(
                         dir_root,
                         fe.abspath,
                         use_zstd=use_zstd,
+                        zstd_level=config.zstd_level,
+                        gzip_level=config.gzip_level,
+                        chunk_file_bytes=config.chunk_file_bytes,
+                        chunk_min_bytes=config.chunk_min_bytes,
+                        chunk_avg_bytes=config.chunk_avg_bytes,
+                        chunk_max_bytes=config.chunk_max_bytes,
                     )
                 except OSError:
                     continue
@@ -317,6 +445,12 @@ def save(
                         dir_root,
                         fe.abspath,
                         use_zstd=use_zstd,
+                        zstd_level=config.zstd_level,
+                        gzip_level=config.gzip_level,
+                        chunk_file_bytes=config.chunk_file_bytes,
+                        chunk_min_bytes=config.chunk_min_bytes,
+                        chunk_avg_bytes=config.chunk_avg_bytes,
+                        chunk_max_bytes=config.chunk_max_bytes,
                     ): plan_index
                     for plan_index, fe in to_process
                 }
@@ -376,12 +510,16 @@ def save(
                 mtime=mtime,
                 sha256=result.sha256,
                 size=result.size,
+                chunks=result.chunks,
             ))
             total_bytes_in += result.size
+            if result.chunks:
+                new_blob_count += result.new_blob_count
+            elif result.was_new:
+                new_blob_count += result.new_blob_count
             if result.was_new:
-                new_blob_count += 1
                 new_blob_bytes += result.blob_bytes
-            if cache_enabled:
+            if cache_enabled and not result.chunks:
                 next_cache[fe.relpath] = filecache.CacheEntry(
                     size=result.size,
                     mtime=mtime,
@@ -399,7 +537,7 @@ def save(
         entries=entries,
     )
     m_path = cas.manifest_path(dir_root, snapshot_name)
-    cas.write_manifest(m_path, manifest)
+    cas.write_manifest(m_path, manifest, zstd_level=config.zstd_level)
 
     compression_label = "zstd-cas" if use_zstd else "gzip-cas"
     meta = SnapshotMeta(
@@ -416,7 +554,7 @@ def save(
     store.record_snapshot(meta)
     cas.increment_refs(
         store.root,
-        [entry.sha256 for entry in entries if entry.sha256],
+        cas.manifest_blob_refs(manifest),
     )
     if cache_enabled:
         filecache.save(dir_root, next_cache)
@@ -797,7 +935,7 @@ def _manifest_shas_for_snapshot(store: Store, abspath: Path, name: str) -> list[
         manifest = cas.read_manifest(artifact)
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return []
-    return [entry.sha256 for entry in manifest.entries if entry.sha256]
+    return cas.manifest_blob_refs(manifest)
 
 
 def _delete_snapshot_with_refs(store: Store, abspath: Path, name: str) -> bool:
@@ -1145,6 +1283,8 @@ def restore(
 
 
 def _safe_snapshot_target_path(target: Path, relpath: str) -> Path:
+    """Resolve a manifest path under *target* without escaping the tree."""
+
     rel = PurePosixPath(str(relpath).rstrip("/"))
     if (
         not rel.parts
@@ -1162,6 +1302,17 @@ def _safe_snapshot_target_path(target: Path, relpath: str) -> Path:
     return full
 
 
+def _safe_snapshot_symlink_target(base: Path, link_path: Path, target: str) -> None:
+    rel = PurePosixPath(str(target))
+    if not str(target) or rel.is_absolute():
+        raise ValueError(f"unsafe snapshot symlink target: {target!r}")
+    resolved = Path(link_path.parent, *rel.parts).resolve(strict=False)
+    try:
+        resolved.relative_to(base.resolve())
+    except ValueError as exc:
+        raise ValueError(f"unsafe snapshot symlink target: {target!r}") from exc
+
+
 def _extract_cas(manifest_path: Path, target: Path, *, dir_root: Path) -> int:
     """Extract a CAS manifest's content over *target*. Returns entry count.
 
@@ -1176,11 +1327,19 @@ def _extract_cas(manifest_path: Path, target: Path, *, dir_root: Path) -> int:
     for entry in manifest.entries:
         if entry.type != "file":
             continue
-        full = target / entry.path
+        full = _safe_snapshot_target_path(target, entry.path)
         full.parent.mkdir(parents=True, exist_ok=True)
-        if not entry.sha256:
-            raise ValueError(f"manifest entry lacks sha256: {entry.path}")
-        size = cas.read_blob_to(dir_root, entry.sha256, full)
+        if entry.chunks:
+            size = cas.read_blobs_to(
+                dir_root,
+                entry.chunks,
+                full,
+                expected_sha256=entry.sha256,
+            )
+        else:
+            if not entry.sha256:
+                raise ValueError(f"manifest entry lacks sha256: {entry.path}")
+            size = cas.read_blob_to(dir_root, entry.sha256, full)
         if entry.size is not None and size != entry.size:
             raise ValueError(f"blob size mismatch for {entry.path}")
         if full.is_symlink():
@@ -1201,7 +1360,8 @@ def _extract_cas(manifest_path: Path, target: Path, *, dir_root: Path) -> int:
     for entry in manifest.entries:
         if entry.type != "symlink" or entry.target is None:
             continue
-        full = target / entry.path
+        full = _safe_snapshot_target_path(target, entry.path)
+        _safe_snapshot_symlink_target(target, full, entry.target)
         full.parent.mkdir(parents=True, exist_ok=True)
         if full.is_symlink() or full.exists():
             try:
@@ -1384,6 +1544,16 @@ def read_snapshot_bytes(
         if entry.path != relpath:
             continue
         if entry.type == "file":
+            if entry.chunks:
+                chunks: list[bytes] = []
+                h = hashlib.sha256()
+                for chunk in entry.chunks:
+                    data = cas.read_blob_bytes(dir_root, chunk.sha256)
+                    h.update(data)
+                    chunks.append(data)
+                if entry.sha256 and h.hexdigest() != entry.sha256:
+                    raise ValueError(f"chunked file checksum mismatch: {entry.path}")
+                return b"".join(chunks)
             if not entry.sha256:
                 return None
             return cas.read_blob_bytes(dir_root, entry.sha256)

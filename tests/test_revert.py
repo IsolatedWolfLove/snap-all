@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from snapz import api, cli
+from snapz import api, cas, cli
+from snapz.store import Store
 
 
 # ----------------- revert API --------------------------------------------
@@ -78,6 +79,30 @@ def test_revert_skip_unknown_path(project_dir, config):
     assert outcome.skipped == [("does/not/exist.txt", "not in snapshot")]
 
 
+def test_revert_skips_unsafe_manifest_paths(project_dir, config, tmp_path):
+    api.save(project_dir, "v1", config=config)
+    dir_root = Store(config).dir_for(project_dir.resolve())
+    manifest_path = cas.manifest_path(dir_root, "v1")
+    manifest = cas.read_manifest(manifest_path)
+    sha = next(e.sha256 for e in manifest.entries if e.type == "file" and e.sha256)
+    manifest.entries = [
+        cas.ManifestEntry(path="../escaped.txt", type="file", sha256=sha, size=0),
+    ]
+    cas.write_manifest(manifest_path, manifest)
+
+    outcome = api.revert(
+        project_dir,
+        "v1",
+        [".."],
+        config=config,
+        auto_save=False,
+    )
+
+    assert outcome.reverted_count == 0
+    assert ("../escaped.txt", "unsafe path") in outcome.skipped
+    assert not (tmp_path / "escaped.txt").exists()
+
+
 def test_revert_delete_extras_removes_added_files(project_dir, config):
     api.save(project_dir, "v1", config=config)
     # Add a file under src/ that isn't in v1.
@@ -110,9 +135,6 @@ def test_revert_detects_corrupt_blob_during_stream(project_dir, config, monkeypa
     api.save(project_dir, "v1", config=config)
     target = project_dir / "src" / "main.py"
     target.write_text("keep me\n", encoding="utf-8")
-    from snapz import cas
-    from snapz.store import Store
-
     calls = 0
     original = cas.verify_blob
 

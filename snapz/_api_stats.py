@@ -110,10 +110,16 @@ def _unique_logical_bytes(folder: Path) -> int:
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             continue
         for entry in manifest.entries:
-            if not entry.sha256 or entry.sha256 in seen:
+            if entry.chunks:
+                for chunk in entry.chunks:
+                    if chunk.sha256 in seen:
+                        continue
+                    seen.add(chunk.sha256)
+                    total += max(0, int(chunk.size))
                 continue
-            seen.add(entry.sha256)
-            total += max(0, int(entry.size))
+            if entry.sha256 and entry.sha256 not in seen:
+                seen.add(entry.sha256)
+                total += max(0, int(entry.size or 0))
     return total
 
 

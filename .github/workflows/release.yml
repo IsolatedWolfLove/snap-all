@@ -34,10 +34,52 @@ jobs:
       - name: Run tests
         run: python -m pytest
 
+  build-nuitka:
+    name: Build Nuitka ${{ matrix.platform }} executables
+    runs-on: ${{ matrix.os }}
+    needs: compatibility-tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            artifact-glob: "dist/snapz*-linux-x86_64"
+          - os: windows-latest
+            platform: windows-x86_64
+            artifact-glob: "dist/snapz*-windows-x86_64.exe"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+
+      - name: Build Nuitka executables
+        shell: bash
+        run: ./scripts/build.sh nuitka
+
+      - name: Smoke test Nuitka executables
+        shell: bash
+        run: ./scripts/build.sh smoke-nuitka
+
+      - name: Upload Nuitka release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: snapz-${{ github.ref_name }}-${{ matrix.platform }}-nuitka
+          path: ${{ matrix.artifact-glob }}
+
   build-and-release:
     name: Build and publish release artifacts
     runs-on: ubuntu-latest
-    needs: compatibility-tests
+    needs: [compatibility-tests, build-nuitka]
 
     steps:
       - name: Check out repository
@@ -90,6 +132,18 @@ jobs:
           cp dist/snapz.pyz release-dist/snapz-zh.pyz
           cp dist/snapz-server.pyz release-dist/snapz-server-zh.pyz
           cp "dist/snapz-cli_${version}_all.deb" "release-dist/snapz-cli_${version}_all.zh.deb"
+
+      - name: Download Nuitka release artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: snapz-${{ github.ref_name }}-*-nuitka
+          path: nuitka-dist
+          merge-multiple: true
+
+      - name: Stage Nuitka release artifacts
+        run: |
+          set -euo pipefail
+          cp nuitka-dist/* release-dist/
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7

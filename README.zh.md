@@ -247,15 +247,22 @@ save picker 帮你追加条目。
 可选依赖 `argcomplete`：
 
 ```bash
-pip install argcomplete
-# bash:
-eval "$(register-python-argcomplete snapz)"
-# zsh: 把 shell 改成 zsh
-register-python-argcomplete --shell zsh snapz
+pip install 'snapz-cli[completion]'
+
+# 输出补全脚本：
+eval "$(snapz completion bash)"
+eval "$(snapz completion zsh)"
+
+# 或追加写入 ~/.bashrc / ~/.zshrc：
+snapz completion install --shell bash
+snapz completion install --shell zsh
 ```
 
 子命令、选项、以及 **快照名**（`rm`、`mv`、`show`、`restore`、
-`export`、`diff` 都支持）都会按当前目录的存储动态补全。
+`export`、`diff`、`revert`、`cat`、`browse`、`protect`、`unprotect`
+都支持）都会按选定源目录的存储动态补全。快照补全实际插入快照名；
+在支持描述的 shell 里，补全菜单会显示时间、备注和 tag。已有 tag
+也会在 `tag rm` 和 `prune --keep-tag` 中补全。
 
 ### 各 TUI 的按键
 
@@ -529,6 +536,13 @@ snapz gc --dry-run        # 只报告，不删
 （标准库）。要强制用 gzip：`snapz --no-zstd ...`。可迁移 `.snapz`
 bundle 和远程 push 也走同样的 zstd 优先策略，服务端会在接收前校验
 bundle SHA-256。
+
+新快照和 bundle 默认使用更高压缩等级（`zstd` 10，`gzip` 9）来减少
+存储占用。可通过 `SNAPZ_ZSTD_LEVEL`（1-22）或 `SNAPZ_GZIP_LEVEL`（1-9）
+调整速度/体积取舍。
+
+CAS 后端会把大文件按内容定义边界分块存储。大文件只改一小段时，通常
+只会新增变化的 chunk，而不是重新存整份文件；旧的整文件快照仍可读取。
 
 ## 当库用
 

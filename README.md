@@ -272,15 +272,24 @@ let `snapz diff --tui` / the save picker append entries for you.
 Shell completion is provided by the optional `argcomplete` package:
 
 ```bash
-pip install argcomplete
-# bash:
-eval "$(register-python-argcomplete snapz)"
-# zsh: same, but `register-python-argcomplete --shell zsh snapz`
+pip install 'snapz-cli[completion]'
+
+# print a completion script:
+eval "$(snapz completion bash)"
+eval "$(snapz completion zsh)"
+
+# or append it to ~/.bashrc / ~/.zshrc:
+snapz completion install --shell bash
+snapz completion install --shell zsh
 ```
 
 Subcommands, flags, and **snapshot names** (for `rm`, `mv`, `show`,
-`restore`, `export`, `diff`) all complete dynamically against the
-current directory's store.
+`restore`, `export`, `diff`, `revert`, `cat`, `browse`, `protect`,
+`unprotect`) complete dynamically against the selected source directory.
+Snapshot completions use the snapshot name as the inserted token and, in
+shells that support descriptions, show timestamp / note / tag details in
+the completion menu. Existing tags complete for `tag rm` and
+`prune --keep-tag`.
 
 ### TUI keys
 
@@ -620,6 +629,15 @@ available, otherwise falls back to `.tar.gz` (stdlib). You can force
 gzip with `snapz --no-zstd ...`. Portable `.snapz` bundles and remote
 pushes use the same zstd-first behavior, and remote uploads are checked
 with a bundle SHA-256 before they are accepted.
+
+New snapshots and bundles default to higher compression (`zstd` level
+10, `gzip` level 9) to reduce storage size. Set `SNAPZ_ZSTD_LEVEL` (1-22)
+or `SNAPZ_GZIP_LEVEL` (1-9) to tune the speed/size tradeoff.
+
+Large files are stored as content-defined chunks in the CAS backend.
+Small edits to a large file usually add only the changed chunks instead
+of storing the whole file again, while older whole-file snapshots remain
+readable.
 
 ## Library use
 
