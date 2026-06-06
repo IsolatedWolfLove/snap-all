@@ -88,6 +88,19 @@ _EN: dict[str, str] = {
     "list.timeline": "group text output by day",
     "alist.help": "list snapshots across all directories",
 
+    # ---- web ----
+    "web.help": "start the local snapz client web UI",
+    "web.host": "host to bind (default: 127.0.0.1)",
+    "web.port": "port to bind (default: 3000; use 0 for a random free port)",
+    "web.allow_remote": "allow binding to a non-loopback host",
+    "web.invalid_port": "--port must be between 0 and 65535",
+    "web.refuse_remote": (
+        "refusing to bind {host}; pass --allow-remote if you really want "
+        "the local snapshot API reachable from other machines"
+    ),
+    "web.started": "snapz client web UI: {url}",
+    "web.stop_hint": "Press Ctrl+C to stop.",
+
     # ---- rm / mv / show ----
     "rm.help": "delete a snapshot",
     "rm.path": "target directory (default: cwd)",
@@ -645,6 +658,19 @@ _ZH: dict[str, str] = {
     "list.text": "强制纯文本输出，不使用 curses TUI",
     "list.timeline": "按日期分组显示文本输出",
     "alist.help": "跨所有目录列出快照",
+
+    # ---- web ----
+    "web.help": "启动本机 snapz 客户端 Web 界面",
+    "web.host": "绑定主机（默认: 127.0.0.1）",
+    "web.port": "绑定端口（默认: 3000；0 表示随机空闲端口）",
+    "web.allow_remote": "允许绑定到非本机回环地址",
+    "web.invalid_port": "--port 必须在 0 到 65535 之间",
+    "web.refuse_remote": (
+        "拒绝绑定 {host}；如果确实要让其他机器访问本地快照 API，"
+        "请传入 --allow-remote"
+    ),
+    "web.started": "snapz 客户端 Web 界面: {url}",
+    "web.stop_hint": "按 Ctrl+C 停止。",
 
     # ---- rm / mv / show ----
     "rm.help": "删除一个快照",

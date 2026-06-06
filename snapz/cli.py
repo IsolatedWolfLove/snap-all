@@ -93,6 +93,7 @@ from snapz._cli_save import (
     cmd_save_scripted,
 )
 from snapz._cli_snapshot import _restore_with_confirmation, cmd_export, cmd_mv, cmd_protect, cmd_restore, cmd_rm, cmd_show
+from snapz._cli_web import cmd_web
 
 
 def main(argv: Optional[list[str]] = None) -> int:

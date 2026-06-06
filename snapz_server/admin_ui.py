@@ -11,17 +11,24 @@ ADMIN_UI_HTML = r"""<!doctype html>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f5f7fa;
-      --panel: #ffffff;
+      --bg: #f3f6fb;
+      --panel: #fff;
       --ink: #111827;
-      --muted: #667085;
-      --line: #d8dee8;
-      --primary: #2563eb;
-      --primary-strong: #1d4ed8;
-      --danger: #b42318;
-      --success: #047857;
-      --warn: #b54708;
-      --shadow: 0 10px 24px rgba(15, 23, 42, .08);
+      --muted: #64748b;
+      --subtle: #94a3b8;
+      --line: #e5e7eb;
+      --line-strong: #cbd5e1;
+      --primary: #1677ff;
+      --primary-strong: #0958d9;
+      --danger: #a8071a;
+      --danger-line: #ff4d4f;
+      --success: #237804;
+      --success-line: #52c41a;
+      --warn: #ad6800;
+      --warn-line: #faad14;
+      --info-bg: #e6f4ff;
+      --info-line: #bae6fd;
+      --shadow: 0 10px 30px rgba(15, 23, 42, .05);
     }
     * { box-sizing: border-box; }
     body {
@@ -36,7 +43,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
       justify-content: space-between;
       align-items: center;
       gap: 1rem;
-      padding: 1rem 1.5rem;
+      padding: 1rem 2rem;
       border-bottom: 1px solid var(--line);
       background: var(--panel);
       position: sticky;
@@ -44,25 +51,59 @@ ADMIN_UI_HTML = r"""<!doctype html>
       z-index: 10;
     }
     h1, h2, h3, p { margin: 0; }
-    h1 { font-size: 1.25rem; font-weight: 700; }
-    h2 { font-size: 1rem; font-weight: 700; }
-    h3 { font-size: .95rem; font-weight: 700; }
+    h1 { font-size: 1.25rem; font-weight: 700; line-height: 1.3; }
+    h2 { font-size: 1rem; font-weight: 700; line-height: 1.4; }
+    h3 { font-size: .95rem; font-weight: 700; line-height: 1.4; }
     main {
-      width: min(1280px, 100%);
+      width: min(1320px, 100%);
       margin: 0 auto;
-      padding: 1.25rem;
+      padding: 1.5rem 2rem 2rem;
     }
     .muted { color: var(--muted); }
+    .subtle { color: var(--subtle); }
     .toolbar {
       display: flex;
       align-items: center;
       flex-wrap: wrap;
       gap: .75rem;
     }
-    .grid {
+    .page-title {
+      display: grid;
+      gap: .25rem;
+      margin-bottom: 1rem;
+      padding-bottom: .25rem;
+    }
+    .page-title h2 {
+      font-size: 1.5rem;
+      line-height: 1.3;
+    }
+    .eyebrow {
+      color: var(--primary);
+      font-size: .75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.25rem;
+      min-height: 5.5rem;
+      padding: 1.25rem 1.5rem;
+      border-color: var(--info-line);
+      background: #eef8ff;
+    }
+    .hero h2 {
+      margin-top: .25rem;
+      font-size: 1.5rem;
+    }
+    .hero-actions {
+      justify-content: flex-end;
+    }
+    .stats-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: .75rem;
+      gap: 1rem;
       margin-bottom: 1rem;
     }
     .stat, .panel {
@@ -71,33 +112,77 @@ ADMIN_UI_HTML = r"""<!doctype html>
       border-radius: 8px;
       box-shadow: var(--shadow);
     }
-    .stat { padding: 1rem; }
-    .stat strong {
+    .stat {
+      min-height: 6.75rem;
+      padding: 1.1rem;
+      border-top-width: 3px;
+    }
+    .stat.sky { border-top-color: #38bdf8; }
+    .stat.violet { border-top-color: #8b5cf6; }
+    .stat.emerald { border-top-color: #10b981; }
+    .stat.amber { border-top-color: #f59e0b; }
+    .stat-label {
+      color: var(--muted);
+      font-size: .82rem;
+    }
+    .stat strong,
+    .stat-value {
       display: block;
       margin-top: .35rem;
-      font-size: 1.5rem;
+      font-size: 1.75rem;
+      line-height: 1.15;
+    }
+    .stat-hint {
+      margin-top: .35rem;
+      color: var(--subtle);
+      font-size: .75rem;
     }
     .panel { margin-bottom: 1rem; overflow: hidden; }
     .panel-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: .75rem;
-      padding: 1rem;
-      border-bottom: 1px solid var(--line);
-      background: #fbfcfe;
+      gap: 1rem;
+      padding: 1.1rem;
     }
-    .panel-body { padding: 1rem; }
+    .panel-title {
+      display: grid;
+      gap: .15rem;
+      min-width: 0;
+    }
+    .panel-title p {
+      color: var(--muted);
+      font-size: .75rem;
+      font-weight: 400;
+      line-height: 1.5;
+    }
+    .panel-body { padding: 0 1.1rem 1.1rem; }
     .split {
       display: grid;
-      grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr);
+      grid-template-columns: minmax(0, 1fr) minmax(360px, .44fr);
+      gap: 1rem;
+      align-items: start;
+    }
+    .side-stack {
+      display: grid;
       gap: 1rem;
     }
     form {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+      grid-template-columns: 1fr;
       align-items: end;
       gap: .75rem;
+    }
+    .form-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: .75rem;
+    }
+    .form-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 1rem;
     }
     label {
       display: grid;
@@ -116,6 +201,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
       background: #fff;
       font: inherit;
     }
+    input::placeholder { color: var(--subtle); }
     input[type="checkbox"] { width: 1rem; height: 1rem; }
     button {
       height: 2.35rem;
@@ -130,6 +216,10 @@ ADMIN_UI_HTML = r"""<!doctype html>
       white-space: nowrap;
     }
     button:hover { border-color: #aab4c3; }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: .5;
+    }
     button.primary {
       background: var(--primary);
       border-color: var(--primary);
@@ -140,18 +230,23 @@ ADMIN_UI_HTML = r"""<!doctype html>
       color: var(--danger);
       border-color: #f2b8b5;
     }
-    button.ghost {
-      background: transparent;
-      border-color: transparent;
+    .actions button {
+      height: 2rem;
+      padding: 0 .65rem;
+      font-size: .78rem;
     }
+    .table-wrap { overflow-x: auto; }
     table {
       width: 100%;
       border-collapse: collapse;
       table-layout: fixed;
       background: var(--panel);
+      border: 1px solid #f0f0f0;
+      border-radius: 6px;
+      overflow: hidden;
     }
     th, td {
-      padding: .7rem .8rem;
+      padding: .6rem .75rem;
       border-bottom: 1px solid var(--line);
       text-align: left;
       vertical-align: middle;
@@ -161,9 +256,20 @@ ADMIN_UI_HTML = r"""<!doctype html>
       color: var(--muted);
       font-size: .78rem;
       font-weight: 700;
-      text-transform: uppercase;
+      background: #fafafa;
+      text-transform: none;
     }
-    tr.selected { background: #eff6ff; }
+    tr:last-child td { border-bottom: 0; }
+    tr.selected,
+    tr.selected td {
+      background: var(--info-bg);
+    }
+    .cell-title { font-weight: 600; }
+    .cell-subtitle {
+      margin-top: .12rem;
+      color: var(--subtle);
+      font-size: .72rem;
+    }
     .actions {
       display: flex;
       flex-wrap: wrap;
@@ -176,19 +282,32 @@ ADMIN_UI_HTML = r"""<!doctype html>
     .badge {
       display: inline-flex;
       align-items: center;
-      min-height: 1.5rem;
-      border-radius: 999px;
+      min-height: 1.35rem;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
       padding: 0 .55rem;
-      font-size: .78rem;
-      font-weight: 700;
-      background: #eef2f7;
+      font-size: .75rem;
+      font-weight: 600;
+      background: #f8fafc;
       color: var(--muted);
     }
-    .badge.ok { background: #ecfdf3; color: var(--success); }
-    .badge.warn { background: #fff7ed; color: var(--warn); }
-    .badge.bad { background: #fff1f0; color: var(--danger); }
+    .badge.ok {
+      border-color: var(--success-line);
+      background: #f6ffed;
+      color: var(--success);
+    }
+    .badge.warn {
+      border-color: var(--warn-line);
+      background: #fffbe6;
+      color: var(--warn);
+    }
+    .badge.bad {
+      border-color: var(--danger-line);
+      background: #fff1f0;
+      color: var(--danger);
+    }
     .notice {
-      min-height: 2.35rem;
+      min-height: 2.4rem;
       display: flex;
       align-items: center;
       padding: .6rem .8rem;
@@ -208,22 +327,67 @@ ADMIN_UI_HTML = r"""<!doctype html>
       text-align: center;
       color: var(--muted);
     }
+    .source-snapshot-row > td {
+      padding: 0;
+      background: #f8fafc;
+    }
+    .snapshot-panel {
+      padding: 1rem;
+      border: 1px solid var(--line);
+      background: #f8fafc;
+    }
+    .snapshot-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-start;
+      margin-bottom: .75rem;
+    }
     .token-screen {
-      max-width: 440px;
-      margin: 8vh auto 0;
+      display: flex;
+      justify-content: center;
+      min-height: 32rem;
+      padding-top: 6vh;
+    }
+    .login-card {
+      width: min(100%, 32.5rem);
+      height: max-content;
+      padding: 1.75rem;
+    }
+    .login-card h2 {
+      margin-top: .35rem;
+      font-size: 1.5rem;
+    }
+    .login-card p {
+      margin-top: .6rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .token-form {
+      margin-top: 1rem;
+    }
+    .token-form button {
+      width: 100%;
+      height: 2.5rem;
     }
     .hidden { display: none !important; }
     @media (max-width: 980px) {
-      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      header { padding: 1rem; }
+      main { padding: 1rem; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .split { grid-template-columns: 1fr; }
-      form { grid-template-columns: 1fr 1fr; }
+      .hero { align-items: flex-start; flex-direction: column; }
+      .hero-actions { justify-content: flex-start; }
     }
     @media (max-width: 640px) {
       header { align-items: flex-start; flex-direction: column; }
       main { padding: .75rem; }
-      .grid, form { grid-template-columns: 1fr; }
+      .stats-grid, .form-row { grid-template-columns: 1fr; }
+      .form-footer, .snapshot-head { align-items: stretch; flex-direction: column; }
       th, td { padding: .6rem; }
       .panel-head { align-items: flex-start; flex-direction: column; }
+      .panel-head label { width: 100%; }
+      .login-card { padding: 1.25rem; }
     }
   </style>
 </head>
@@ -233,25 +397,18 @@ ADMIN_UI_HTML = r"""<!doctype html>
       <h1>snapz-server Admin</h1>
       <p class="muted">Manage tenants, users, and registered sync devices.</p>
     </div>
-    <div class="toolbar">
-      <button id="refreshButton" class="primary hidden" type="button">Refresh</button>
-      <button id="logoutButton" class="hidden" type="button">Forget token</button>
-    </div>
   </header>
 
   <main>
-    <section id="tokenScreen" class="token-screen panel">
-      <div class="panel-head">
-        <h2>Admin token</h2>
-      </div>
-      <div class="panel-body">
-        <p class="muted" style="margin-bottom: .85rem;">
-          Start snapz-server with --admin-token or SNAPZ_SERVER_ADMIN_TOKEN, then enter it here.
-        </p>
-        <form id="tokenForm" style="grid-template-columns: 1fr auto;">
+    <section id="tokenScreen" class="token-screen">
+      <div class="panel login-card">
+        <div class="eyebrow">Admin console</div>
+        <h2>Connect to snapz-server</h2>
+        <p>Start snapz-server with --admin-token or SNAPZ_SERVER_ADMIN_TOKEN, then enter it here.</p>
+        <form id="tokenForm" class="token-form">
           <label>
             Token
-            <input id="tokenInput" autocomplete="current-password" type="password" required>
+            <input id="tokenInput" autocomplete="current-password" placeholder="Admin token" type="password" required>
           </label>
           <button class="primary" type="submit">Connect</button>
         </form>
@@ -259,13 +416,30 @@ ADMIN_UI_HTML = r"""<!doctype html>
     </section>
 
     <section id="appScreen" class="hidden">
+      <div class="page-title">
+        <h2>snapz-server</h2>
+        <p class="muted">Manage snapz-server tenants, users, and sync devices.</p>
+      </div>
+
+      <section class="panel hero">
+        <div>
+          <div class="eyebrow">Connected</div>
+          <h2>snapz-server admin</h2>
+        </div>
+        <div class="toolbar hero-actions">
+          <span class="badge ok">Admin API active</span>
+          <button id="refreshButton" class="primary hidden" type="button">Refresh</button>
+          <button id="logoutButton" class="hidden" type="button">Forget token</button>
+        </div>
+      </section>
+
       <div id="notice" class="notice">Ready.</div>
 
-      <section class="grid" id="statsGrid"></section>
+      <section class="stats-grid" id="statsGrid"></section>
 
       <section class="panel">
         <div class="panel-head">
-          <div>
+          <div class="panel-title">
             <h2>Pushed images</h2>
             <p class="muted">Manage source bundles uploaded by snapz push.</p>
           </div>
@@ -277,37 +451,13 @@ ADMIN_UI_HTML = r"""<!doctype html>
         <div id="sourcesTable"></div>
       </section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Create user</h2>
-        </div>
-        <div class="panel-body">
-          <form id="createUserForm">
-            <label>
-              Tenant
-              <input name="tenant" placeholder="acme" required>
-            </label>
-            <label>
-              Username
-              <input name="username" placeholder="alice" required>
-            </label>
-            <label>
-              Password
-              <input name="password" type="password" required>
-            </label>
-            <label>
-              Disabled
-              <span class="toolbar"><input name="disabled" type="checkbox"> Initially disabled</span>
-            </label>
-            <button class="primary" type="submit">Add user</button>
-          </form>
-        </div>
-      </section>
-
       <section class="split">
         <section class="panel">
           <div class="panel-head">
-            <h2>Users</h2>
+            <div class="panel-title">
+              <h2>Users</h2>
+              <p>Select a user to inspect registered devices.</p>
+            </div>
             <label style="min-width: 220px;">
               Filter
               <input id="userFilter" placeholder="tenant or username">
@@ -316,16 +466,52 @@ ADMIN_UI_HTML = r"""<!doctype html>
           <div id="usersTable"></div>
         </section>
 
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <h2>Devices</h2>
-              <p id="deviceSubhead" class="muted">Select a user to view devices.</p>
+        <div class="side-stack">
+          <section class="panel">
+            <div class="panel-head">
+              <div class="panel-title">
+                <h2>Create user</h2>
+                <p>Add an account to a tenant.</p>
+              </div>
             </div>
-            <button id="revokeAllButton" class="danger hidden" type="button">Revoke active</button>
-          </div>
-          <div id="devicesTable"></div>
-        </section>
+            <div class="panel-body">
+              <form id="createUserForm">
+                <div class="form-row">
+                  <label>
+                    Tenant
+                    <input name="tenant" placeholder="acme" required>
+                  </label>
+                  <label>
+                    Username
+                    <input name="username" placeholder="alice" required>
+                  </label>
+                </div>
+                <label>
+                  Password
+                  <input name="password" placeholder="Password" type="password" required>
+                </label>
+                <div class="form-footer">
+                  <label>
+                    Disabled
+                    <span class="toolbar"><input name="disabled" type="checkbox"> Initially disabled</span>
+                  </label>
+                  <button class="primary" type="submit">Add user</button>
+                </div>
+              </form>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div class="panel-title">
+                <h2>Devices</h2>
+                <p id="deviceSubhead" class="muted">Select a user to view devices.</p>
+              </div>
+              <button id="revokeAllButton" class="danger hidden" type="button">Revoke active</button>
+            </div>
+            <div id="devicesTable"></div>
+          </section>
+        </div>
       </section>
     </section>
   </main>
@@ -386,15 +572,16 @@ ADMIN_UI_HTML = r"""<!doctype html>
 
     function renderStats() {
       const labels = [
-        ['tenants', 'Tenants'],
-        ['users', 'Users'],
-        ['devices', 'Devices'],
-        ['sources', 'Sources'],
+        ['tenants', 'Tenants', 'Workspace groups', 'sky'],
+        ['users', 'Users', 'Login accounts', 'violet'],
+        ['devices', 'Devices', 'Registered clients', 'emerald'],
+        ['sources', 'Sources', `${formatBytes(state.stats.bundle_bytes)} stored`, 'amber'],
       ];
-      el('statsGrid').innerHTML = labels.map(([key, label]) => `
-        <article class="stat">
-          <span class="muted">${label}</span>
-          <strong>${state.stats[key] ?? 0}</strong>
+      el('statsGrid').innerHTML = labels.map(([key, label, hint, tone]) => `
+        <article class="stat ${tone}">
+          <span class="stat-label">${label}</span>
+          <strong class="stat-value">${state.stats[key] ?? 0}</strong>
+          <div class="stat-hint">${hint}</div>
         </article>
       `).join('');
     }
@@ -444,73 +631,77 @@ ADMIN_UI_HTML = r"""<!doctype html>
         return;
       }
       el('sourcesTable').innerHTML = `
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 22%;">Image</th>
-              <th style="width: 16%;">Tenant</th>
-              <th style="width: 22%;">Path</th>
-              <th style="width: 13%;">Snapshots</th>
-              <th style="width: 15%;">Pushed</th>
-              <th style="width: 12%;">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${sources.map((source) => `
-              <tr>
-                <td>
-                  <strong>${escapeHtml(source.display_name)}</strong>
-                  <div class="muted mono">${escapeHtml(source.id)}</div>
-                </td>
-                <td>${escapeHtml(source.tenant)}</td>
-                <td>
-                  <div>${escapeHtml(source.path_hint || '-')}</div>
-                  <div class="muted mono">${escapeHtml(source.origin_store_key || '')}</div>
-                </td>
-                <td>
-                  <span class="badge">${source.snapshot_count} snapshot(s)</span>
-                  <div class="muted">${formatBytes(source.bundle_bytes)}</div>
-                </td>
-                <td>
-                  ${formatDate(source.updated_at)}
-                  <div class="muted">
-                    ${escapeHtml(source.pushed_by_username || source.pushed_by_device_name || '-')}
-                  </div>
-                </td>
-                <td>
-                  <div class="actions">
-	                    <button
-	                      data-action="details-source"
-	                      data-id="${source.id}"
-	                      data-tenant-id="${source.tenant_id}"
-	                      type="button"
-	                    >Details</button>
-	                    <button
-	                      data-action="rename-source"
-	                      data-id="${source.id}"
-	                      data-tenant-id="${source.tenant_id}"
-                      type="button"
-                    >Rename</button>
-                    <button
-                      class="danger"
-                      data-action="delete-source"
-                      data-id="${source.id}"
-                      data-tenant-id="${source.tenant_id}"
-                      type="button"
-                    >Delete</button>
-                  </div>
-                </td>
-	              </tr>
-	              ${sourceKey(source) === state.selectedSourceKey ? `
-	                <tr>
-	                  <td colspan="6">${renderSourceSnapshots()}</td>
-	                </tr>
-	              ` : ''}
-	            `).join('')}
-	          </tbody>
-	        </table>
-	      `;
-	    }
+        <div class="panel-body">
+          <div class="table-wrap">
+            <table style="min-width: 1080px;">
+              <thead>
+                <tr>
+                  <th style="width: 20%;">Image</th>
+                  <th style="width: 12%;">Tenant</th>
+                  <th style="width: 24%;">Path</th>
+                  <th style="width: 14%;">Snapshots</th>
+                  <th style="width: 17%;">Pushed</th>
+                  <th style="width: 13%;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${sources.map((source) => `
+                  <tr class="${sourceKey(source) === state.selectedSourceKey ? 'selected' : ''}">
+                    <td>
+                      <div class="cell-title">${escapeHtml(source.display_name)}</div>
+                      <div class="cell-subtitle mono">${escapeHtml(source.id)}</div>
+                    </td>
+                    <td>${escapeHtml(source.tenant)}</td>
+                    <td>
+                      <div class="cell-title">${escapeHtml(source.path_hint || '-')}</div>
+                      <div class="cell-subtitle mono">${escapeHtml(source.origin_store_key || '')}</div>
+                    </td>
+                    <td>
+                      <span class="badge">${source.snapshot_count} snapshot(s)</span>
+                      <div class="cell-subtitle">${formatBytes(source.bundle_bytes)}</div>
+                    </td>
+                    <td>
+                      <div class="cell-title">${formatDate(source.updated_at)}</div>
+                      <div class="cell-subtitle">
+                        ${escapeHtml(source.pushed_by_username || source.pushed_by_device_name || '-')}
+                      </div>
+                    </td>
+                    <td>
+                      <div class="actions">
+                        <button
+                          data-action="details-source"
+                          data-id="${source.id}"
+                          data-tenant-id="${source.tenant_id}"
+                          type="button"
+                        >Details</button>
+                        <button
+                          data-action="rename-source"
+                          data-id="${source.id}"
+                          data-tenant-id="${source.tenant_id}"
+                          type="button"
+                        >Rename</button>
+                        <button
+                          class="danger"
+                          data-action="delete-source"
+                          data-id="${source.id}"
+                          data-tenant-id="${source.tenant_id}"
+                          type="button"
+                        >Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                  ${sourceKey(source) === state.selectedSourceKey ? `
+                    <tr class="source-snapshot-row">
+                      <td colspan="6">${renderSourceSnapshots()}</td>
+                    </tr>
+                  ` : ''}
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
 
     function renderSourceSnapshots() {
       const source = selectedSource();
@@ -557,11 +748,11 @@ ADMIN_UI_HTML = r"""<!doctype html>
           </tr>
         `).join('');
       return `
-        <div class="panel-body" style="padding: .75rem 0 0;">
-          <div class="toolbar" style="justify-content: space-between; padding: 0 .8rem .7rem;">
-            <div>
-              <strong>Snapshots in ${escapeHtml(source.display_name)}</strong>
-              <div class="muted">${state.snapshotTotal} total · page ${state.snapshotPage}/${totalPages} · ${memoryText}</div>
+        <div class="snapshot-panel">
+          <div class="snapshot-head">
+            <div class="panel-title">
+              <h3>Snapshots in ${escapeHtml(source.display_name)}</h3>
+              <p>${state.snapshotTotal} total - page ${state.snapshotPage}/${totalPages} - ${memoryText}</p>
             </div>
             <div class="actions">
               <button data-action="snapshots-prev" data-id="${source.id}" data-tenant-id="${source.tenant_id}" ${state.snapshotPage <= 1 ? 'disabled' : ''} type="button">Prev</button>
@@ -569,19 +760,21 @@ ADMIN_UI_HTML = r"""<!doctype html>
               <button data-action="hide-snapshots" data-id="${source.id}" data-tenant-id="${source.tenant_id}" type="button">Hide</button>
             </div>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 22%;">Snapshot</th>
-                <th style="width: 18%;">Created</th>
-                <th style="width: 16%;">Content</th>
-                <th style="width: 12%;">Compression</th>
-                <th style="width: 18%;">Note</th>
-                <th style="width: 14%;">Actions</th>
-              </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-          </table>
+          <div class="table-wrap">
+            <table style="min-width: 940px;">
+              <thead>
+                <tr>
+                  <th style="width: 22%;">Snapshot</th>
+                  <th style="width: 18%;">Created</th>
+                  <th style="width: 16%;">Content</th>
+                  <th style="width: 12%;">Compression</th>
+                  <th style="width: 18%;">Note</th>
+                  <th style="width: 14%;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
         </div>
       `;
     }
@@ -601,48 +794,52 @@ ADMIN_UI_HTML = r"""<!doctype html>
         return;
       }
       el('usersTable').innerHTML = `
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 22%;">User</th>
-              <th style="width: 18%;">Tenant</th>
-              <th style="width: 13%;">Status</th>
-              <th style="width: 17%;">Devices</th>
-              <th style="width: 30%;">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${users.map((user) => `
-              <tr class="${user.id === state.selectedUserId ? 'selected' : ''}">
-                <td>
-                  <strong>${escapeHtml(user.username)}</strong>
-                  <div class="muted">${escapeHtml(user.id)}</div>
-                </td>
-                <td>${escapeHtml(user.tenant)}</td>
-                <td>
-                  <span class="badge ${user.disabled ? 'bad' : 'ok'}">
-                    ${user.disabled ? 'Disabled' : 'Enabled'}
-                  </span>
-                </td>
-                <td>
-                  <span class="badge">${user.active_device_count}/${user.device_count} active</span>
-                  <div class="muted">${formatDate(user.last_seen_at)}</div>
-                </td>
-                <td>
-                  <div class="actions">
-                    <button data-action="select" data-id="${user.id}" type="button">Devices</button>
-                    <button data-action="rename" data-id="${user.id}" type="button">Rename</button>
-                    <button data-action="toggle" data-id="${user.id}" type="button">
-                      ${user.disabled ? 'Enable' : 'Disable'}
-                    </button>
-                    <button data-action="password" data-id="${user.id}" type="button">Password</button>
-                    <button class="danger" data-action="delete" data-id="${user.id}" type="button">Delete</button>
-                  </div>
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+        <div class="panel-body">
+          <div class="table-wrap">
+            <table style="min-width: 1000px;">
+              <thead>
+                <tr>
+                  <th style="width: 22%;">User</th>
+                  <th style="width: 15%;">Tenant</th>
+                  <th style="width: 12%;">Status</th>
+                  <th style="width: 18%;">Devices</th>
+                  <th style="width: 33%;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${users.map((user) => `
+                  <tr class="${user.id === state.selectedUserId ? 'selected' : ''}">
+                    <td>
+                      <div class="cell-title">${escapeHtml(user.username)}</div>
+                      <div class="cell-subtitle mono">${escapeHtml(user.id)}</div>
+                    </td>
+                    <td>${escapeHtml(user.tenant)}</td>
+                    <td>
+                      <span class="badge ${user.disabled ? 'bad' : 'ok'}">
+                        ${user.disabled ? 'Disabled' : 'Enabled'}
+                      </span>
+                    </td>
+                    <td>
+                      <span class="badge">${user.active_device_count}/${user.device_count} active</span>
+                      <div class="cell-subtitle">${formatDate(user.last_seen_at)}</div>
+                    </td>
+                    <td>
+                      <div class="actions">
+                        <button data-action="select" data-id="${user.id}" type="button">Devices</button>
+                        <button data-action="rename" data-id="${user.id}" type="button">Rename</button>
+                        <button data-action="toggle" data-id="${user.id}" type="button">
+                          ${user.disabled ? 'Enable' : 'Disable'}
+                        </button>
+                        <button data-action="password" data-id="${user.id}" type="button">Password</button>
+                        <button class="danger" data-action="delete" data-id="${user.id}" type="button">Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
       `;
     }
 
@@ -657,52 +854,56 @@ ADMIN_UI_HTML = r"""<!doctype html>
         : 'Select a user to view devices.';
       el('revokeAllButton').classList.toggle('hidden', !user);
       if (!user) {
-        el('devicesTable').innerHTML = '<div class="empty">No user selected.</div>';
+        el('devicesTable').innerHTML = '<div class="panel-body"><div class="empty">No user selected.</div></div>';
         return;
       }
       if (state.devices.length === 0) {
-        el('devicesTable').innerHTML = '<div class="empty">This user has no devices.</div>';
+        el('devicesTable').innerHTML = '<div class="panel-body"><div class="empty">This user has no devices.</div></div>';
         return;
       }
       el('devicesTable').innerHTML = `
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 34%;">Device</th>
-              <th style="width: 18%;">Status</th>
-              <th style="width: 28%;">Last seen</th>
-              <th style="width: 20%;">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${state.devices.map((device) => `
-              <tr>
-                <td>
-                  <strong>${escapeHtml(device.name)}</strong>
-                  <div class="muted">${escapeHtml(device.id)}</div>
-                </td>
-                <td>
-                  <span class="badge ${device.revoked ? 'warn' : 'ok'}">
-                    ${device.revoked ? 'Revoked' : 'Active'}
-                  </span>
-                </td>
-                <td>
-                  ${formatDate(device.last_seen_at)}
-                  <div class="muted">Created ${formatDate(device.created_at)}</div>
-                </td>
-                <td>
-                  <button
-                    class="danger"
-                    data-action="revoke-device"
-                    data-id="${device.id}"
-                    ${device.revoked ? 'disabled' : ''}
-                    type="button"
-                  >Revoke</button>
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+        <div class="panel-body">
+          <div class="table-wrap">
+            <table style="min-width: 720px;">
+              <thead>
+                <tr>
+                  <th style="width: 32%;">Device</th>
+                  <th style="width: 18%;">Status</th>
+                  <th style="width: 32%;">Last seen</th>
+                  <th style="width: 18%;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${state.devices.map((device) => `
+                  <tr>
+                    <td>
+                      <div class="cell-title">${escapeHtml(device.name)}</div>
+                      <div class="cell-subtitle mono">${escapeHtml(device.id)}</div>
+                    </td>
+                    <td>
+                      <span class="badge ${device.revoked ? 'warn' : 'ok'}">
+                        ${device.revoked ? 'Revoked' : 'Active'}
+                      </span>
+                    </td>
+                    <td>
+                      <div class="cell-title">${formatDate(device.last_seen_at)}</div>
+                      <div class="cell-subtitle">Created ${formatDate(device.created_at)}</div>
+                    </td>
+                    <td>
+                      <button
+                        class="danger"
+                        data-action="revoke-device"
+                        data-id="${device.id}"
+                        ${device.revoked ? 'disabled' : ''}
+                        type="button"
+                      >Revoke</button>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
       `;
     }
 

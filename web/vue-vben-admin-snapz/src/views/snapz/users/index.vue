@@ -115,10 +115,10 @@ const snapshotColumns: TableColumnsType = [
 ];
 
 const statItems = computed(() => [
-  { label: 'Tenants', value: stats.value.tenants },
-  { label: 'Users', value: stats.value.users },
-  { label: 'Devices', value: stats.value.devices },
-  { label: 'Sources', value: stats.value.sources },
+  { hint: 'Workspace groups', label: 'Tenants', value: stats.value.tenants },
+  { hint: 'Login accounts', label: 'Users', value: stats.value.users },
+  { hint: 'Registered clients', label: 'Devices', value: stats.value.devices },
+  { hint: `${formatBytes(stats.value.bundle_bytes)} stored`, label: 'Sources', value: stats.value.sources },
 ]);
 
 const filteredUsers = computed(() => {
@@ -166,6 +166,14 @@ const snapshotTotalPages = computed(() =>
 
 function sourceRowKey(source: SnapzAdminSource) {
   return `${source.tenant_id}/${source.id}`;
+}
+
+function sourceRowClassName(source: SnapzAdminSource) {
+  return sourceRowKey(source) === selectedSourceKey.value ? 'snapz-table-row-selected' : '';
+}
+
+function userRowClassName(user: SnapzAdminUser) {
+  return user.id === selectedUserId.value ? 'snapz-table-row-selected' : '';
 }
 
 async function connect() {
@@ -476,205 +484,213 @@ onMounted(() => {
     description="Manage snapz-server tenants, users, and sync devices."
     title="snapz-server"
   >
-    <Card v-if="!connected" class="max-w-[520px]" title="Admin token">
-      <Space direction="vertical" class="w-full" size="middle">
-        <Input.Password
-          v-model:value="tokenInput"
-          autocomplete="current-password"
-          placeholder="SNAPZ_SERVER_ADMIN_TOKEN"
-          @press-enter="connect"
-        />
-        <Button type="primary" @click="connect"> Connect </Button>
-      </Space>
-    </Card>
-
-    <Space v-else direction="vertical" class="w-full" size="middle">
-      <Space>
-        <Button type="primary" :loading="loading" @click="loadAll">
-          Refresh
-        </Button>
-        <Button @click="forgetToken"> Forget token </Button>
-      </Space>
-
-      <Row :gutter="[16, 16]">
-        <Col v-for="item in statItems" :key="item.label" :lg="6" :md="12" :xs="24">
-          <Card :bordered="false">
-            <div class="text-sm text-gray-500">{{ item.label }}</div>
-            <div class="mt-2 text-2xl font-semibold">{{ item.value }}</div>
-          </Card>
-        </Col>
-      </Row>
-
-      <Card>
-        <template #title>
-          <div>
-            <div>Pushed images</div>
-            <div class="text-xs font-normal text-gray-500">
-              Manage source bundles uploaded by snapz push.
-            </div>
-          </div>
-        </template>
-        <template #extra>
-          <Input
-            v-model:value="sourceFilterText"
-            allow-clear
-            placeholder="Filter tenant, image, path, or id"
-            style="width: 320px"
-          />
-        </template>
-        <Table
-          :columns="sourceColumns"
-          :data-source="filteredSources"
-          :loading="loading"
-          :pagination="{ pageSize: 8 }"
-          :row-key="sourceRowKey"
-          size="small"
-        >
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'image'">
-              <div class="font-medium">{{ record.display_name }}</div>
-              <div class="text-xs text-gray-500">{{ record.id }}</div>
-            </template>
-            <template v-else-if="column.key === 'path'">
-              <div>{{ record.path_hint || '-' }}</div>
-              <div class="text-xs text-gray-500">
-                {{ record.origin_store_key }}
-              </div>
-            </template>
-            <template v-else-if="column.key === 'snapshots'">
-              <Tag>{{ record.snapshot_count }} snapshot(s)</Tag>
-              <div class="text-xs text-gray-500">
-                {{ formatBytes(record.bundle_bytes) }}
-              </div>
-            </template>
-            <template v-else-if="column.key === 'updated_at'">
-              <div>{{ formatDate(record.updated_at) }}</div>
-              <div class="text-xs text-gray-500">
-                {{ record.pushed_by_username || record.pushed_by_device_name || '-' }}
-              </div>
-            </template>
-            <template v-else-if="column.key === 'actions'">
-              <Space wrap>
-                <Button size="small" @click="loadSourceSnapshots(record)">
-                  Details
-                </Button>
-                <Button size="small" @click="renameSource(record)">
-                  Rename
-                </Button>
-                <Button danger size="small" @click="removeSource(record)">
-                  Delete
-                </Button>
-              </Space>
-            </template>
-          </template>
-        </Table>
-        <Card
-          v-if="selectedSource"
-          class="mt-4"
-          size="small"
-        >
-          <template #title>
+    <div class="snapz-admin">
+      <div v-if="!connected" class="snapz-login">
+        <Card :bordered="false" class="snapz-login-card">
+          <Space direction="vertical" class="w-full" size="large">
             <div>
-              <div>Snapshots in {{ selectedSource.display_name }}</div>
-              <div class="text-xs font-normal text-gray-500">
-                {{ snapshotTotal }} total · page {{ snapshotPage }}/{{ snapshotTotalPages }}
-                <template v-if="snapshotMemory">
-                  · memory checked:
-                  {{ formatBytes(snapshotMemory.required_bytes) }} required /
-                  {{ formatBytes(snapshotMemory.limit_bytes) }} limit
-                </template>
+              <div class="snapz-eyebrow">Admin console</div>
+              <h2 class="snapz-login-title">Connect to snapz-server</h2>
+            </div>
+            <Input.Password
+              v-model:value="tokenInput"
+              autocomplete="current-password"
+              placeholder="Admin token"
+              size="large"
+              @press-enter="connect"
+            />
+            <Button block size="large" type="primary" @click="connect">
+              Connect
+            </Button>
+          </Space>
+        </Card>
+      </div>
+
+      <Space v-else direction="vertical" class="w-full" size="middle">
+        <Card :bordered="false" class="snapz-hero">
+          <div class="snapz-hero-content">
+            <div>
+              <div class="snapz-eyebrow">Connected</div>
+              <h2 class="snapz-hero-title">snapz-server admin</h2>
+            </div>
+            <Space wrap>
+              <Tag color="success">Admin API active</Tag>
+              <Button type="primary" :loading="loading" @click="loadAll">
+                Refresh
+              </Button>
+              <Button @click="forgetToken"> Forget token </Button>
+            </Space>
+          </div>
+        </Card>
+
+        <Row :gutter="[16, 16]">
+          <Col v-for="item in statItems" :key="item.label" :lg="6" :md="12" :xs="24">
+            <Card :bordered="false" class="snapz-stat-card">
+              <div class="snapz-stat-label">{{ item.label }}</div>
+              <div class="snapz-stat-value">{{ item.value }}</div>
+              <div class="snapz-stat-hint">{{ item.hint }}</div>
+            </Card>
+          </Col>
+        </Row>
+
+        <Card :bordered="false" class="snapz-section-card">
+          <template #title>
+            <div class="snapz-card-title">
+              <div class="snapz-card-heading">Pushed images</div>
+              <div class="snapz-card-subtitle">
+                Manage source bundles uploaded by snapz push.
               </div>
             </div>
           </template>
           <template #extra>
-            <Space>
-              <Button
-                :disabled="snapshotPage <= 1"
-                size="small"
-                @click="loadSourceSnapshots(selectedSource, snapshotPage - 1)"
-              >
-                Prev
-              </Button>
-              <Button
-                :disabled="snapshotPage >= snapshotTotalPages"
-                size="small"
-                @click="loadSourceSnapshots(selectedSource, snapshotPage + 1)"
-              >
-                Next
-              </Button>
-              <Button size="small" @click="hideSourceSnapshots">
-                Hide
-              </Button>
-            </Space>
+            <Input
+              v-model:value="sourceFilterText"
+              allow-clear
+              class="snapz-search"
+              placeholder="Filter tenant, image, path, or id"
+            />
           </template>
           <Table
-            :columns="snapshotColumns"
-            :data-source="sourceSnapshots"
+            :columns="sourceColumns"
+            :data-source="filteredSources"
             :loading="loading"
-            :pagination="false"
-            row-key="name"
+            :pagination="{ pageSize: 8 }"
+            :row-key="sourceRowKey"
+            :row-class-name="sourceRowClassName"
+            :scroll="{ x: 1080 }"
             size="small"
           >
             <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'snapshot'">
-                <div class="font-medium">{{ record.name }}</div>
-                <div class="text-xs text-gray-500">{{ record.kind }}</div>
+              <template v-if="column.key === 'image'">
+                <div class="font-medium">{{ record.display_name }}</div>
+                <div class="text-xs text-gray-500">{{ record.id }}</div>
               </template>
-              <template v-else-if="column.key === 'created'">
-                {{ formatDate(record.created) }}
-              </template>
-              <template v-else-if="column.key === 'content'">
-                <Tag>{{ record.file_count }} file(s)</Tag>
+              <template v-else-if="column.key === 'path'">
+                <div>{{ record.path_hint || '-' }}</div>
                 <div class="text-xs text-gray-500">
-                  {{ formatBytes(record.total_bytes_in || record.size_bytes) }}
+                  {{ record.origin_store_key }}
                 </div>
               </template>
-              <template v-else-if="column.key === 'note'">
-                {{ record.note || '-' }}
+              <template v-else-if="column.key === 'snapshots'">
+                <Tag>{{ record.snapshot_count }} snapshot(s)</Tag>
+                <div class="text-xs text-gray-500">
+                  {{ formatBytes(record.bundle_bytes) }}
+                </div>
+              </template>
+              <template v-else-if="column.key === 'updated_at'">
+                <div>{{ formatDate(record.updated_at) }}</div>
+                <div class="text-xs text-gray-500">
+                  {{ record.pushed_by_username || record.pushed_by_device_name || '-' }}
+                </div>
               </template>
               <template v-else-if="column.key === 'actions'">
                 <Space wrap>
-                  <Button size="small" @click="renameSourceSnapshot(record)">
+                  <Button size="small" @click="loadSourceSnapshots(record)">
+                    Details
+                  </Button>
+                  <Button size="small" @click="renameSource(record)">
                     Rename
                   </Button>
-                  <Button danger size="small" @click="removeSourceSnapshot(record)">
+                  <Button danger size="small" @click="removeSource(record)">
                     Delete
                   </Button>
                 </Space>
               </template>
             </template>
           </Table>
+          <div
+            v-if="selectedSource"
+            class="snapz-snapshot-panel"
+          >
+            <div class="snapz-panel-header">
+              <div>
+                <div class="snapz-card-heading">Snapshots in {{ selectedSource.display_name }}</div>
+                <div class="snapz-card-subtitle">
+                  {{ snapshotTotal }} total · page {{ snapshotPage }}/{{ snapshotTotalPages }}
+                  <template v-if="snapshotMemory">
+                    · memory checked:
+                    {{ formatBytes(snapshotMemory.required_bytes) }} required /
+                    {{ formatBytes(snapshotMemory.limit_bytes) }} limit
+                  </template>
+                </div>
+              </div>
+              <Space>
+                <Button
+                  :disabled="snapshotPage <= 1"
+                  size="small"
+                  @click="loadSourceSnapshots(selectedSource, snapshotPage - 1)"
+                >
+                  Prev
+                </Button>
+                <Button
+                  :disabled="snapshotPage >= snapshotTotalPages"
+                  size="small"
+                  @click="loadSourceSnapshots(selectedSource, snapshotPage + 1)"
+                >
+                  Next
+                </Button>
+                <Button size="small" @click="hideSourceSnapshots">
+                  Hide
+                </Button>
+              </Space>
+            </div>
+            <Table
+              :columns="snapshotColumns"
+              :data-source="sourceSnapshots"
+              :loading="loading"
+              :pagination="false"
+              row-key="name"
+              :scroll="{ x: 940 }"
+              size="small"
+            >
+              <template #bodyCell="{ column, record }">
+                <template v-if="column.key === 'snapshot'">
+                  <div class="font-medium">{{ record.name }}</div>
+                  <div class="text-xs text-gray-500">{{ record.kind }}</div>
+                </template>
+                <template v-else-if="column.key === 'created'">
+                  {{ formatDate(record.created) }}
+                </template>
+                <template v-else-if="column.key === 'content'">
+                  <Tag>{{ record.file_count }} file(s)</Tag>
+                  <div class="text-xs text-gray-500">
+                    {{ formatBytes(record.total_bytes_in || record.size_bytes) }}
+                  </div>
+                </template>
+                <template v-else-if="column.key === 'note'">
+                  {{ record.note || '-' }}
+                </template>
+                <template v-else-if="column.key === 'actions'">
+                  <Space wrap>
+                    <Button size="small" @click="renameSourceSnapshot(record)">
+                      Rename
+                    </Button>
+                    <Button danger size="small" @click="removeSourceSnapshot(record)">
+                      Delete
+                    </Button>
+                  </Space>
+                </template>
+              </template>
+            </Table>
+          </div>
         </Card>
-      </Card>
-
-      <Card title="Create user">
-        <Form layout="inline" :model="createForm" @finish="createUser">
-          <Form.Item label="Tenant" name="tenant" required>
-            <Input v-model:value="createForm.tenant" placeholder="acme" />
-          </Form.Item>
-          <Form.Item label="Username" name="username" required>
-            <Input v-model:value="createForm.username" placeholder="alice" />
-          </Form.Item>
-          <Form.Item label="Password" name="password" required>
-            <Input.Password v-model:value="createForm.password" />
-          </Form.Item>
-          <Form.Item label="Disabled" name="disabled">
-            <Switch v-model:checked="createForm.disabled" />
-          </Form.Item>
-          <Form.Item>
-            <Button type="primary" html-type="submit"> Add user </Button>
-          </Form.Item>
-        </Form>
-      </Card>
 
       <div class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,.85fr)]">
-        <Card title="Users">
+        <Card :bordered="false" class="snapz-section-card">
+          <template #title>
+            <div class="snapz-card-title">
+              <div class="snapz-card-heading">Users</div>
+              <div class="snapz-card-subtitle">
+                Select a user to inspect registered devices.
+              </div>
+            </div>
+          </template>
           <template #extra>
             <Input
               v-model:value="filterText"
               allow-clear
+              class="snapz-search snapz-search-sm"
               placeholder="Filter tenant or username"
-              style="width: 240px"
             />
           </template>
           <Table
@@ -683,6 +699,8 @@ onMounted(() => {
             :loading="loading"
             :pagination="{ pageSize: 8 }"
             row-key="id"
+            :row-class-name="userRowClassName"
+            :scroll="{ x: 1000 }"
             size="small"
           >
             <template #bodyCell="{ column, record }">
@@ -727,66 +745,262 @@ onMounted(() => {
           </Table>
         </Card>
 
-        <Card>
-          <template #title>
-            <div>
-              <div>Devices</div>
-              <div class="text-xs font-normal text-gray-500">
-                <template v-if="selectedUser">
-                  {{ selectedUser.tenant }}/{{ selectedUser.username }}
-                </template>
-                <template v-else>Select a user</template>
-              </div>
-            </div>
-          </template>
-          <template #extra>
-            <Button
-              v-if="selectedUser"
-              danger
-              size="small"
-              @click="revokeActiveDevices"
-            >
-              Revoke active
-            </Button>
-          </template>
-          <Table
-            :columns="deviceColumns"
-            :data-source="devices"
-            :loading="loading"
-            :pagination="{ pageSize: 8 }"
-            row-key="id"
-            size="small"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'device'">
-                <div class="font-medium">{{ record.name }}</div>
-                <div class="text-xs text-gray-500">{{ record.id }}</div>
-              </template>
-              <template v-else-if="column.key === 'status'">
-                <Tag :color="record.revoked ? 'warning' : 'success'">
-                  {{ record.revoked ? 'Revoked' : 'Active' }}
-                </Tag>
-              </template>
-              <template v-else-if="column.key === 'last_seen_at'">
-                <div>{{ formatDate(record.last_seen_at) }}</div>
-                <div class="text-xs text-gray-500">
-                  Created {{ formatDate(record.created_at) }}
+        <Space direction="vertical" class="w-full" size="middle">
+          <Card :bordered="false" class="snapz-section-card">
+            <template #title>
+              <div class="snapz-card-title">
+                <div class="snapz-card-heading">Create user</div>
+                <div class="snapz-card-subtitle">
+                  Add an account to a tenant.
                 </div>
-              </template>
-              <template v-else-if="column.key === 'actions'">
-                <Button
-                  danger
-                  :disabled="record.revoked"
-                  size="small"
-                  @click="revokeDevice(record)"
-                >
-                  Revoke
-                </Button>
-              </template>
+              </div>
             </template>
-          </Table>
-        </Card>
+            <Form layout="vertical" :model="createForm" @finish="createUser">
+              <Row :gutter="12">
+                <Col :md="12" :xs="24">
+                  <Form.Item label="Tenant" name="tenant" required>
+                    <Input v-model:value="createForm.tenant" placeholder="acme" />
+                  </Form.Item>
+                </Col>
+                <Col :md="12" :xs="24">
+                  <Form.Item label="Username" name="username" required>
+                    <Input v-model:value="createForm.username" placeholder="alice" />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Form.Item label="Password" name="password" required>
+                <Input.Password v-model:value="createForm.password" />
+              </Form.Item>
+              <div class="snapz-form-footer">
+                <Form.Item label="Disabled" name="disabled">
+                  <Switch v-model:checked="createForm.disabled" />
+                </Form.Item>
+                <Form.Item>
+                  <Button type="primary" html-type="submit"> Add user </Button>
+                </Form.Item>
+              </div>
+            </Form>
+          </Card>
+
+          <Card :bordered="false" class="snapz-section-card">
+            <template #title>
+              <div class="snapz-card-title">
+                <div class="snapz-card-heading">Devices</div>
+                <div class="snapz-card-subtitle">
+                  <template v-if="selectedUser">
+                    {{ selectedUser.tenant }}/{{ selectedUser.username }}
+                  </template>
+                  <template v-else>Select a user</template>
+                </div>
+              </div>
+            </template>
+            <template #extra>
+              <Button
+                v-if="selectedUser"
+                danger
+                size="small"
+                @click="revokeActiveDevices"
+              >
+                Revoke active
+              </Button>
+            </template>
+            <Table
+              :columns="deviceColumns"
+              :data-source="devices"
+              :loading="loading"
+              :pagination="{ pageSize: 8 }"
+              row-key="id"
+              :scroll="{ x: 720 }"
+              size="small"
+            >
+              <template #bodyCell="{ column, record }">
+                <template v-if="column.key === 'device'">
+                  <div class="font-medium">{{ record.name }}</div>
+                  <div class="text-xs text-gray-500">{{ record.id }}</div>
+                </template>
+                <template v-else-if="column.key === 'status'">
+                  <Tag :color="record.revoked ? 'warning' : 'success'">
+                    {{ record.revoked ? 'Revoked' : 'Active' }}
+                  </Tag>
+                </template>
+                <template v-else-if="column.key === 'last_seen_at'">
+                  <div>{{ formatDate(record.last_seen_at) }}</div>
+                  <div class="text-xs text-gray-500">
+                    Created {{ formatDate(record.created_at) }}
+                  </div>
+                </template>
+                <template v-else-if="column.key === 'actions'">
+                  <Button
+                    danger
+                    :disabled="record.revoked"
+                    size="small"
+                    @click="revokeDevice(record)"
+                  >
+                    Revoke
+                  </Button>
+                </template>
+              </template>
+            </Table>
+          </Card>
+        </Space>
       </div>
     </Space>
+    </div>
   </Page>
 </template>
+
+<style scoped>
+.snapz-admin {
+  min-height: 100%;
+}
+
+.snapz-login {
+  display: flex;
+  min-height: 440px;
+  align-items: center;
+  justify-content: center;
+}
+
+.snapz-login-card {
+  width: min(100%, 520px);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+}
+
+.snapz-eyebrow {
+  margin-bottom: 8px;
+  color: #1677ff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.snapz-login-title,
+.snapz-hero-title {
+  margin: 0;
+  color: #111827;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.snapz-login-copy,
+.snapz-hero-copy {
+  max-width: 640px;
+  margin: 8px 0 0;
+  color: #64748b;
+  line-height: 1.6;
+}
+
+.snapz-hero {
+  border: 1px solid rgba(22, 119, 255, 0.16);
+  background:
+    linear-gradient(135deg, rgba(22, 119, 255, 0.1), rgba(20, 184, 166, 0.08)),
+    #fff;
+}
+
+.snapz-hero-content {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.snapz-stat-card,
+.snapz-section-card {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+}
+
+.snapz-stat-label {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.snapz-stat-value {
+  margin-top: 6px;
+  color: #111827;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.snapz-stat-hint {
+  margin-top: 6px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.snapz-card-title {
+  min-width: 0;
+}
+
+.snapz-card-heading {
+  color: #111827;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.snapz-card-subtitle {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.snapz-search {
+  width: min(320px, 48vw);
+}
+
+.snapz-search-sm {
+  width: min(240px, 42vw);
+}
+
+.snapz-snapshot-panel {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.snapz-panel-header {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.snapz-form-footer {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+:deep(.snapz-table-row-selected > td) {
+  background: #e6f4ff !important;
+}
+
+:deep(.ant-table-cell) {
+  vertical-align: top;
+}
+
+@media (max-width: 768px) {
+  .snapz-hero-content,
+  .snapz-panel-header,
+  .snapz-form-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .snapz-search,
+  .snapz-search-sm {
+    width: 100%;
+  }
+}
+</style>

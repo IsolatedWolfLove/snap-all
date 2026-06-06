@@ -23,6 +23,7 @@ from snapz._cli_paths import cmd_browse, cmd_cat, cmd_find, cmd_revert, cmd_tag,
 from snapz._cli_save import cmd_save_interactive, cmd_save_scripted
 from snapz._cli_snapshot import cmd_export, cmd_mv, cmd_protect, cmd_restore, cmd_rm, cmd_show
 from snapz._cli_stats_prune import cmd_prune, cmd_stats
+from snapz._cli_web import cmd_web
 from snapz import update_check
 
 
@@ -765,6 +766,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_completion.set_defaults(func=cmd_completion)
 
+    # local client web UI
+    p_web = sub.add_parser("web", help=t("web.help"), description=t("web.help"))
+    p_web.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=t("web.host"),
+    )
+    p_web.add_argument(
+        "--port",
+        type=int,
+        default=3000,
+        help=t("web.port"),
+    )
+    p_web.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help=t("web.allow_remote"),
+    )
+    p_web.set_defaults(func=cmd_web)
+
     # self-management
     p_update = sub.add_parser("update", help=t("update.help"))
     p_update.add_argument(
@@ -824,7 +845,7 @@ def _main_impl(argv: Optional[list[str]]) -> int:
         "login", "logout", "push", "pull", "adopt",
         "stats", "prune", "revert",
         "undo", "find", "cat", "browse", "log", "tag",
-        "completion", "update", "uninstall",
+        "completion", "web", "update", "uninstall",
     }
     enter_bare_mode = (
         not argv
