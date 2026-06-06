@@ -13,6 +13,31 @@ def source_id_from_bundle_path(path: str) -> str:
     return value
 
 
+def source_id_from_index_path(path: str) -> str:
+    parts = path.strip("/").split("/")
+    if len(parts) != 4 or parts[:2] != ["api", "sources"] or parts[3] != "index":
+        return ""
+    return safe_id(parts[2])
+
+
+def source_id_from_delta_path(path: str) -> str:
+    parts = path.strip("/").split("/")
+    if len(parts) != 4 or parts[:2] != ["api", "sources"] or parts[3] != "delta":
+        return ""
+    return safe_id(parts[2])
+
+
+def source_object_ref_from_path(path: str) -> tuple[str, str] | None:
+    parts = path.strip("/").split("/")
+    if len(parts) != 5 or parts[:2] != ["api", "sources"] or parts[3] != "objects":
+        return None
+    source_id = safe_id(parts[2])
+    sha = parts[4]
+    if not source_id or not is_sha256(sha):
+        return None
+    return source_id, sha
+
+
 def admin_user_id_from_path(path: str) -> str:
     parts = path.strip("/").split("/")
     if len(parts) != 4 or parts[:3] != ["api", "admin", "users"]:

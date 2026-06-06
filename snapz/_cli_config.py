@@ -61,6 +61,8 @@ def cmd_config(args: argparse.Namespace, config: RuntimeConfig) -> int:
                 f"{st.ok_mark()} {st.name(args.key)} = "
                 f"{st.numeric(_format_config_value(parsed))}"
             )
+            if args.key == "remote_only" and parsed is True and _stdout_is_tty():
+                _maybe_install_remote_only_cron(root)
             return EXIT_OK
         if op == "unset":
             removed = preferences.unset_config_value(root, args.key)
@@ -95,3 +97,19 @@ def cmd_config(args: argparse.Namespace, config: RuntimeConfig) -> int:
     _print_error(t('config.unknown_op', op=op))
     return EXIT_ERROR
 
+
+def _maybe_install_remote_only_cron(root: Path) -> None:
+    if not _confirm(
+        "install a cron job to run snapz push/pull every 3 hours?",
+        default_yes=False,
+    ):
+        return
+    try:
+        from snapz.scheduler import install_remote_sync_cron
+
+        result = install_remote_sync_cron(root)
+    except Exception as exc:
+        _print_error(f"could not install cron job: {exc}")
+        return
+    state = "updated" if result.updated else "installed"
+    print(f"{st.ok_mark()} cron {state}: {result.command}")

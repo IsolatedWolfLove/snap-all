@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from snapz import api, remote
+from snapz import cas
 from snapz.config import RuntimeConfig
 from snapz_server import db
 from snapz_server.app import make_server
@@ -247,6 +248,234 @@ def test_push_pull_all_defaults_to_archive(tmp_path):
         adopted = api.adopt_archive(active_archive.key, adopted_path, config=local_b)
         assert adopted.archived is False
         assert [s.name for s in api.list_snapshots(adopted_path, config=local_b)] == ["v1"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_remote_index_pull_and_on_demand_object_hydration(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        local_a = RuntimeConfig(root=tmp_path / "client-a", remote_only=True)
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("v1\n", encoding="utf-8")
+        api.save(project, "v1", config=local_a)
+
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-a",
+            config=local_a,
+        )
+        pushed = remote.push_all(config=local_a)
+        assert pushed.ok
+        assert len(pushed.items) == 1
+
+        dir_root_a = cas.global_objects_root(local_a.root)
+        assert not list(dir_root_a.glob("*/*"))
+
+        local_b = RuntimeConfig(root=tmp_path / "client-b")
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-b",
+            config=local_b,
+        )
+        pulled = remote.pull_all(config=local_b)
+        assert pulled.ok
+        assert len(pulled.items) == 1
+
+        archives = api.list_archives(config=local_b)
+        assert len(archives) == 1
+        assert [snap.name for snap in archives[0].snapshots] == ["v1"]
+        assert not list(cas.global_objects_root(local_b.root).glob("*/*"))
+
+        restored = tmp_path / "restored"
+        api.restore_archive(archives[0].key, "v1", restored, config=local_b)
+        assert (restored / "README.md").read_text(encoding="utf-8") == "v1\n"
+        assert list(cas.global_objects_root(local_b.root).glob("*/*"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_second_push_uploads_only_missing_blobs(tmp_path, monkeypatch):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    uploaded_sizes: list[tuple[str, int]] = []
+    original_http_request = remote._http_request
+
+    def recording_request(method, server_url, path, **kwargs):
+        upload = kwargs.get("upload")
+        if method == "PUT" and upload is not None:
+            uploaded_sizes.append((path, Path(upload).stat().st_size))
+        return original_http_request(method, server_url, path, **kwargs)
+
+    monkeypatch.setattr(remote, "_http_request", recording_request)
+    try:
+        local_a = RuntimeConfig(root=tmp_path / "client-a")
+        project = tmp_path / "project"
+        project.mkdir()
+        shared = "shared payload\n" * 200
+        (project / "keep.txt").write_text(shared, encoding="utf-8")
+        (project / "change.txt").write_text("one\n" * 200, encoding="utf-8")
+        api.save(project, "v1", config=local_a)
+
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-a",
+            config=local_a,
+        )
+        assert remote.push_all(config=local_a).ok
+        first_upload = uploaded_sizes[-1]
+
+        (project / "change.txt").write_text("two\n" * 200, encoding="utf-8")
+        api.save(project, "v2", config=local_a)
+        assert remote.push_all(config=local_a).ok
+        second_upload = uploaded_sizes[-1]
+
+        assert first_upload[0].endswith("/delta")
+        assert second_upload[0].endswith("/delta")
+        assert second_upload[1] < first_upload[1]
+
+        local_b = RuntimeConfig(root=tmp_path / "client-b")
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-b",
+            config=local_b,
+        )
+        pulled = remote.pull_all(config=local_b)
+        assert pulled.ok
+        archives = api.list_archives(config=local_b)
+        assert len(archives) == 1
+        restored = tmp_path / "restored-v2"
+        api.restore_archive(archives[0].key, "v2", restored, config=local_b)
+        assert (restored / "keep.txt").read_text(encoding="utf-8") == shared
+        assert (restored / "change.txt").read_text(encoding="utf-8") == "two\n" * 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_push_delta_updates_overwritten_snapshot(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        local_a = RuntimeConfig(root=tmp_path / "client-a")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("first\n", encoding="utf-8")
+        api.save(project, "v1", config=local_a)
+
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-a",
+            config=local_a,
+        )
+        assert remote.push_all(config=local_a).ok
+
+        (project / "README.md").write_text("second\n", encoding="utf-8")
+        api.save(project, "v1", config=local_a, overwrite=True)
+        assert remote.push_all(config=local_a).ok
+
+        local_b = RuntimeConfig(root=tmp_path / "client-b")
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-b",
+            config=local_b,
+        )
+        assert remote.pull_all(config=local_b).ok
+        archive = api.list_archives(config=local_b)[0]
+        restored = tmp_path / "restored-overwrite"
+        api.restore_archive(archive.key, "v1", restored, config=local_b)
+        assert (restored / "README.md").read_text(encoding="utf-8") == "second\n"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_index_pull_replaces_previous_remote_index(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        local_a = RuntimeConfig(root=tmp_path / "client-a")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("v1\n", encoding="utf-8")
+        api.save(project, "v1", config=local_a)
+        (project / "README.md").write_text("v2\n", encoding="utf-8")
+        api.save(project, "v2", config=local_a)
+
+        auth_a = remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-a",
+            config=local_a,
+        )
+        assert remote.push_all(config=local_a).ok
+
+        local_b = RuntimeConfig(root=tmp_path / "client-b")
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-b",
+            config=local_b,
+        )
+        assert remote.pull_all(config=local_b).ok
+        assert remote.pull_all(config=local_b).ok
+        archive = api.list_archives(config=local_b)[0]
+        assert {snap.name for snap in archive.snapshots} == {"v1", "v2"}
+
+        source_id = remote.source_id_for({
+            "key": api.Store(local_a).key_for(project.resolve()),
+            "source_marker": "",
+        })
+        ctx = db.authenticate_token(server_root, auth_a.token)
+        assert ctx is not None
+        row = db.get_source(server_root, ctx, source_id)
+        assert row is not None
+        bundle = db.bundle_path(server_root, row["tenant_id"], source_id)
+        from snapz_server.bundles import delete_bundle_snapshot
+
+        delete_bundle_snapshot(bundle, "v1")
+        db.upsert_source(
+            server_root,
+            ctx,
+            source_id,
+            remote.read_bundle_meta(bundle)["source"],
+            snapshot_count=1,
+            bundle_bytes=bundle.stat().st_size,
+        )
+
+        assert remote.pull_all(config=local_b).ok
+        archive = api.list_archives(config=local_b)[0]
+        assert [snap.name for snap in archive.snapshots] == ["v2"]
     finally:
         server.shutdown()
         server.server_close()

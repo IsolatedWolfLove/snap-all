@@ -892,47 +892,21 @@ def _main_impl(argv: Optional[list[str]]) -> int:
         st.configure(str(preferences.get_config_value(Path(config.root), "color")))
     except (KeyError, ValueError):
         st.configure("auto")
+    try:
+        remote_only = bool(preferences.get_config_value(Path(config.root), "remote_only"))
+    except (KeyError, ValueError):
+        remote_only = config.remote_only
+    if remote_only != config.remote_only:
+        config = _runtime_config_with(config, remote_only=remote_only)
     if getattr(args, "no_zstd", False) or no_zstd_requested:
-        config = RuntimeConfig(
-            root=config.root,
-            large_file_bytes=config.large_file_bytes,
-            follow_symlinks=config.follow_symlinks,
-            use_zstd=False,
-            apply_default_ignores=config.apply_default_ignores,
-            apply_gitignore=config.apply_gitignore,
-            apply_snapzignore=config.apply_snapzignore,
-            use_file_cache=config.use_file_cache,
-            save_workers=config.save_workers,
-            zstd_level=config.zstd_level,
-            gzip_level=config.gzip_level,
-            chunk_file_bytes=config.chunk_file_bytes,
-            chunk_min_bytes=config.chunk_min_bytes,
-            chunk_avg_bytes=config.chunk_avg_bytes,
-            chunk_max_bytes=config.chunk_max_bytes,
-        )
+        config = _runtime_config_with(config, use_zstd=False)
 
     workers = getattr(args, "workers", None)
     if workers is not None:
         if workers < 1:
             _print_error(t("save.workers_positive"))
             return EXIT_ERROR
-        config = RuntimeConfig(
-            root=config.root,
-            large_file_bytes=config.large_file_bytes,
-            follow_symlinks=config.follow_symlinks,
-            use_zstd=config.use_zstd,
-            apply_default_ignores=config.apply_default_ignores,
-            apply_gitignore=config.apply_gitignore,
-            apply_snapzignore=config.apply_snapzignore,
-            use_file_cache=config.use_file_cache,
-            save_workers=workers,
-            zstd_level=config.zstd_level,
-            gzip_level=config.gzip_level,
-            chunk_file_bytes=config.chunk_file_bytes,
-            chunk_min_bytes=config.chunk_min_bytes,
-            chunk_avg_bytes=config.chunk_avg_bytes,
-            chunk_max_bytes=config.chunk_max_bytes,
-        )
+        config = _runtime_config_with(config, save_workers=workers)
 
     if json_requested:
         args.json = True
@@ -950,3 +924,26 @@ def _main_impl(argv: Optional[list[str]]) -> int:
     )
 
     return args.func(args, config)
+
+
+def _runtime_config_with(config: RuntimeConfig, **changes: object) -> RuntimeConfig:
+    data = {
+        "root": config.root,
+        "large_file_bytes": config.large_file_bytes,
+        "follow_symlinks": config.follow_symlinks,
+        "use_zstd": config.use_zstd,
+        "apply_default_ignores": config.apply_default_ignores,
+        "apply_gitignore": config.apply_gitignore,
+        "apply_snapzignore": config.apply_snapzignore,
+        "use_file_cache": config.use_file_cache,
+        "save_workers": config.save_workers,
+        "zstd_level": config.zstd_level,
+        "gzip_level": config.gzip_level,
+        "chunk_file_bytes": config.chunk_file_bytes,
+        "chunk_min_bytes": config.chunk_min_bytes,
+        "chunk_avg_bytes": config.chunk_avg_bytes,
+        "chunk_max_bytes": config.chunk_max_bytes,
+        "remote_only": config.remote_only,
+    }
+    data.update(changes)
+    return RuntimeConfig(**data)

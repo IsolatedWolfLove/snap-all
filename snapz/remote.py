@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
-from snapz import api
-from snapz.config import RuntimeConfig, default_config
-from snapz.store import DirEntry, Store
+from snapz import api, cas
+from snapz.config import META_SUFFIX, RuntimeConfig, default_config
+from snapz.store import DirEntry, DirMeta, SnapshotMeta, Store
+from snapz.util import now_iso
 from snapz.util import format_size
 
 REMOTE_CONFIG_FILENAME = "_remote.json"
@@ -194,6 +195,8 @@ def push_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
     store = Store(cfg)
     outcome = SyncOutcome(server_url=auth.server_url)
     entries = store.list_all(include_archived=True)
+    uploaded_keys: set[str] = set()
+    uploaded_blobs: set[str] = set()
     for entry in entries:
         if not entry.snapshots:
             continue
@@ -204,25 +207,86 @@ def push_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
                 meta = read_bundle_meta(bundle)
                 source = dict(meta.get("source") or {})
                 source_id = source_id_for(source)
-                bundle_bytes = bundle.stat().st_size
+                remote_index = _get_remote_index(auth, source_id)
+                if remote_index is None:
+                    delta = bundle
+                    exported_delta = exported
+                    delta_meta = meta
+                else:
+                    missing_blobs = set(meta.get("blobs") or []) - set(
+                        remote_index.get("blobs") or []
+                    )
+                    remote_snapshot_fingerprints = _remote_snapshot_fingerprints(
+                        remote_index
+                    )
+                    local_snapshot_names = {
+                        str(row.get("name") or "")
+                        for row in list(meta.get("snapshots") or [])
+                        if isinstance(row, dict)
+                    }
+                    local_snapshot_fingerprints = _local_snapshot_fingerprints(bundle)
+                    missing_snapshots = {
+                        name
+                        for name in local_snapshot_names
+                        if local_snapshot_fingerprints.get(name)
+                        != remote_snapshot_fingerprints.get(name)
+                    }
+                    if not missing_snapshots and not missing_blobs:
+                        outcome.items.append(
+                            SyncItem(
+                                source_id=source_id,
+                                key=entry.key,
+                                display_name=Path(source.get("abspath") or exported.source).name
+                                or entry.key,
+                                snapshot_count=exported.snapshot_count,
+                                bundle_bytes=0,
+                                archived=entry.archived,
+                            )
+                        )
+                        uploaded_keys.add(entry.key)
+                        uploaded_blobs.update(str(sha) for sha in meta.get("blobs") or [])
+                        continue
+                    delta = Path(tmpdir) / f"{entry.key}.delta.snapz"
+                    exported_delta = _export_entry_bundle(
+                        entry,
+                        delta,
+                        cfg,
+                        include_blobs=missing_blobs,
+                        include_snapshot_names=missing_snapshots,
+                    )
+                    delta_meta = read_bundle_meta(delta)
+                delta_bytes = delta.stat().st_size
                 payload = {
                     "source": source,
-                    "snapshot_count": len(list(meta.get("snapshots") or [])),
-                    "bundle_bytes": bundle_bytes,
-                    "bundle_sha256": _sha256_file(bundle),
+                    "snapshot_count": len(list(delta_meta.get("snapshots") or [])),
+                    "bundle_bytes": delta_bytes,
+                    "bundle_sha256": _sha256_file(delta),
                 }
-                _upload_bundle(auth, source_id, payload, bundle)
+                try:
+                    _upload_delta(auth, source_id, payload, delta)
+                except RemoteError as exc:
+                    if exc.status != 404:
+                        raise
+                    bundle_payload = {
+                        "source": source,
+                        "snapshot_count": len(list(meta.get("snapshots") or [])),
+                        "bundle_bytes": bundle.stat().st_size,
+                        "bundle_sha256": _sha256_file(bundle),
+                    }
+                    _upload_bundle(auth, source_id, bundle_payload, bundle)
                 outcome.items.append(
                     SyncItem(
                         source_id=source_id,
                         key=entry.key,
                         display_name=Path(source.get("abspath") or exported.source).name
                         or entry.key,
-                        snapshot_count=exported.snapshot_count,
-                        bundle_bytes=bundle_bytes,
+                        snapshot_count=exported_delta.snapshot_count,
+                        bundle_bytes=delta_bytes,
                         archived=entry.archived,
                     )
                 )
+                uploaded_keys.add(entry.key)
+                uploaded_blobs.update(str(sha) for sha in meta.get("blobs") or [])
         except Exception as exc:  # keep syncing independent sources
             outcome.failures.append(
                 SyncFailure(
@@ -231,6 +295,8 @@ def push_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
                     message=str(exc),
                 )
             )
+    if cfg.remote_only and uploaded_blobs:
+        _evict_uploaded_blobs(store, uploaded_keys, uploaded_blobs)
     return outcome
 
 
@@ -249,10 +315,28 @@ def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
         source_id = str(source.get("id") or "")
         target_key = remote_archive_key(source_id)
         try:
+            index = _get_remote_index(auth, source_id)
+            if index is not None:
+                imported = _import_remote_index(
+                    index,
+                    config=cfg,
+                    target_key=target_key,
+                )
+                outcome.items.append(
+                    SyncItem(
+                        source_id=source_id,
+                        key=imported["key"],
+                        display_name=str(source.get("display_name") or source_id),
+                        snapshot_count=int(imported["snapshot_count"]),
+                        bundle_bytes=int(source.get("bundle_bytes") or index.get("bundle_bytes") or 0),
+                        archived=True,
+                    )
+                )
+                continue
             with tempfile.TemporaryDirectory(prefix="snapz-pull-") as tmpdir:
                 bundle = Path(tmpdir) / f"{source_id}.snapz"
                 _download_bundle(auth, source_id, bundle)
-                imported = api.import_bundle(
+                imported_bundle = api.import_bundle(
                     bundle,
                     config=cfg,
                     target_key=target_key,
@@ -261,11 +345,11 @@ def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
                 outcome.items.append(
                     SyncItem(
                         source_id=source_id,
-                        key=imported.key,
+                        key=imported_bundle.key,
                         display_name=str(source.get("display_name") or source_id),
-                        snapshot_count=imported.snapshot_count,
+                        snapshot_count=imported_bundle.snapshot_count,
                         bundle_bytes=int(source.get("bundle_bytes") or bundle.stat().st_size),
-                        archived=imported.archived,
+                        archived=imported_bundle.archived,
                     )
                 )
         except Exception as exc:
@@ -290,6 +374,9 @@ def _export_entry_bundle(
     entry: DirEntry,
     bundle: Path,
     config: RuntimeConfig,
+    *,
+    include_blobs: Optional[set[str]] = None,
+    include_snapshot_names: Optional[set[str]] = None,
 ) -> api.BundleExportOutcome:
     if entry.archived:
         return api.export_bundle(
@@ -298,12 +385,16 @@ def _export_entry_bundle(
             config=config,
             overwrite=True,
             archived=True,
+            include_blobs=include_blobs,
+            include_snapshot_names=include_snapshot_names,
         )
     return api.export_bundle(
         entry.meta.abspath,
         bundle,
         config=config,
         overwrite=True,
+        include_blobs=include_blobs,
+        include_snapshot_names=include_snapshot_names,
     )
 
 
@@ -330,6 +421,228 @@ def read_bundle_meta(bundle: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("bundle metadata must be an object")
     return data
+
+
+def _get_remote_index(auth: RemoteAuth, source_id: str) -> Optional[dict[str, Any]]:
+    try:
+        return _request_json(
+            "GET",
+            auth.server_url,
+            f"/api/sources/{source_id}/index",
+            token=auth.token,
+            **auth.tls_kwargs(),
+        )
+    except RemoteError as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+
+def _import_remote_index(
+    index: dict[str, Any],
+    *,
+    config: RuntimeConfig,
+    target_key: str,
+) -> dict[str, Any]:
+    store = Store(config)
+    source_data = dict(index.get("source") or {})
+    source_path = Path(str(source_data.get("abspath") or ".")).expanduser()
+    target_key = _safe_store_key(target_key, remote_archive_key(source_id_for(source_data)))
+    target_dir = store.dir_by_key(target_key)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    cas.objects_root(target_dir).mkdir(parents=True, exist_ok=True)
+    cas.snapshots_root(target_dir).mkdir(parents=True, exist_ok=True)
+    cas.global_objects_root(store.root).mkdir(parents=True, exist_ok=True)
+
+    existing_refs: list[str] = []
+    for manifest_path in cas.iter_manifest_paths(target_dir):
+        try:
+            existing_refs.extend(cas.manifest_blob_refs(cas.read_manifest(manifest_path)))
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            continue
+
+    imported_refs: list[str] = []
+    imported_names: list[str] = []
+    for item in list(index.get("snapshots") or []):
+        if not isinstance(item, dict):
+            continue
+        row = dict(item.get("row") or {})
+        meta_data = dict(item.get("meta") or {})
+        manifest_data = dict(item.get("manifest") or {})
+        name = str(row.get("name") or meta_data.get("name") or "")
+        if not name:
+            continue
+        snap = SnapshotMeta.from_dict(meta_data)
+        snap.name = name
+        snap.source = str(source_path)
+        kind = str(row.get("kind") or "")
+        if kind == "manifest":
+            artifact_name = Path(str(row.get("artifact") or "")).name
+            if not artifact_name:
+                artifact_name = f"{name}{cas.MANIFEST_SUFFIX}"
+            if artifact_name.endswith(cas.COMPRESSED_MANIFEST_SUFFIX):
+                artifact_path = cas.compressed_manifest_path(target_dir, name)
+            else:
+                artifact_path = cas.manifest_path(target_dir, name)
+            manifest = cas.Manifest(
+                format_version=int(manifest_data.get("format_version", cas.MANIFEST_FORMAT_VERSION)),
+                snapshot=str(manifest_data.get("snapshot") or name),
+                created=str(manifest_data.get("created") or snap.created),
+                entries=[
+                    cas.ManifestEntry.from_dict(entry)
+                    for entry in manifest_data.get("entries", [])
+                    if isinstance(entry, dict)
+                ],
+            )
+            cas.write_manifest(artifact_path, manifest, zstd_level=config.zstd_level)
+            snap.archive = artifact_path.name
+            imported_refs.extend(cas.manifest_blob_refs(manifest))
+        elif kind == "legacy":
+            # Index-only remote mode is CAS-first. Legacy snapshots still
+            # require the old full-bundle pull path.
+            continue
+        else:
+            continue
+        store.write_snapshot_meta_in_dir(target_dir, snap)
+        imported_names.append(name)
+
+    incoming_names = set(imported_names)
+    for snap in store.list_snapshots_in_dir(target_dir):
+        if snap.name in incoming_names:
+            continue
+        (target_dir / f"{snap.name}{META_SUFFIX}").unlink(missing_ok=True)
+        cas.manifest_path(target_dir, snap.name).unlink(missing_ok=True)
+        cas.compressed_manifest_path(target_dir, snap.name).unlink(missing_ok=True)
+
+    dir_meta_obj = DirMeta(
+        abspath=str(source_path),
+        first_seen=str(source_data.get("first_seen") or now_iso()),
+        last_used=now_iso(),
+        source_id=str(source_data.get("source_id", "") or ""),
+        source_marker=str(source_data.get("source_marker", "") or ""),
+        archived_at=now_iso(),
+    )
+    dir_meta = store._write_dir_meta_with_cached_summary(  # noqa: SLF001
+        target_dir,
+        dir_meta_obj,
+    )
+    registry = store._load_registry()  # noqa: SLF001
+    registry.setdefault("version", 1)
+    registry.setdefault("dirs", {})[target_key] = store._registry_entry_for_meta(  # noqa: SLF001
+        dir_meta
+    )
+    store._save_registry(registry)  # noqa: SLF001
+    if existing_refs:
+        cas.decrement_refs(store.root, existing_refs)
+    if imported_refs:
+        cas.increment_refs(store.root, imported_refs)
+    return {
+        "key": target_key,
+        "snapshot_count": len(imported_names),
+    }
+
+
+def _safe_store_key(raw: object, fallback: str) -> str:
+    key = str(raw or "")
+    if not key or "/" in key or "\\" in key or key in {".", ".."}:
+        return fallback
+    if any(part == ".." for part in key.split("-")):
+        return fallback
+    return key
+
+
+def _snapshot_fingerprint(meta: dict[str, Any], manifest: dict[str, Any]) -> str:
+    raw = json.dumps(
+        {
+            "meta": meta,
+            "manifest": manifest,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _remote_snapshot_fingerprints(index: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in list(index.get("snapshots") or []):
+        if not isinstance(item, dict):
+            continue
+        row = dict(item.get("row") or {})
+        name = str(row.get("name") or "")
+        if not name:
+            continue
+        out[name] = _snapshot_fingerprint(
+            dict(item.get("meta") or {}),
+            dict(item.get("manifest") or {}),
+        )
+    return out
+
+
+def _local_snapshot_fingerprints(bundle: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    with api._open_bundle_tar_reader(bundle) as tar:
+        meta = _tar_read_json(tar, api.BUNDLE_META_NAME)
+        for row in list(meta.get("snapshots") or []):
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "")
+            meta_arc = str(row.get("meta") or "")
+            artifact_arc = str(row.get("artifact") or "")
+            if not name or not meta_arc or not artifact_arc:
+                continue
+            snap_meta = _tar_read_json(tar, meta_arc)
+            manifest = (
+                _tar_read_json(tar, artifact_arc)
+                if str(row.get("kind") or "") == "manifest"
+                else {}
+            )
+            out[name] = _snapshot_fingerprint(snap_meta, manifest)
+    return out
+
+
+def _tar_read_json(tar: tarfile.TarFile, name: str) -> dict[str, Any]:
+    member = tar.getmember(name)
+    extracted = tar.extractfile(member)
+    if extracted is None:
+        raise ValueError(f"bundle member is not readable: {name}")
+    raw = extracted.read()
+    if raw[:4] == cas._ZSTD_MAGIC:
+        if cas._zstandard is None:  # noqa: SLF001
+            raise ValueError(f"zstandard not installed; cannot read {name}")
+        raw = cas._zstandard.ZstdDecompressor().decompress(raw)  # noqa: SLF001
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"bundle JSON member must be an object: {name}")
+    return data
+
+
+def _evict_uploaded_blobs(store: Store, uploaded_keys: set[str], shas: set[str]) -> None:
+    if not shas:
+        return
+    pending_refs = _pending_local_refs(store, uploaded_keys)
+    for sha in sorted(shas):
+        if sha in pending_refs:
+            continue
+        for entry in store.list_all(include_archived=True):
+            dir_root = store.dir_by_key(entry.key)
+            for blob in cas.candidate_blob_paths(dir_root, sha):
+                try:
+                    blob.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    continue
+
+
+def _pending_local_refs(store: Store, uploaded_keys: set[str]) -> set[str]:
+    refs: set[str] = set()
+    for entry in store.list_all(include_archived=True):
+        if entry.key in uploaded_keys:
+            continue
+        refs.update(cas.referenced_blobs(store.dir_by_key(entry.key)))
+    return refs
 
 
 def _normalize_server_url(server_url: str) -> str:
@@ -437,12 +750,67 @@ def _upload_bundle(
         raise _remote_error(status, raw)
 
 
+def _upload_delta(
+    auth: RemoteAuth,
+    source_id: str,
+    metadata: dict[str, Any],
+    bundle: Path,
+) -> None:
+    meta_raw = json.dumps(metadata, separators=(",", ":")).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {auth.token}",
+        "Content-Type": "application/octet-stream",
+        "X-Snapz-Source-Meta": base64.b64encode(meta_raw).decode("ascii"),
+    }
+    status, _headers, raw = _http_request(
+        "PUT",
+        auth.server_url,
+        f"/api/sources/{source_id}/delta",
+        headers=headers,
+        upload=bundle,
+        **auth.tls_kwargs(),
+    )
+    if status >= 400:
+        raise _remote_error(status, raw)
+
+
 def _download_bundle(auth: RemoteAuth, source_id: str, destination: Path) -> None:
     headers = {"Authorization": f"Bearer {auth.token}"}
     status, _headers, raw = _http_request(
         "GET",
         auth.server_url,
         f"/api/sources/{source_id}/bundle",
+        headers=headers,
+        download=destination,
+        **auth.tls_kwargs(),
+    )
+    if status >= 400:
+        raise _remote_error(status, raw)
+
+
+def download_object(
+    source_id: str,
+    sha: str,
+    destination: Path,
+    *,
+    config: Optional[RuntimeConfig] = None,
+) -> None:
+    cfg = config or default_config()
+    auth = load_auth(cfg)
+    _download_object(auth, source_id, sha, destination)
+
+
+def _download_object(
+    auth: RemoteAuth,
+    source_id: str,
+    sha: str,
+    destination: Path,
+) -> None:
+    headers = {"Authorization": f"Bearer {auth.token}"}
+    status, _headers, raw = _http_request(
+        "GET",
+        auth.server_url,
+        f"/api/sources/{source_id}/objects/{sha}",
         headers=headers,
         download=destination,
         **auth.tls_kwargs(),

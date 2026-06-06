@@ -118,6 +118,14 @@ KNOWN_CONFIG_KEYS: dict[str, dict[str, Any]] = {
         "default": False,
         "help": "When true, apply configured retention rules after each save.",
     },
+    "remote_only": {
+        "type": "bool",
+        "default": False,
+        "help": (
+            "When true, confirmed remote snapshots keep local index files "
+            "but evict local content blobs that can be fetched from the server."
+        ),
+    },
 }
 
 

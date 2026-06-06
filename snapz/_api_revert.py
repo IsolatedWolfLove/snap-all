@@ -12,6 +12,8 @@ from snapz.config import RuntimeConfig, default_config
 from snapz.store import SnapshotMeta, Store
 from snapz.util import auto_name
 from snapz._api_core import (
+    _ensure_blob_available,
+    _ensure_entry_blobs_available,
     _load_manifest_or_raise,
     _record_event,
     _safe_snapshot_target_path,
@@ -130,6 +132,7 @@ def revert(
         full.parent.mkdir(parents=True, exist_ok=True)
         if entry.type == "file":
             if entry.chunks:
+                _ensure_entry_blobs_available(dir_root, entry, config=config)
                 size = cas.read_blobs_to(
                     dir_root,
                     entry.chunks,
@@ -140,6 +143,7 @@ def revert(
                 if not entry.sha256:
                     skipped.append((entry.path, "missing sha"))
                     continue
+                _ensure_blob_available(dir_root, entry.sha256, config=config)
                 size = cas.read_blob_to(dir_root, entry.sha256, full)
             if entry.size is not None and size != entry.size:
                 raise ValueError(f"blob size mismatch for {entry.path}")

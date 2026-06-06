@@ -571,6 +571,14 @@ def save(
     _auto_prune_after_save(abspath, config)
     store.refresh_cached_summary_in_dir(dir_root)
 
+    if config.remote_only:
+        try:
+            from snapz import remote
+
+            remote.push_all(config=config)
+        except Exception:
+            pass
+
     pack_result = PackResult(
         archive_path=m_path,
         bytes_written=new_blob_bytes,
@@ -946,6 +954,56 @@ def _delete_snapshot_with_refs(store: Store, abspath: Path, name: str) -> bool:
     return removed
 
 
+def _source_id_for_dir(store: Store, dir_root: Path) -> str:
+    if dir_root.name.startswith("remote-src_"):
+        return dir_root.name[len("remote-"):]
+    meta = store._read_dir_meta_from_folder(  # noqa: SLF001
+        dir_root,
+        Path(""),
+    )
+    source = {
+        "key": dir_root.name,
+        "source_marker": meta.source_marker,
+    }
+    try:
+        from snapz import remote
+
+        return remote.source_id_for(source)
+    except Exception:
+        return ""
+
+
+def _ensure_blob_available(dir_root: Path, sha: str, *, config: RuntimeConfig) -> None:
+    try:
+        cas.find_blob(dir_root, sha)
+        return
+    except FileNotFoundError:
+        pass
+    source_id = _source_id_for_dir(Store(config), dir_root)
+    if not source_id:
+        raise FileNotFoundError(f"blob {sha[:12]}... missing in {dir_root}")
+    target = cas.global_blob_path(Path(config.root), sha)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from snapz import remote
+
+        remote.download_object(source_id, sha, target, config=config)
+        cas.verify_blob(dir_root, sha)
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        raise FileNotFoundError(f"blob {sha[:12]}... missing in {dir_root}") from exc
+
+
+def _ensure_entry_blobs_available(
+    dir_root: Path,
+    entry: cas.ManifestEntry,
+    *,
+    config: RuntimeConfig,
+) -> None:
+    for sha in cas.entry_blob_refs(entry):
+        _ensure_blob_available(dir_root, sha, config=config)
+
+
 def delete(
     path: str | Path,
     name: str,
@@ -1254,6 +1312,7 @@ def restore(
             archive_path,
             abspath,
             dir_root=Store(config).dir_for(abspath),
+            config=config,
         )
     else:
         extracted = archive.unpack(archive_path, abspath)
@@ -1313,7 +1372,13 @@ def _safe_snapshot_symlink_target(base: Path, link_path: Path, target: str) -> N
         raise ValueError(f"unsafe snapshot symlink target: {target!r}") from exc
 
 
-def _extract_cas(manifest_path: Path, target: Path, *, dir_root: Path) -> int:
+def _extract_cas(
+    manifest_path: Path,
+    target: Path,
+    *,
+    dir_root: Path,
+    config: Optional[RuntimeConfig] = None,
+) -> int:
     """Extract a CAS manifest's content over *target*. Returns entry count.
 
     Files come first (so missing parent dirs get created), then
@@ -1321,6 +1386,7 @@ def _extract_cas(manifest_path: Path, target: Path, *, dir_root: Path) -> int:
     corrupt blobs raise instead of silently producing a partial restore.
     """
 
+    config = config or RuntimeConfig(root=dir_root.parent)
     manifest = cas.read_manifest(manifest_path)
     extracted = 0
 
@@ -1330,6 +1396,7 @@ def _extract_cas(manifest_path: Path, target: Path, *, dir_root: Path) -> int:
         full = _safe_snapshot_target_path(target, entry.path)
         full.parent.mkdir(parents=True, exist_ok=True)
         if entry.chunks:
+            _ensure_entry_blobs_available(dir_root, entry, config=config)
             size = cas.read_blobs_to(
                 dir_root,
                 entry.chunks,
@@ -1339,6 +1406,7 @@ def _extract_cas(manifest_path: Path, target: Path, *, dir_root: Path) -> int:
         else:
             if not entry.sha256:
                 raise ValueError(f"manifest entry lacks sha256: {entry.path}")
+            _ensure_blob_available(dir_root, entry.sha256, config=config)
             size = cas.read_blob_to(dir_root, entry.sha256, full)
         if entry.size is not None and size != entry.size:
             raise ValueError(f"blob size mismatch for {entry.path}")
@@ -1548,6 +1616,7 @@ def read_snapshot_bytes(
                 chunks: list[bytes] = []
                 h = hashlib.sha256()
                 for chunk in entry.chunks:
+                    _ensure_blob_available(dir_root, chunk.sha256, config=config)
                     data = cas.read_blob_bytes(dir_root, chunk.sha256)
                     h.update(data)
                     chunks.append(data)
@@ -1556,6 +1625,7 @@ def read_snapshot_bytes(
                 return b"".join(chunks)
             if not entry.sha256:
                 return None
+            _ensure_blob_available(dir_root, entry.sha256, config=config)
             return cas.read_blob_bytes(dir_root, entry.sha256)
         if entry.type == "symlink":
             return (entry.target or "").encode("utf-8", errors="replace")
@@ -1626,6 +1696,7 @@ def export(
             archive_path,
             dst_path,
             dir_root=Store(config).dir_for(abspath),
+            config=config,
         )
     else:
         extracted = archive.unpack(archive_path, dst_path)
@@ -1676,7 +1747,7 @@ def restore_archive(
         dst_path.mkdir(parents=True, exist_ok=True)
 
     if cas.is_manifest_artifact(artifact):
-        extracted = _extract_cas(artifact, dst_path, dir_root=dir_root)
+        extracted = _extract_cas(artifact, dst_path, dir_root=dir_root, config=config)
     else:
         extracted = archive.unpack(artifact, dst_path)
     return ExportOutcome(

@@ -229,6 +229,8 @@ def export_bundle(
     config: Optional[RuntimeConfig] = None,
     overwrite: bool = False,
     archived: bool = False,
+    include_blobs: Optional[set[str]] = None,
+    include_snapshot_names: Optional[set[str]] = None,
 ) -> BundleExportOutcome:
     """Pack all snapshots for one source into a portable ``.snapz`` bundle.
 
@@ -295,6 +297,28 @@ def export_bundle(
             manifest = cas.read_manifest(artifact)
             blob_shas.update(cas.manifest_blob_refs(manifest))
 
+    all_snapshot_names = [str(row.get("name") or "") for row in snapshot_rows]
+    if include_snapshot_names is None:
+        bundle_snapshot_rows = list(snapshot_rows)
+    else:
+        selected_names = set(include_snapshot_names)
+        unknown_snapshot = sorted(selected_names - set(all_snapshot_names))
+        if unknown_snapshot:
+            raise ValueError(
+                f"requested unknown snapshot for bundle: {unknown_snapshot[0]}"
+            )
+        bundle_snapshot_rows = [
+            row for row in snapshot_rows if str(row.get("name") or "") in selected_names
+        ]
+
+    if include_blobs is None:
+        bundle_blob_shas = set(blob_shas)
+    else:
+        bundle_blob_shas = set(include_blobs)
+        unknown_blob = sorted(bundle_blob_shas - blob_shas)
+        if unknown_blob:
+            raise ValueError(f"requested unknown blob for bundle: {unknown_blob[0]}")
+
     bundle_meta = {
         "format_version": BUNDLE_FORMAT_VERSION,
         "created": now_iso(),
@@ -308,16 +332,18 @@ def export_bundle(
             "source_marker": entry.meta.source_marker,
             "archived_at": entry.meta.archived_at,
         },
-        "snapshots": snapshot_rows,
-        "blobs": sorted(blob_shas),
+        "snapshots": bundle_snapshot_rows,
+        "blobs": sorted(bundle_blob_shas),
     }
+    if include_snapshot_names is not None:
+        bundle_meta["snapshot_names"] = all_snapshot_names
 
     tmp = dst_path.with_suffix(dst_path.suffix + ".tmp")
     try:
         with _open_bundle_tar_writer(tmp, config) as tar:
             _tar_add_json(tar, BUNDLE_META_NAME, bundle_meta)
             tar.add(dir_root / "_meta.json", arcname="source/_meta.json", recursive=False)
-            for row in snapshot_rows:
+            for row in bundle_snapshot_rows:
                 meta_name = Path(row["meta"]).name
                 tar.add(dir_root / meta_name, arcname=row["meta"], recursive=False)
                 artifact_src = (
@@ -326,7 +352,7 @@ def export_bundle(
                     else dir_root / Path(row["artifact"]).name
                 )
                 tar.add(artifact_src, arcname=row["artifact"], recursive=False)
-            for sha in sorted(blob_shas):
+            for sha in sorted(bundle_blob_shas):
                 blob = cas.find_blob(dir_root, sha)
                 tar.add(blob, arcname=f"objects/{sha[:2]}/{sha}", recursive=False)
         os.replace(tmp, dst_path)
@@ -342,7 +368,7 @@ def export_bundle(
         destination=dst_path,
         key=key,
         snapshot_count=len(snapshots),
-        blob_count=len(blob_shas),
+        blob_count=len(bundle_blob_shas),
         size_bytes=dst_path.stat().st_size,
     )
 

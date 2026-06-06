@@ -90,6 +90,7 @@ class RuntimeConfig:
     chunk_min_bytes: int = DEFAULT_CHUNK_MIN_BYTES
     chunk_avg_bytes: int = DEFAULT_CHUNK_AVG_BYTES
     chunk_max_bytes: int = DEFAULT_CHUNK_MAX_BYTES
+    remote_only: bool = False
 
     def with_root(self, root: Path) -> "RuntimeConfig":
         return type(self)(
@@ -108,6 +109,7 @@ class RuntimeConfig:
             chunk_min_bytes=self.chunk_min_bytes,
             chunk_avg_bytes=self.chunk_avg_bytes,
             chunk_max_bytes=self.chunk_max_bytes,
+            remote_only=self.remote_only,
         )
 
 

@@ -21,11 +21,15 @@ from snapz_server import db
 from snapz_server.admin_ui import ADMIN_UI_HTML
 from snapz_server.bundles import (
     BundleMemoryError,
+    bundle_index,
     delete_bundle_snapshot,
     list_bundle_snapshots,
+    merge_delta_bundle,
     rename_bundle_snapshot,
+    validate_delta_bundle_file,
     validate_bundle_file,
 )
+from snapz.api import _open_bundle_tar_reader
 from snapz_server.payloads import (
     decode_meta_header as _decode_meta_header,
     read_bundle_meta as _read_bundle_meta,
@@ -43,6 +47,9 @@ from snapz_server.routes import (
     safe_id as _safe_id,
     safe_snapshot_name as _safe_snapshot_name,
     source_id_from_bundle_path as _source_id_from_bundle_path,
+    source_id_from_delta_path as _source_id_from_delta_path,
+    source_id_from_index_path as _source_id_from_index_path,
+    source_object_ref_from_path as _source_object_ref_from_path,
 )
 from snapz_server.serializers import (
     admin_device_dict as _admin_device_dict,
@@ -201,6 +208,12 @@ class SnapzHandler(BaseHTTPRequestHandler):
             rows = [_row_dict(row) for row in db.list_sources(self.data_dir, ctx)]
             self._send_json(HTTPStatus.OK, {"sources": rows})
             return
+        if path.startswith("/api/sources/") and path.endswith("/index"):
+            self._handle_get_index(path)
+            return
+        if path.startswith("/api/sources/") and "/objects/" in path:
+            self._handle_get_object(path)
+            return
         if path.startswith("/api/sources/") and path.endswith("/bundle"):
             self._handle_get_bundle(path)
             return
@@ -234,6 +247,9 @@ class SnapzHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         if path.startswith("/api/sources/") and path.endswith("/bundle"):
             self._handle_put_bundle(path)
+            return
+        if path.startswith("/api/sources/") and path.endswith("/delta"):
+            self._handle_put_delta(path)
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -613,6 +629,65 @@ class SnapzHandler(BaseHTTPRequestHandler):
             return
         self._send_file(bundle, content_type="application/octet-stream")
 
+    def _handle_get_index(self, path: str) -> None:
+        ctx = self._require_auth()
+        if ctx is None:
+            return
+        source_id = _source_id_from_index_path(path)
+        if not source_id:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid source id"})
+            return
+        row = db.get_source(self.data_dir, ctx, source_id)
+        if row is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "source not found"})
+            return
+        bundle = db.bundle_path(self.data_dir, ctx.tenant_id, source_id)
+        if not bundle.is_file():
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "bundle not found"})
+            return
+        try:
+            self._send_json(HTTPStatus.OK, bundle_index(bundle))
+        except (ValueError, tarfile.TarError, OSError) as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def _handle_get_object(self, path: str) -> None:
+        ctx = self._require_auth()
+        if ctx is None:
+            return
+        ref = _source_object_ref_from_path(path)
+        if ref is None:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid object path"})
+            return
+        source_id, sha = ref
+        row = db.get_source(self.data_dir, ctx, source_id)
+        if row is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "source not found"})
+            return
+        bundle = db.bundle_path(self.data_dir, ctx.tenant_id, source_id)
+        if not bundle.is_file():
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "bundle not found"})
+            return
+        try:
+            with _open_bundle_tar_reader(bundle) as tar:
+                member_name = f"objects/{sha[:2]}/{sha}"
+                try:
+                    member = tar.getmember(member_name)
+                except KeyError:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "object not found"})
+                    return
+                if not member.isfile():
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "object is not a file"})
+                    return
+                src = tar.extractfile(member)
+                if src is None:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "object is not readable"})
+                    return
+                raw = src.read()
+        except (ValueError, tarfile.TarError, OSError) as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        self._send_bytes(HTTPStatus.OK, raw, content_type="application/octet-stream")
+
     def _handle_put_bundle(self, path: str) -> None:
         ctx = self._require_auth()
         if ctx is None:
@@ -720,6 +795,121 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 "source_id": source_id,
                 "snapshot_count": snapshot_count,
                 "bundle_bytes": received,
+            },
+        )
+
+    def _handle_put_delta(self, path: str) -> None:
+        ctx = self._require_auth()
+        if ctx is None:
+            return
+        source_id = _source_id_from_delta_path(path)
+        if not source_id:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid source id"})
+            return
+        length_text = self.headers.get("Content-Length")
+        if not length_text:
+            self._send_json(
+                HTTPStatus.LENGTH_REQUIRED,
+                {"error": "Content-Length is required"},
+            )
+            return
+        try:
+            remaining = int(length_text)
+        except ValueError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid length"})
+            return
+        if remaining < 0:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid length"})
+            return
+        max_bundle_bytes = self.server.max_bundle_bytes  # type: ignore[attr-defined]
+        if remaining > max_bundle_bytes:
+            self._send_json(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {
+                    "error": (
+                        f"bundle is too large: {remaining} bytes "
+                        f"(limit {max_bundle_bytes} bytes)"
+                    ),
+                },
+            )
+            return
+        try:
+            header_meta = _decode_meta_header(
+                self.headers.get("X-Snapz-Source-Meta", "")
+            )
+            expected_sha256 = str(header_meta.get("bundle_sha256") or "").strip()
+            if not _is_sha256(expected_sha256):
+                raise ValueError("missing or invalid bundle_sha256 in metadata")
+            expected_id = db.source_id_for(dict(header_meta.get("source") or {}))
+            if expected_id != source_id:
+                raise ValueError("source id does not match metadata")
+        except ValueError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+
+        target = db.bundle_path(self.data_dir, ctx.tenant_id, source_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f"{source_id}.delta.",
+            suffix=".tmp",
+            dir=target.parent,
+        )
+        received = 0
+        digest = hashlib.sha256()
+        try:
+            with os.fdopen(fd, "wb") as out:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(CHUNK_SIZE, remaining))
+                    if not chunk:
+                        raise ValueError("incomplete request body")
+                    out.write(chunk)
+                    digest.update(chunk)
+                    received += len(chunk)
+                    remaining -= len(chunk)
+            if digest.hexdigest() != expected_sha256:
+                raise ValueError("bundle sha256 does not match metadata")
+            existing_blobs: set[str] = set()
+            if target.is_file():
+                existing_blobs = set(bundle_index(target).get("blobs") or [])
+            validate_delta_bundle_file(Path(tmp_name), existing_blobs=existing_blobs)
+            delta_meta = _read_bundle_meta(Path(tmp_name))
+            bundle_source = dict(delta_meta.get("source") or {})
+            expected_id = db.source_id_for(bundle_source)
+            if expected_id != source_id:
+                raise ValueError("bundle source id does not match URL")
+            index = merge_delta_bundle(target, Path(tmp_name))
+            snapshot_count = int(index.get("snapshot_count") or 0)
+            bundle_bytes = int(index.get("bundle_bytes") or target.stat().st_size)
+            db.upsert_source(
+                self.data_dir,
+                ctx,
+                source_id,
+                bundle_source,
+                snapshot_count=snapshot_count,
+                bundle_bytes=bundle_bytes,
+            )
+            db.log_event(
+                self.data_dir,
+                ctx,
+                "push-delta",
+                f"{source_id} {snapshot_count} snapshot(s)",
+            )
+        except (ValueError, tarfile.TarError) as exc:
+            Path(tmp_name).unlink(missing_ok=True)
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        except OSError as exc:
+            Path(tmp_name).unlink(missing_ok=True)
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
+
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "source_id": source_id,
+                "snapshot_count": snapshot_count,
+                "bundle_bytes": bundle_bytes,
+                "delta_bytes": received,
             },
         )
 

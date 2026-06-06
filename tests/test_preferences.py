@@ -159,6 +159,51 @@ def test_cli_config_unknown_key_errors(env_root, capsys):
     assert "made_up_key" in err or "unknown" in err.lower()
 
 
+def test_cli_config_remote_only_prompts_for_cron(env_root, monkeypatch, capsys):
+    from snapz import cli
+    from snapz import _cli_common
+
+    installed: list[object] = []
+
+    monkeypatch.setattr(_cli_common.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(_cli_common.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    monkeypatch.setattr(
+        "snapz.scheduler.install_remote_sync_cron",
+        lambda root: installed.append(root) or type(
+            "Result",
+            (),
+            {
+                "updated": False,
+                "command": "0 */3 * * * snapz push all; snapz pull all",
+            },
+        )(),
+    )
+
+    rc = cli.main(["config", "set", "remote_only", "true"])
+
+    assert rc == 0
+    assert installed == [env_root]
+    out = capsys.readouterr().out
+    assert "cron installed" in out
+
+
+def test_cli_config_remote_only_json_does_not_prompt_for_cron(env_root, monkeypatch):
+    from snapz import cli
+    from snapz import _cli_common
+
+    monkeypatch.setattr(_cli_common.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(_cli_common.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "snapz.scheduler.install_remote_sync_cron",
+        lambda _root: (_ for _ in ()).throw(AssertionError("should not install")),
+    )
+
+    rc = cli.main(["config", "set", "remote_only", "true", "--json"])
+
+    assert rc == 0
+
+
 @pytest.fixture
 def env_root(monkeypatch, snap_root):
     monkeypatch.setenv("SNAPZ_ALL_ROOT", str(snap_root))
