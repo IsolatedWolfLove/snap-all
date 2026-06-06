@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tarfile
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BufferedWriter, BytesIO
@@ -80,6 +81,36 @@ def _tar_read_json(tar: tarfile.TarFile, name: str) -> dict:
         raise ValueError(f"bundle has invalid JSON: {name}") from exc
 
 
+def _tar_read_manifest(tar: tarfile.TarFile, name: str) -> cas.Manifest:
+    try:
+        member = tar.getmember(name)
+    except KeyError as exc:
+        raise ValueError(f"bundle missing {name}") from exc
+    if not member.isfile():
+        raise ValueError(f"bundle member is not a file: {name}")
+    extracted = tar.extractfile(member)
+    if extracted is None:
+        raise ValueError(f"bundle member is not readable: {name}")
+    raw = extracted.read()
+    if name.endswith(cas.COMPRESSED_MANIFEST_SUFFIX) or raw[:4] == cas._ZSTD_MAGIC:
+        if cas._zstandard is None:  # noqa: SLF001
+            raise ValueError(f"zstandard not installed; cannot read {name}")
+        raw = cas._zstandard.ZstdDecompressor().decompress(raw)  # noqa: SLF001
+    try:
+        data = json.loads(raw.decode("utf-8"))
+        return cas.Manifest(
+            format_version=int(data.get("format_version", cas.MANIFEST_FORMAT_VERSION)),
+            snapshot=data["snapshot"],
+            created=data["created"],
+            entries=[
+                cas.ManifestEntry.from_dict(entry)
+                for entry in data.get("entries", [])
+            ],
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"bundle has invalid manifest: {name}") from exc
+
+
 def _copy_tar_member(tar: tarfile.TarFile, arcname: str, dst: Path) -> int:
     try:
         member = tar.getmember(arcname)
@@ -124,15 +155,18 @@ def _open_bundle_tar_writer(path: Path, config: Optional[RuntimeConfig] = None):
 
 @contextmanager
 def _open_bundle_tar_reader(path: Path):
-    head = path.open("rb").read(4)
+    with path.open("rb") as head_f:
+        head = head_f.read(4)
     if head[:4] == cas._ZSTD_MAGIC:
         import zstandard as zstd
 
         dctx = zstd.ZstdDecompressor()
         with path.open("rb") as raw, dctx.stream_reader(raw) as reader:
-            data = reader.read()
-        with tarfile.open(fileobj=BytesIO(data), mode="r:") as tar:
-            yield tar
+            with tempfile.TemporaryFile() as spool:
+                shutil.copyfileobj(reader, spool)
+                spool.seek(0)
+                with tarfile.open(fileobj=spool, mode="r:") as tar:
+                    yield tar
     else:
         with tarfile.open(path, "r:*") as tar:
             yield tar
@@ -149,6 +183,31 @@ def _safe_store_key(raw: object, fallback: str) -> str:
 
 def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(c in "0123456789abcdefABCDEF" for c in value)
+
+
+def _validate_import_blob(dir_root: Path, sha: str) -> None:
+    try:
+        cas.verify_blob(dir_root, sha)
+    except Exception as exc:
+        raise ValueError(f"bundle blob checksum mismatch: {sha}") from exc
+
+
+def _validate_manifest_refs_declared(
+    tar: tarfile.TarFile,
+    snapshots: list,
+    declared_blobs: set[str],
+) -> None:
+    for row in snapshots:
+        if not isinstance(row, dict) or str(row.get("kind") or "") != "manifest":
+            continue
+        name = str(row.get("name") or "")
+        artifact_arc = str(row.get("artifact") or "")
+        manifest = _tar_read_manifest(tar, artifact_arc)
+        missing_refs = sorted(set(cas.manifest_blob_refs(manifest)) - declared_blobs)
+        if missing_refs:
+            raise ValueError(
+                f"bundle manifest {name!r} references missing blob {missing_refs[0]}"
+            )
 
 
 def _unique_import_key(root: Path, base_key: str) -> str:
@@ -320,6 +379,11 @@ def import_bundle(
         blobs = [str(s) for s in meta.get("blobs") or []]
         if not snapshots:
             raise ValueError("bundle has no snapshots")
+        for sha in blobs:
+            if not _is_sha256(sha):
+                raise ValueError(f"invalid blob id in bundle: {sha!r}")
+        declared_blobs = set(blobs)
+        _validate_manifest_refs_declared(tar, snapshots, declared_blobs)
 
         original_path = Path(str(source_data.get("abspath") or ".")).expanduser()
         if path is not None:
@@ -366,12 +430,19 @@ def import_bundle(
         cas.global_objects_root(store.root).mkdir(parents=True, exist_ok=True)
 
         for sha in blobs:
-            if not _is_sha256(sha):
-                raise ValueError(f"invalid blob id in bundle: {sha!r}")
             dst_blob = cas.global_blob_path(store.root, sha)
             if dst_blob.exists():
-                continue
-            _copy_tar_member(tar, f"objects/{sha[:2]}/{sha}", dst_blob)
+                try:
+                    _validate_import_blob(target_dir, sha)
+                    continue
+                except ValueError:
+                    pass
+            try:
+                _copy_tar_member(tar, f"objects/{sha[:2]}/{sha}", dst_blob)
+                _validate_import_blob(target_dir, sha)
+            except Exception:
+                dst_blob.unlink(missing_ok=True)
+                raise
 
         imported_names: list[str] = []
         overwritten_names: list[str] = []
@@ -413,11 +484,10 @@ def import_bundle(
             _copy_tar_member(tar, artifact_arc, artifact_dst)
             if kind == "manifest":
                 try:
-                    imported_refs.extend(
-                        cas.manifest_blob_refs(cas.read_manifest(artifact_dst))
-                    )
+                    manifest_refs = cas.manifest_blob_refs(cas.read_manifest(artifact_dst))
                 except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
                     raise ValueError(f"imported manifest is invalid: {name}") from exc
+                imported_refs.extend(manifest_refs)
             meta_dst = target_dir / f"{name}{META_SUFFIX}"
             meta_dst.write_text(
                 json.dumps(snap.to_dict(), indent=2, ensure_ascii=False) + "\n",

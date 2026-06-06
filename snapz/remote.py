@@ -504,12 +504,23 @@ def _http_request(
         response_headers = response.getheaders()
         if download is not None and response.status < 400:
             download.parent.mkdir(parents=True, exist_ok=True)
-            with open(download, "wb") as out:
-                while True:
-                    chunk = response.read(CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    out.write(chunk)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f"{download.name}.",
+                suffix=".tmp",
+                dir=download.parent,
+            )
+            tmp = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "wb") as out:
+                    while True:
+                        chunk = response.read(CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                os.replace(tmp, download)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
             raw = b""
         else:
             raw = response.read()

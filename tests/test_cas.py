@@ -311,6 +311,19 @@ def test_cas_restore_allows_relative_symlink_within_target(project_dir, config):
     assert link.read_text(encoding="utf-8") == real.read_text(encoding="utf-8")
 
 
+def test_large_files_are_not_chunked_by_default(project_dir, config):
+    big = project_dir / "big.bin"
+    big.write_bytes(b"x" * (9 * 1024 * 1024))
+
+    api.save(project_dir, "v1", config=config, use_file_cache=False)
+    dir_root = _dir_root(config, project_dir)
+    manifest = cas.read_manifest(cas.find_manifest_path(dir_root, "v1"))
+    entry = next(e for e in manifest.entries if e.path == "big.bin")
+
+    assert entry.sha256
+    assert not entry.chunks
+
+
 def test_large_file_uses_content_defined_chunks(project_dir, config):
     big = project_dir / "big.bin"
     big.write_bytes((b"alpha" * 70000) + (b"beta" * 70000) + (b"gamma" * 70000))

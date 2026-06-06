@@ -157,6 +157,8 @@ snapz --no-zstd save . -n gzip-test -y
 | `SNAPZ_LANG=zh` | 强制中文输出 |
 | `SNAPZ_LANG=en` | 强制英文输出 |
 | `SNAPZ_SAVE_WORKERS` | 默认保存并发 worker 数 |
+| `SNAPZ_ZSTD_LEVEL` | zstd 压缩等级，默认 `3` |
+| `SNAPZ_GZIP_LEVEL` | gzip 压缩等级，默认 `6` |
 | `SNAPZ_SERVER_DATA` | snapz-server 默认数据目录 |
 | `SNAPZ_SERVER_ADMIN_TOKEN` | snapz-server 管理接口 token |
 
@@ -166,6 +168,7 @@ snapz --no-zstd save . -n gzip-test -y
 SNAPZ_LANG=zh snapz --help
 SNAPZ_SAVE_WORKERS=4 snapz save . -n v1 -y
 SNAPZ_ALL_ROOT=/tmp/snapz-test snapz list .
+SNAPZ_ZSTD_LEVEL=10 snapz save . -n smaller -y
 ```
 
 ## 5. 第一次上手

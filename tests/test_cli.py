@@ -236,6 +236,34 @@ def test_show_subcommand_missing(env_root, project_dir, capsys):
     assert "ghost" in err
 
 
+def test_export_accepts_yes_for_script_compat(env_root, project_dir, tmp_path):
+    cli.main(["save", str(project_dir), "-n", "v1", "-y"])
+    dst = tmp_path / "exported"
+
+    rc = cli.main([
+        "export", "v1", str(dst), "--path", str(project_dir), "-y",
+    ])
+
+    assert rc == 0
+    assert (dst / "README.md").exists()
+
+
+def test_check_accepts_path_option(env_root, project_dir):
+    cli.main(["save", str(project_dir), "-n", "v1", "-y"])
+
+    rc = cli.main(["check", "--path", str(project_dir)])
+
+    assert rc == 0
+
+
+def test_migrate_accepts_path_option(env_root, project_dir):
+    cli.main(["save", str(project_dir), "-n", "v1", "-y"])
+
+    rc = cli.main(["migrate", "--path", str(project_dir), "--dry-run"])
+
+    assert rc == 0
+
+
 def test_rm_with_yes(env_root, project_dir):
     cli.main(["save", str(project_dir), "-n", "v1", "-y"])
     rc = cli.main(["rm", "v1", "--path", str(project_dir), "-y"])

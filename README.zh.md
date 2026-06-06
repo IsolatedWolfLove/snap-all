@@ -4,7 +4,7 @@
 归档放进 `~/.snapz-all/`，自带命名管理、`ncdu` 风格的交互界面，
 所有破坏性操作都先 dry-run 再二次确认。
 
-> **状态：正式版（v2.0.0）。** 已实现并测试：保存、查看、还原（含自动
+> **状态：正式版。** 已实现并测试：保存、查看、还原（含自动
 > 预还原快照与 `--clean`）、`ncdu` 风格 curses 界面、改名／删除、
 > **stats（容量分析）**、**prune（保留策略）**、**revert（按需回
 > 滚）**、**undo（一直回到最初）**、**find（跨快照定位文件）**、
@@ -99,8 +99,8 @@ GitHub Release 由 tag 触发。提交版本号后，先推分支，再推匹配
 `vX.Y.Z` tag：
 
 ```bash
-git tag v2.0.0
-git push origin main v2.0.0
+git tag vX.Y.Z
+git push origin main vX.Y.Z
 ```
 
 发布 workflow 会校验 tag 与 `pyproject.toml` 版本一致，跑测试，
@@ -108,6 +108,9 @@ git push origin main v2.0.0
 `.pyz`、wheel、sdist，以及默认中文的 `snapz-zh.pyz`、
 `snapz-server-zh.pyz`、`snapz-cli_<version>_all.zh.deb` 上传到
 GitHub Release。
+
+原生 `.exe` / 单文件二进制不再属于发布链路；官方支持的免安装产物是
+`.pyz`，目标机器只需要 Python 3.10+。
 
 ## 速查上手
 
@@ -537,12 +540,14 @@ snapz gc --dry-run        # 只报告，不删
 bundle 和远程 push 也走同样的 zstd 优先策略，服务端会在接收前校验
 bundle SHA-256。
 
-新快照和 bundle 默认使用更高压缩等级（`zstd` 10，`gzip` 9）来减少
-存储占用。可通过 `SNAPZ_ZSTD_LEVEL`（1-22）或 `SNAPZ_GZIP_LEVEL`（1-9）
-调整速度/体积取舍。
+新快照和 bundle 默认使用均衡压缩等级（`zstd` 3，`gzip` 6），优先保证
+大目录保存速度。可通过 `SNAPZ_ZSTD_LEVEL`（1-22）或 `SNAPZ_GZIP_LEVEL`
+（1-9）调整速度/体积取舍。
 
-CAS 后端会把大文件按内容定义边界分块存储。大文件只改一小段时，通常
-只会新增变化的 chunk，而不是重新存整份文件；旧的整文件快照仍可读取。
+按内容定义边界分块的历史 manifest 仍可读取，但新保存默认会把大文件作为
+整文件 CAS blob 存储，避免大文件逐字节分块扫描拖慢压缩。程序化调用仍可
+通过设置正数 `RuntimeConfig.chunk_file_bytes` 开启分块；开启后，大文件只改
+一小段时通常只会新增变化的 chunk，而不是重新存整份文件。
 
 ## 当库用
 
@@ -591,7 +596,7 @@ print(result.reverted_count, "个文件已写回, pre-revert =",
 - **M1 ✅** — 非 TUI 命令面
 - **M2 ✅** — `snapz list` / `snapz alist` 的 curses TUI（`d` / `n` 键）
 - **M3 ✅** — `snapz restore <name>` + 自动预还原 + TUI 的 `r` 键
-- **M5 ✅** — 自动出包（wheel/sdist/zipapp/standalone binary）
+- **M5 ✅** — 自动出包（wheel/sdist/zipapp/Debian 包）
 - **M6 ✅** — `snapz stats` / `snapz prune` / `snapz revert` + curses 选择器
 - **M4** — 完整 `.snapzignore` 语义（取反、嵌套）、`gc` 策略、TUI 内排序与过滤
 

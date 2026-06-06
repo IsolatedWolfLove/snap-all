@@ -606,3 +606,84 @@ def test_admin_api_manages_pushed_source_snapshots(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_admin_delete_snapshot_preserves_chunked_blobs_for_remaining_snapshot(tmp_path):
+    server_root = tmp_path / "server"
+    server, url = _start_server(server_root)
+    try:
+        _json(
+            url,
+            "/api/admin/users",
+            method="POST",
+            payload={
+                "tenant": "acme",
+                "username": "alice",
+                "password": "secret",
+            },
+            expect=201,
+        )
+
+        client = RuntimeConfig(
+            root=tmp_path / "client",
+            use_zstd=False,
+            use_file_cache=False,
+            chunk_file_bytes=128 * 1024,
+            chunk_min_bytes=32 * 1024,
+            chunk_avg_bytes=64 * 1024,
+            chunk_max_bytes=128 * 1024,
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        payload = bytearray(
+            (b"alpha" * 70000) + (b"beta" * 70000) + (b"gamma" * 70000)
+        )
+        (project / "big.bin").write_bytes(payload)
+        api.save(project, "v1", config=client)
+        payload[len(payload) // 2: len(payload) // 2 + 4] = b"EDIT"
+        (project / "big.bin").write_bytes(payload)
+        api.save(project, "v2", config=client)
+        expected = bytes(payload)
+
+        auth = remote.login(
+            url,
+            tenant="acme",
+            username="alice",
+            password="secret",
+            device_name="laptop",
+            config=client,
+        )
+        assert remote.push_all(config=client).ok
+        source = _json(url, "/api/admin/sources")["sources"][0]
+        tenant_id = source["tenant_id"]
+        source_id = source["id"]
+
+        deleted = _json(
+            url,
+            f"/api/admin/sources/{tenant_id}/{source_id}/snapshots/v1",
+            method="DELETE",
+        )
+        assert deleted["snapshot_count"] == 1
+
+        pulled_store = RuntimeConfig(root=tmp_path / "pulled")
+        remote.save_auth(
+            remote.RemoteAuth(
+                server_url=url,
+                tenant="acme",
+                username="alice",
+                token=auth.token,
+                device_id=auth.device_id,
+                device_name=auth.device_name,
+            ),
+            pulled_store,
+        )
+        pulled = remote.pull_all(config=pulled_store)
+        assert pulled.ok
+        archive_entry = api.list_archives(config=pulled_store)[0]
+        restored = tmp_path / "restored"
+        api.restore_archive(archive_entry.key, "v2", restored, config=pulled_store)
+
+        assert (restored / "big.bin").read_bytes() == expected
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -49,7 +49,13 @@ def validate_bundle_file(bundle: Path) -> None:
                 raise ValueError(f"bundle missing snapshot artifact: {artifact_path}")
             if kind not in {"manifest", "legacy"}:
                 raise ValueError(f"unknown snapshot artifact kind: {kind!r}")
-            if kind == "manifest" and not artifact_path.startswith("source/snapshots/"):
+            if kind == "manifest" and not (
+                artifact_path.startswith("source/snapshots/")
+                and (
+                    artifact_path.endswith(cas.MANIFEST_SUFFIX)
+                    or artifact_path.endswith(cas.COMPRESSED_MANIFEST_SUFFIX)
+                )
+            ):
                 raise ValueError(f"invalid manifest path: {artifact_path}")
             if kind == "legacy" and not artifact_path.startswith("source/"):
                 raise ValueError(f"invalid legacy artifact path: {artifact_path}")
@@ -60,6 +66,14 @@ def validate_bundle_file(bundle: Path) -> None:
             blob_path = f"objects/{sha_text[:2]}/{sha_text}"
             if blob_path not in names:
                 raise ValueError(f"bundle missing blob: {blob_path}")
+        manifest_refs = _referenced_blobs(tar, rows)
+        declared_blobs = {str(sha or "") for sha in meta.get("blobs") or []}
+        missing_declared = sorted(manifest_refs - declared_blobs)
+        if missing_declared:
+            raise ValueError(
+                "bundle manifest references undeclared blob: "
+                + missing_declared[0]
+            )
 
 
 def list_bundle_snapshots(
@@ -276,8 +290,16 @@ def _read_json_member(tar: tarfile.TarFile, name: str) -> dict[str, Any]:
     extracted = tar.extractfile(member)
     if extracted is None:
         raise ValueError(f"bundle member is not readable: {name}")
+    raw = extracted.read()
+    if name.endswith(cas.COMPRESSED_MANIFEST_SUFFIX) or raw[:4] == cas._ZSTD_MAGIC:
+        if cas._zstandard is None:  # noqa: SLF001
+            raise ValueError(f"zstandard not installed; cannot read {name}")
+        try:
+            raw = cas._zstandard.ZstdDecompressor().decompress(raw)  # noqa: SLF001
+        except Exception as exc:
+            raise ValueError(f"bundle has invalid zstd member: {name}") from exc
     try:
-        data = json.loads(extracted.read().decode("utf-8"))
+        data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"bundle has invalid JSON: {name}") from exc
     if not isinstance(data, dict):
@@ -385,7 +407,10 @@ def _validate_member(member: tarfile.TarInfo) -> None:
         return
     if name == "source/_meta.json":
         return
-    if name.startswith("source/snapshots/") and name.endswith(cas.MANIFEST_SUFFIX):
+    if name.startswith("source/snapshots/") and (
+        name.endswith(cas.MANIFEST_SUFFIX)
+        or name.endswith(cas.COMPRESSED_MANIFEST_SUFFIX)
+    ):
         return
     if name.startswith("source/") and (
         name.endswith(META_SUFFIX)
@@ -407,7 +432,12 @@ def _is_sha256(value: str) -> bool:
 
 def _renamed_artifact_path(old_artifact: str, kind: str, new_name: str) -> str:
     if kind == "manifest":
-        return f"source/snapshots/{new_name}{cas.MANIFEST_SUFFIX}"
+        suffix = (
+            cas.COMPRESSED_MANIFEST_SUFFIX
+            if old_artifact.endswith(cas.COMPRESSED_MANIFEST_SUFFIX)
+            else cas.MANIFEST_SUFFIX
+        )
+        return f"source/snapshots/{new_name}{suffix}"
     if kind == "legacy":
         suffixes = Path(old_artifact).suffixes
         suffix = "".join(suffixes[-2:]) if len(suffixes) >= 2 else Path(old_artifact).suffix
@@ -439,6 +469,15 @@ def _referenced_blobs(tar: tarfile.TarFile, rows: list[dict[str, Any]]) -> set[s
         manifest = _read_json_member(tar, _row_path(row, "artifact"))
         for entry in manifest.get("entries") or []:
             if not isinstance(entry, dict):
+                continue
+            chunks = entry.get("chunks") or []
+            if isinstance(chunks, list) and chunks:
+                for chunk in chunks:
+                    if not isinstance(chunk, dict):
+                        continue
+                    sha = str(chunk.get("sha256") or "")
+                    if sha:
+                        blobs.add(sha)
                 continue
             sha = str(entry.get("sha256") or "")
             if sha:
@@ -496,6 +535,10 @@ def _copy_member(
 
 def _add_json(tar: tarfile.TarFile, name: str, data: dict[str, Any]) -> None:
     raw = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    if name.endswith(cas.COMPRESSED_MANIFEST_SUFFIX):
+        if cas._zstandard is None:  # noqa: SLF001
+            raise ValueError(f"zstandard not installed; cannot write {name}")
+        raw = cas._zstandard.ZstdCompressor().compress(raw)  # noqa: SLF001
     info = tarfile.TarInfo(name)
     info.size = len(raw)
     info.mode = 0o600

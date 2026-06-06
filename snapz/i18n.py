@@ -120,6 +120,7 @@ _EN: dict[str, str] = {
         "source directory whose store holds the snapshot (default: cwd)"
     ),
     "export.overwrite": "extract even if the destination is non-empty",
+    "export.yes": "accepted for script compatibility; export does not prompt",
 
     # ---- portable bundles ----
     "bundle.help": "pack all snapshots for one source into a portable bundle",
@@ -671,6 +672,7 @@ _ZH: dict[str, str] = {
     "export.dst": "目标目录（不存在会自动创建）",
     "export.path": "持有该快照的源目录（默认:当前目录）",
     "export.overwrite": "即使目标目录非空也强制解出",
+    "export.yes": "为脚本兼容而接受；export 不会提示确认",
 
     # ---- portable bundles ----
     "bundle.help": "把某个源目录的所有快照打成可迁移 bundle",

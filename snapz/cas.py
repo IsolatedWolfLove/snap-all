@@ -849,11 +849,34 @@ def gc_global(
 def verify_blob(dir_root: Path, sha256: str) -> int:
     """Decompress and verify one blob. Returns raw byte size."""
 
-    data = read_blob_bytes(dir_root, sha256)
-    actual = hashlib.sha256(data).hexdigest()
+    src = find_blob(dir_root, sha256)
+    h = hashlib.sha256()
+    size = 0
+    with open(src, "rb") as f:
+        head = f.read(4)
+        f.seek(0)
+        if head[:4] == _ZSTD_MAGIC:
+            if _zstandard is None:
+                raise RuntimeError(
+                    "zstandard not installed; cannot read zstd-compressed blob"
+                )
+            dctx = _zstandard.ZstdDecompressor()
+            reader = dctx.stream_reader(f)
+        elif head[:2] == _GZIP_MAGIC:
+            reader = gzip.GzipFile(fileobj=f, mode="rb")
+        else:
+            raise ValueError(f"unknown blob format for {sha256}")
+        with reader:
+            while True:
+                chunk = reader.read(64 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+                size += len(chunk)
+    actual = h.hexdigest()
     if actual != sha256:
         raise ValueError(f"blob {sha256[:12]} checksum mismatch")
-    return len(data)
+    return size
 
 
 def is_manifest_artifact(path: Path) -> bool:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import threading
+import http.client
 from pathlib import Path
 
 import pytest
@@ -357,3 +358,45 @@ def test_push_pull_over_https_with_client_certificate(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_download_bundle_cleans_partial_file_on_stream_error(tmp_path, monkeypatch):
+    destination = tmp_path / "download.snapz"
+
+    class BrokenResponse:
+        status = 200
+
+        def getheaders(self):
+            return []
+
+        def read(self, _size):
+            raise OSError("connection dropped")
+
+    class FakeConnection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return BrokenResponse()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(http.client, "HTTPConnection", FakeConnection)
+    auth = remote.RemoteAuth(
+        server_url="http://example.test",
+        tenant="acme",
+        username="alice",
+        token="token",
+        device_id="dev",
+        device_name="device",
+    )
+
+    with pytest.raises(remote.RemoteError, match="connection dropped"):
+        remote._download_bundle(auth, "src_abc", destination)
+
+    assert not destination.exists()
+    assert not list(tmp_path.glob("download.snapz.*.tmp"))

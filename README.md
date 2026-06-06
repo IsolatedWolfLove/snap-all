@@ -5,7 +5,7 @@ a `tar.zst` archive under `~/.snapz-all/`, with named retention,
 `ncdu`-style management, and dry-run + double confirmation before any
 destructive action.
 
-> **Status — stable (v2.0.0).** Save, list, restore (auto pre-restore +
+> **Status — stable.** Save, list, restore (auto pre-restore +
 > `--clean`), the `ncdu`-style curses TUI, rename/delete, **stats**,
 > **prune** (retention policies + protected snapshots), **revert**
 > (selective rollback), **undo** (chained rollback to the initial state),
@@ -108,8 +108,8 @@ GitHub Releases are tag-driven. After committing the version bump, push
 the branch and then push a matching `vX.Y.Z` tag:
 
 ```bash
-git tag v2.0.0
-git push origin main v2.0.0
+git tag vX.Y.Z
+git push origin main vX.Y.Z
 ```
 
 The release workflow verifies that the tag matches `pyproject.toml`,
@@ -118,9 +118,9 @@ and uploads the standard `.deb`, `.pyz`, wheel, and sdist files plus
 Chinese-default `snapz-zh.pyz`, `snapz-server-zh.pyz`, and
 `snapz-cli_<version>_all.zh.deb` files to the GitHub Release.
 
-A previous iteration also produced a 13 MB PyInstaller `--onefile`
-binary; it was removed because the `.pyz` is much lighter and Python is
-already on every realistic target.
+Native `.exe` / one-file binary builds are intentionally not part of the
+release pipeline. The `.pyz` artifacts are the supported drop-in
+executables and only require Python 3.10+ on the target.
 
 ## Quick start
 
@@ -630,14 +630,17 @@ gzip with `snapz --no-zstd ...`. Portable `.snapz` bundles and remote
 pushes use the same zstd-first behavior, and remote uploads are checked
 with a bundle SHA-256 before they are accepted.
 
-New snapshots and bundles default to higher compression (`zstd` level
-10, `gzip` level 9) to reduce storage size. Set `SNAPZ_ZSTD_LEVEL` (1-22)
-or `SNAPZ_GZIP_LEVEL` (1-9) to tune the speed/size tradeoff.
+New snapshots and bundles default to balanced compression (`zstd` level
+3, `gzip` level 6) so large saves stay responsive. Set
+`SNAPZ_ZSTD_LEVEL` (1-22) or `SNAPZ_GZIP_LEVEL` (1-9) when you want a
+different speed/size tradeoff.
 
-Large files are stored as content-defined chunks in the CAS backend.
-Small edits to a large file usually add only the changed chunks instead
-of storing the whole file again, while older whole-file snapshots remain
-readable.
+Content-defined chunk manifests remain readable, but new saves store
+large files as whole-file CAS blobs by default. This avoids the slower
+per-byte chunk scan on big files. Programmatic callers can still enable
+chunking by constructing a `RuntimeConfig` with a positive
+`chunk_file_bytes`; then small edits to a large file usually add only
+the changed chunks instead of storing the whole file again.
 
 ## Library use
 
@@ -688,7 +691,7 @@ adds, overwrites and extras.
 - **M1 ✅** — non-TUI command surface
 - **M2 ✅** — curses TUI for `snapz list` / `snapz alist` (`d` / `n` keys)
 - **M3 ✅** — `snapz restore <name>` + auto pre-restore + TUI `r` key
-- **M5 ✅** — automated build (wheel/sdist/zipapp/standalone binary)
+- **M5 ✅** — automated build (wheel/sdist/zipapp/Debian package)
 - **M6 ✅** — `snapz stats` / `snapz prune` / `snapz revert` with curses pickers
 - **M4 ✅** — full `.snapzignore` / `.gitignore` semantics, store check,
   protected snapshots, v3 global CAS migration

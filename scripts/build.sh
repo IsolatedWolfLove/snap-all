@@ -7,17 +7,13 @@
 #   snapz.pyz                               shiv zipapp for the client command
 #   snapz-server.pyz                        shiv zipapp for the standalone server
 #   snapz-cli_<version>_all.deb             Debian package with both commands
-#   snapz-linux-x86_64 / snapz-windows-x86_64.exe
-#   snapz-server-linux-x86_64 / snapz-server-windows-x86_64.exe
 #
 # Usage:
 #   ./scripts/build.sh              # all targets (wheel + sdist + pyz + deb)
 #   ./scripts/build.sh wheel        # sdist + wheel only
 #   ./scripts/build.sh pyz          # shiv .pyz only (rebuilds wheel if missing)
 #   ./scripts/build.sh deb          # Debian .deb package (rebuilds .pyz first)
-#   ./scripts/build.sh nuitka       # Nuitka one-file executables for this OS/arch
 #   ./scripts/build.sh smoke        # run --version against the freshly built artifacts
-#   ./scripts/build.sh smoke-nuitka # run --version against Nuitka executables only
 #   ./scripts/build.sh --clean      # delete dist/, build/, .build-venv/
 #
 #   ./scripts/build.sh --lang zh all   # bake `DEFAULT_LANG = "zh"` into the artifact
@@ -117,9 +113,9 @@ ensure_venv() {
     fi
     vpy="$(venv_python)"
     vpip="$(venv_pip)"
-    if ! "$vpy" -c 'import build, nuitka, shiv, zstandard' >/dev/null 2>&1; then
+    if ! "$vpy" -c 'import build, shiv, zstandard' >/dev/null 2>&1; then
         log "installing build dependencies"
-        "$vpip" install --upgrade --quiet pip wheel build nuitka shiv zstandard
+        "$vpip" install --upgrade --quiet pip wheel build shiv zstandard
     fi
     mkdir -p "$DIST"
 }
@@ -147,79 +143,6 @@ build_wheel() {
     mkdir -p "$WORK"
     log "building sdist + wheel -> $DIST"
     (cd "$WORK" && "$(venv_python)" -m build "$ROOT" --outdir "$DIST") >/dev/null
-}
-
-platform_suffix() {
-    local os arch
-    os="$(uname -s)"
-    arch="$(uname -m)"
-    case "$arch" in
-        x86_64|amd64|AMD64) arch="x86_64" ;;
-        *) echo "unsupported Nuitka build architecture: $arch" >&2; exit 2 ;;
-    esac
-    case "$os" in
-        Linux*)   printf 'linux-%s' "$arch" ;;
-        MINGW*|MSYS*|CYGWIN*) printf 'windows-%s' "$arch" ;;
-        *) echo "unsupported Nuitka build OS: $os" >&2; exit 2 ;;
-    esac
-}
-
-exe_suffix() {
-    case "$(uname -s)" in
-        MINGW*|MSYS*|CYGWIN*) printf '.exe' ;;
-        *) printf '' ;;
-    esac
-}
-
-build_nuitka() {
-    check_py310_compat
-    ensure_venv
-    mkdir -p "$WORK/nuitka" "$DIST"
-    local platform exe_ext snapz_out server_out
-    platform="$(platform_suffix)"
-    exe_ext="$(exe_suffix)"
-    snapz_out="snapz-${platform}${exe_ext}"
-    server_out="snapz-server-${platform}${exe_ext}"
-
-    log "building Nuitka one-file executable -> $DIST/$snapz_out"
-    (cd "$ROOT" && "$(venv_python)" -m nuitka \
-        --onefile \
-        --assume-yes-for-downloads \
-        --output-dir="$WORK/nuitka/snapz" \
-        --output-filename="$snapz_out" \
-        --include-package=snapz \
-        --include-package=snapz_server \
-        "$ROOT/snapz/cli.py") >/dev/null
-    cp "$WORK/nuitka/snapz/$snapz_out" "$DIST/$snapz_out"
-    chmod +x "$DIST/$snapz_out" 2>/dev/null || true
-
-    log "building Nuitka one-file executable -> $DIST/$server_out"
-    (cd "$ROOT" && "$(venv_python)" -m nuitka \
-        --onefile \
-        --assume-yes-for-downloads \
-        --output-dir="$WORK/nuitka/snapz-server" \
-        --output-filename="$server_out" \
-        --include-package=snapz \
-        --include-package=snapz_server \
-        "$ROOT/snapz_server/cli.py") >/dev/null
-    cp "$WORK/nuitka/snapz-server/$server_out" "$DIST/$server_out"
-    chmod +x "$DIST/$server_out" 2>/dev/null || true
-}
-
-smoke_nuitka() {
-    log "smoke-testing Nuitka executables"
-    local fail=0 exe
-    for exe in "$DIST"/snapz-linux-* "$DIST"/snapz-windows-*.exe; do
-        [ -f "$exe" ] || continue
-        log "  $(basename "$exe") --version"
-        "$exe" --version || fail=1
-    done
-    for exe in "$DIST"/snapz-server-linux-* "$DIST"/snapz-server-windows-*.exe; do
-        [ -f "$exe" ] || continue
-        log "  $(basename "$exe") --version"
-        "$exe" --version || fail=1
-    done
-    return "$fail"
 }
 
 build_pyz() {
@@ -335,7 +258,6 @@ smoke() {
         grep -q 'usr/bin/snapz$' "$deb_contents" || fail=1
         grep -q 'usr/bin/snapz-server$' "$deb_contents" || fail=1
     fi
-    smoke_nuitka || fail=1
     return "$fail"
 }
 
@@ -358,9 +280,7 @@ case "$target" in
     wheel)         build_wheel ;;
     pyz)           build_pyz ;;
     deb)           build_deb ;;
-    nuitka)        build_nuitka ;;
     smoke)         smoke ;;
-    smoke-nuitka)  smoke_nuitka ;;
     all)
         cleanup
         build_wheel
@@ -369,7 +289,7 @@ case "$target" in
         ;;
     *)
         echo "unknown target: $target" >&2
-        echo "usage: $0 [--lang en|zh] [all|wheel|pyz|deb|nuitka|smoke|smoke-nuitka|--clean]" >&2
+        echo "usage: $0 [--lang en|zh] [all|wheel|pyz|deb|smoke|--clean]" >&2
         exit 2
         ;;
 esac

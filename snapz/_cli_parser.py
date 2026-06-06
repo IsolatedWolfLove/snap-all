@@ -275,6 +275,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=t("export.overwrite"),
     )
+    p_export.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help=t("export.yes"),
+    )
     p_export.set_defaults(func=cmd_export)
 
     # portable source bundle
@@ -421,6 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=t("check.help"),
     )
     p_check.add_argument("path", nargs="?", help=t("check.path"))
+    p_check.add_argument("--path", dest="path_option", help=t("check.path"))
     p_check.add_argument("--all", action="store_true", help=t("check.all"))
     p_check.add_argument("--deep", action="store_true", help=t("check.deep"))
     p_check.add_argument("--fix", action="store_true", help=t("check.fix"))
@@ -432,6 +438,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=t("migrate.help"),
     )
     p_migrate.add_argument("path", nargs="?", help=t("migrate.path"))
+    p_migrate.add_argument("--path", dest="path_option", help=t("migrate.path"))
     p_migrate.add_argument("--all", action="store_true", help=t("migrate.all"))
     p_migrate.add_argument("--to", default="v3", choices=["v3"], help=t("migrate.to"))
     p_migrate.add_argument("--dry-run", action="store_true", help=t("migrate.dry_run"))

@@ -6,6 +6,7 @@ import importlib.util
 import json
 import tarfile
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 
@@ -165,6 +166,63 @@ def test_bundle_import_rejects_invalid_blob_id(tmp_path):
 
     with pytest.raises(ValueError, match="invalid blob id"):
         api.import_bundle(bundle, config=RuntimeConfig(root=tmp_path / "store"))
+
+
+def test_bundle_import_rejects_corrupt_declared_blob(project_dir, config, tmp_path):
+    api.save(project_dir, "v1", config=config)
+    bundle = tmp_path / "project.snapz"
+    api.export_bundle(project_dir, bundle, config=config)
+    corrupted = tmp_path / "corrupted.snapz"
+
+    with api._open_bundle_tar_reader(bundle) as src, tarfile.open(corrupted, "w:gz") as dst:
+        for member in src.getmembers():
+            info = tarfile.TarInfo(member.name)
+            info.mode = member.mode
+            info.mtime = member.mtime
+            if member.isfile():
+                data = (
+                    b"not a compressed blob"
+                    if member.name.startswith("objects/")
+                    else src.extractfile(member).read()
+                )
+                info.size = len(data)
+                dst.addfile(info, BytesIO(data))
+            else:
+                dst.addfile(info)
+
+    fresh = RuntimeConfig(root=tmp_path / "fresh")
+    with pytest.raises(ValueError, match="bundle blob checksum mismatch"):
+        api.import_bundle(corrupted, config=fresh)
+    assert not list(Path(fresh.root).rglob("*.manifest.json"))
+
+
+def test_bundle_import_rejects_manifest_blob_not_declared(project_dir, config, tmp_path):
+    api.save(project_dir, "v1", config=config)
+    bundle = tmp_path / "project.snapz"
+    api.export_bundle(project_dir, bundle, config=config)
+    corrupted = tmp_path / "missing-ref.snapz"
+
+    with api._open_bundle_tar_reader(bundle) as src, tarfile.open(corrupted, "w:gz") as dst:
+        meta = json.loads(
+            src.extractfile(src.getmember(api.BUNDLE_META_NAME)).read().decode("utf-8")
+        )
+        meta["blobs"] = []
+        for member in src.getmembers():
+            info = tarfile.TarInfo(member.name)
+            info.mode = member.mode
+            info.mtime = member.mtime
+            if member.name == api.BUNDLE_META_NAME:
+                data = (json.dumps(meta) + "\n").encode("utf-8")
+            elif member.isfile():
+                data = src.extractfile(member).read()
+            else:
+                dst.addfile(info)
+                continue
+            info.size = len(data)
+            dst.addfile(info, BytesIO(data))
+
+    with pytest.raises(ValueError, match="references missing blob"):
+        api.import_bundle(corrupted, config=RuntimeConfig(root=tmp_path / "fresh"))
 
 
 def test_bundle_prefers_zstd_when_available(project_dir, config, tmp_path):

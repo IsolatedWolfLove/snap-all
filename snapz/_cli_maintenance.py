@@ -68,9 +68,10 @@ def _print_check_result(result) -> None:
         print(f"    {issue.message}")
 
 def cmd_check(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    path_arg = getattr(args, "path_option", None) or args.path
     try:
         result = api.check(
-            None if args.all else resolve_path(args.path or "."),
+            None if args.all else resolve_path(path_arg or "."),
             all_dirs=args.all,
             deep=args.deep,
             fix=args.fix,
@@ -86,9 +87,10 @@ def cmd_check(args: argparse.Namespace, config: RuntimeConfig) -> int:
     return EXIT_OK if result.ok else EXIT_ERROR
 
 def cmd_migrate(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    path_arg = getattr(args, "path_option", None) or args.path
     try:
         outcome = api.migrate(
-            None if args.all else resolve_path(args.path or "."),
+            None if args.all else resolve_path(path_arg or "."),
             all_dirs=args.all,
             to=args.to,
             dry_run=args.dry_run,
