@@ -492,6 +492,73 @@ def test_bundle_upload_requires_hash_and_size_limit(tmp_path):
         server.server_close()
 
 
+def test_client_can_report_source_sync_status(tmp_path):
+    server_root = tmp_path / "server"
+    server, url = _start_server(server_root)
+    try:
+        _json(
+            url,
+            "/api/admin/users",
+            method="POST",
+            payload={
+                "tenant": "acme",
+                "username": "alice",
+                "password": "secret",
+            },
+            expect=201,
+        )
+        login = _json(
+            url,
+            "/api/auth/login",
+            method="POST",
+            payload={
+                "tenant": "acme",
+                "username": "alice",
+                "password": "secret",
+                "device_name": "laptop",
+            },
+            token=None,
+        )
+
+        source_id = "src_status"
+        reported = _json(
+            url,
+            f"/api/sources/{source_id}/sync-status",
+            method="POST",
+            payload={
+                "status": "running",
+                "phase": "uploading_delta",
+                "display_name": "project",
+                "key": "local-key",
+                "bytes_sent": 64,
+                "bytes_total": 128,
+                "progress_percent": 50,
+                "speed_bps": 32,
+                "eta_seconds": 2,
+                "remote_only": True,
+            },
+            token=login["token"],
+        )
+        assert reported["ok"] is True
+
+        source = _json(url, "/api/admin/sources")["sources"][0]
+        assert source["id"] == source_id
+        assert source["display_name"] == "project"
+        assert source["sync_status"]["status"] == "running"
+        assert source["sync_status"]["phase"] == "uploading_delta"
+        assert source["sync_status"]["progress_percent"] == 50
+        assert source["sync_status"]["speed_bps"] == 32
+        assert source["sync_status"]["eta_seconds"] == 2
+        assert source["sync_status"]["remote_only"] is True
+        assert source["last_sync_at"] == ""
+
+        user_source = _json(url, "/api/sources", token=login["token"])["sources"][0]
+        assert user_source["sync_status"]["bytes_sent"] == 64
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_admin_api_manages_pushed_source_snapshots(tmp_path):
     server_root = tmp_path / "server"
     server, url = _start_server(server_root)

@@ -55,6 +55,19 @@ def _create_sources_table_sql(table_name: str = "sources") -> str:
                 snapshot_count INTEGER NOT NULL DEFAULT 0,
                 bundle_bytes INTEGER NOT NULL DEFAULT 0,
                 pushed_by_device TEXT NOT NULL DEFAULT '',
+                sync_status TEXT NOT NULL DEFAULT '',
+                sync_phase TEXT NOT NULL DEFAULT '',
+                sync_progress_percent REAL NOT NULL DEFAULT 0,
+                sync_bytes_sent INTEGER NOT NULL DEFAULT 0,
+                sync_bytes_total INTEGER NOT NULL DEFAULT 0,
+                sync_speed_bps REAL NOT NULL DEFAULT 0,
+                sync_eta_seconds REAL,
+                sync_started_at TEXT NOT NULL DEFAULT '',
+                sync_updated_at TEXT NOT NULL DEFAULT '',
+                sync_finished_at TEXT NOT NULL DEFAULT '',
+                last_sync_at TEXT NOT NULL DEFAULT '',
+                sync_error TEXT NOT NULL DEFAULT '',
+                sync_remote_only INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(tenant_id, id)
             );
@@ -68,6 +81,7 @@ def _migrate_sources_table(con: sqlite3.Connection) -> None:
         for row in sorted((r for r in rows if r["pk"]), key=lambda r: r["pk"])
     ]
     if pk_columns == ["tenant_id", "id"]:
+        _migrate_sources_columns(con)
         return
     con.execute("ALTER TABLE sources RENAME TO sources_old_pk")
     con.executescript(_create_sources_table_sql("sources"))
@@ -84,6 +98,32 @@ def _migrate_sources_table(con: sqlite3.Connection) -> None:
         """
     )
     con.execute("DROP TABLE sources_old_pk")
+    _migrate_sources_columns(con)
+
+
+def _migrate_sources_columns(con: sqlite3.Connection) -> None:
+    existing = {
+        row["name"]
+        for row in con.execute("PRAGMA table_info(sources)")
+    }
+    migrations = {
+        "sync_status": "TEXT NOT NULL DEFAULT ''",
+        "sync_phase": "TEXT NOT NULL DEFAULT ''",
+        "sync_progress_percent": "REAL NOT NULL DEFAULT 0",
+        "sync_bytes_sent": "INTEGER NOT NULL DEFAULT 0",
+        "sync_bytes_total": "INTEGER NOT NULL DEFAULT 0",
+        "sync_speed_bps": "REAL NOT NULL DEFAULT 0",
+        "sync_eta_seconds": "REAL",
+        "sync_started_at": "TEXT NOT NULL DEFAULT ''",
+        "sync_updated_at": "TEXT NOT NULL DEFAULT ''",
+        "sync_finished_at": "TEXT NOT NULL DEFAULT ''",
+        "last_sync_at": "TEXT NOT NULL DEFAULT ''",
+        "sync_error": "TEXT NOT NULL DEFAULT ''",
+        "sync_remote_only": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for name, definition in migrations.items():
+        if name not in existing:
+            con.execute(f"ALTER TABLE sources ADD COLUMN {name} {definition}")
 
 
 def init_db(data_dir: str | Path) -> None:
@@ -453,6 +493,19 @@ def list_admin_sources(data_dir: str | Path) -> list[sqlite3.Row]:
                   s.snapshot_count AS snapshot_count,
                   s.bundle_bytes AS bundle_bytes,
                   s.pushed_by_device AS pushed_by_device,
+                  s.sync_status AS sync_status,
+                  s.sync_phase AS sync_phase,
+                  s.sync_progress_percent AS sync_progress_percent,
+                  s.sync_bytes_sent AS sync_bytes_sent,
+                  s.sync_bytes_total AS sync_bytes_total,
+                  s.sync_speed_bps AS sync_speed_bps,
+                  s.sync_eta_seconds AS sync_eta_seconds,
+                  s.sync_started_at AS sync_started_at,
+                  s.sync_updated_at AS sync_updated_at,
+                  s.sync_finished_at AS sync_finished_at,
+                  s.last_sync_at AS last_sync_at,
+                  s.sync_error AS sync_error,
+                  s.sync_remote_only AS sync_remote_only,
                   COALESCE(d.name, '') AS pushed_by_device_name,
                   COALESCE(u.id, '') AS pushed_by_user_id,
                   COALESCE(u.username, '') AS pushed_by_username,
@@ -487,6 +540,19 @@ def get_admin_source(
               s.snapshot_count AS snapshot_count,
               s.bundle_bytes AS bundle_bytes,
               s.pushed_by_device AS pushed_by_device,
+              s.sync_status AS sync_status,
+              s.sync_phase AS sync_phase,
+              s.sync_progress_percent AS sync_progress_percent,
+              s.sync_bytes_sent AS sync_bytes_sent,
+              s.sync_bytes_total AS sync_bytes_total,
+              s.sync_speed_bps AS sync_speed_bps,
+              s.sync_eta_seconds AS sync_eta_seconds,
+              s.sync_started_at AS sync_started_at,
+              s.sync_updated_at AS sync_updated_at,
+              s.sync_finished_at AS sync_finished_at,
+              s.last_sync_at AS last_sync_at,
+              s.sync_error AS sync_error,
+              s.sync_remote_only AS sync_remote_only,
               COALESCE(d.name, '') AS pushed_by_device_name,
               COALESCE(u.id, '') AS pushed_by_user_id,
               COALESCE(u.username, '') AS pushed_by_username,
@@ -672,6 +738,7 @@ def upsert_source(
     snapshot_count: int,
     bundle_bytes: int,
 ) -> None:
+    timestamp = now_iso()
     path_hint = str(source.get("abspath", "") or "")
     origin_store_key = str(source.get("key", "") or "")
     default_display_name = _source_display_name(
@@ -701,9 +768,12 @@ def upsert_source(
             """
             INSERT INTO sources(
               id, tenant_id, source_marker, origin_store_key, display_name,
-              path_hint, snapshot_count, bundle_bytes, pushed_by_device, updated_at
+              path_hint, snapshot_count, bundle_bytes, pushed_by_device,
+              sync_status, sync_phase, sync_progress_percent, sync_bytes_sent,
+              sync_bytes_total, sync_speed_bps, sync_eta_seconds,
+              sync_updated_at, sync_finished_at, last_sync_at, sync_error, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tenant_id, id) DO UPDATE SET
               source_marker = excluded.source_marker,
               origin_store_key = excluded.origin_store_key,
@@ -712,6 +782,17 @@ def upsert_source(
               snapshot_count = excluded.snapshot_count,
               bundle_bytes = excluded.bundle_bytes,
               pushed_by_device = excluded.pushed_by_device,
+              sync_status = excluded.sync_status,
+              sync_phase = excluded.sync_phase,
+              sync_progress_percent = excluded.sync_progress_percent,
+              sync_bytes_sent = excluded.sync_bytes_sent,
+              sync_bytes_total = excluded.sync_bytes_total,
+              sync_speed_bps = excluded.sync_speed_bps,
+              sync_eta_seconds = excluded.sync_eta_seconds,
+              sync_updated_at = excluded.sync_updated_at,
+              sync_finished_at = excluded.sync_finished_at,
+              last_sync_at = excluded.last_sync_at,
+              sync_error = excluded.sync_error,
               updated_at = excluded.updated_at
             """,
             (
@@ -724,7 +805,157 @@ def upsert_source(
                 snapshot_count,
                 bundle_bytes,
                 ctx.device_id,
-                now_iso(),
+                "completed",
+                "finished",
+                100.0,
+                bundle_bytes,
+                bundle_bytes,
+                0.0,
+                0.0,
+                timestamp,
+                timestamp,
+                timestamp,
+                "",
+                timestamp,
+            ),
+        )
+
+
+def update_source_sync_status(
+    data_dir: str | Path,
+    ctx: AuthContext,
+    source_id: str,
+    *,
+    status: str,
+    phase: str = "",
+    display_name: str = "",
+    origin_store_key: str = "",
+    bytes_sent: int = 0,
+    bytes_total: int = 0,
+    progress_percent: float = 0.0,
+    speed_bps: float = 0.0,
+    eta_seconds: float | None = None,
+    remote_only: bool = False,
+    message: str = "",
+) -> None:
+    timestamp = now_iso()
+    clean_status = status.strip()[:32] or "running"
+    clean_phase = phase.strip()[:64]
+    clean_display_name = display_name.strip()[:240]
+    clean_origin_store_key = origin_store_key.strip()[:240]
+    clean_message = message.strip()[:2000]
+    progress = max(0.0, min(100.0, float(progress_percent or 0.0)))
+    sent = max(0, int(bytes_sent or 0))
+    total = max(0, int(bytes_total or 0))
+    speed = max(0.0, float(speed_bps or 0.0))
+    eta = None if eta_seconds is None else max(0.0, float(eta_seconds))
+    finished_at = timestamp if clean_status in {"completed", "failed"} else ""
+    last_sync_at = timestamp if clean_status == "completed" else ""
+    if clean_status == "completed":
+        progress = 100.0
+        eta = 0.0
+    with connect(data_dir) as con:
+        current = con.execute(
+            """
+            SELECT display_name, path_hint, origin_store_key, last_sync_at
+            FROM sources
+            WHERE tenant_id = ? AND id = ?
+            """,
+            (ctx.tenant_id, source_id),
+        ).fetchone()
+        if current is None:
+            con.execute(
+                """
+                INSERT INTO sources(
+                  id, tenant_id, display_name, origin_store_key, path_hint,
+                  pushed_by_device, sync_status, sync_phase,
+                  sync_progress_percent, sync_bytes_sent, sync_bytes_total,
+                  sync_speed_bps, sync_eta_seconds, sync_started_at,
+                  sync_updated_at, sync_finished_at, last_sync_at,
+                  sync_error, sync_remote_only, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id,
+                    ctx.tenant_id,
+                    clean_display_name or source_id,
+                    clean_origin_store_key,
+                    "",
+                    ctx.device_id,
+                    clean_status,
+                    clean_phase,
+                    progress,
+                    sent,
+                    total,
+                    speed,
+                    eta,
+                    timestamp,
+                    timestamp,
+                    finished_at,
+                    last_sync_at,
+                    clean_message if clean_status == "failed" else "",
+                    1 if remote_only else 0,
+                    timestamp,
+                ),
+            )
+            return
+        next_display_name = current["display_name"]
+        if clean_display_name and (
+            not next_display_name or next_display_name == source_id
+        ):
+            next_display_name = clean_display_name
+        next_origin_store_key = current["origin_store_key"] or clean_origin_store_key
+        previous_last_sync_at = current["last_sync_at"] or ""
+        con.execute(
+            """
+            UPDATE sources
+            SET
+              display_name = ?,
+              origin_store_key = ?,
+              pushed_by_device = ?,
+              sync_status = ?,
+              sync_phase = ?,
+              sync_progress_percent = ?,
+              sync_bytes_sent = ?,
+              sync_bytes_total = ?,
+              sync_speed_bps = ?,
+              sync_eta_seconds = ?,
+              sync_started_at = CASE
+                WHEN sync_status != 'running' OR sync_started_at = '' THEN ?
+                ELSE sync_started_at
+              END,
+              sync_updated_at = ?,
+              sync_finished_at = CASE WHEN ? != '' THEN ? ELSE sync_finished_at END,
+              last_sync_at = CASE WHEN ? != '' THEN ? ELSE ? END,
+              sync_error = ?,
+              sync_remote_only = ?,
+              updated_at = ?
+            WHERE tenant_id = ? AND id = ?
+            """,
+            (
+                next_display_name,
+                next_origin_store_key,
+                ctx.device_id,
+                clean_status,
+                clean_phase,
+                progress,
+                sent,
+                total,
+                speed,
+                eta,
+                timestamp,
+                timestamp,
+                finished_at,
+                finished_at,
+                last_sync_at,
+                last_sync_at,
+                previous_last_sync_at,
+                clean_message if clean_status == "failed" else "",
+                1 if remote_only else 0,
+                timestamp,
+                ctx.tenant_id,
+                source_id,
             ),
         )
 

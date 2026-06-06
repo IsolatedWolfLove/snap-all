@@ -7,6 +7,28 @@ from typing import Any
 from snapz_server import db
 
 
+def _sync_status_dict(row: Any) -> dict[str, Any]:
+    eta = row["sync_eta_seconds"]
+    last_sync_at = row["last_sync_at"]
+    if not last_sync_at and int(row["snapshot_count"] or 0) > 0:
+        last_sync_at = row["updated_at"]
+    return {
+        "status": row["sync_status"] or "idle",
+        "phase": row["sync_phase"],
+        "progress_percent": float(row["sync_progress_percent"] or 0),
+        "bytes_sent": int(row["sync_bytes_sent"] or 0),
+        "bytes_total": int(row["sync_bytes_total"] or 0),
+        "speed_bps": float(row["sync_speed_bps"] or 0),
+        "eta_seconds": None if eta is None else float(eta),
+        "started_at": row["sync_started_at"],
+        "updated_at": row["sync_updated_at"],
+        "finished_at": row["sync_finished_at"],
+        "last_sync_at": last_sync_at,
+        "error": row["sync_error"],
+        "remote_only": bool(row["sync_remote_only"]),
+    }
+
+
 def ctx_dict(ctx: db.AuthContext) -> dict[str, str]:
     return {
         "tenant_id": ctx.tenant_id,
@@ -48,6 +70,7 @@ def admin_device_dict(row: Any) -> dict[str, Any]:
 
 
 def admin_source_dict(row: Any) -> dict[str, Any]:
+    sync_status = _sync_status_dict(row)
     return {
         "id": row["id"],
         "tenant_id": row["tenant_id"],
@@ -63,10 +86,13 @@ def admin_source_dict(row: Any) -> dict[str, Any]:
         "pushed_by_user_id": row["pushed_by_user_id"],
         "pushed_by_username": row["pushed_by_username"],
         "updated_at": row["updated_at"],
+        "last_sync_at": sync_status["last_sync_at"],
+        "sync_status": sync_status,
     }
 
 
 def row_dict(row: Any) -> dict[str, Any]:
+    sync_status = _sync_status_dict(row)
     return {
         "id": row["id"],
         "tenant_id": row["tenant_id"],
@@ -78,4 +104,6 @@ def row_dict(row: Any) -> dict[str, Any]:
         "bundle_bytes": int(row["bundle_bytes"]),
         "pushed_by_device": row["pushed_by_device"],
         "updated_at": row["updated_at"],
+        "last_sync_at": sync_status["last_sync_at"],
+        "sync_status": sync_status,
     }

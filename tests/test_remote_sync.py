@@ -306,6 +306,45 @@ def test_remote_index_pull_and_on_demand_object_hydration(tmp_path):
         server.server_close()
 
 
+def test_push_all_reports_upload_progress(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    events: list[dict] = []
+    try:
+        local_a = RuntimeConfig(root=tmp_path / "client-a")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("v1\n", encoding="utf-8")
+        api.save(project, "v1", config=local_a)
+
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-a",
+            config=local_a,
+        )
+        pushed = remote.push_all(config=local_a, progress=events.append)
+        assert pushed.ok
+
+        upload_events = [
+            event for event in events if str(event.get("phase", "")).startswith("uploading_")
+        ]
+        assert upload_events
+        assert upload_events[-1]["progress_percent"] == 100.0
+        assert upload_events[-1]["bytes_sent"] == upload_events[-1]["bytes_total"]
+        assert upload_events[-1]["speed_bps"] >= 0
+
+        admin_source = db.list_admin_sources(server_root)[0]
+        assert admin_source["sync_status"] == "completed"
+        assert admin_source["last_sync_at"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_second_push_uploads_only_missing_blobs(tmp_path, monkeypatch):
     server_root = tmp_path / "server"
     db.create_user(server_root, "tenant-a", "alice", "secret")

@@ -49,6 +49,7 @@ from snapz_server.routes import (
     source_id_from_bundle_path as _source_id_from_bundle_path,
     source_id_from_delta_path as _source_id_from_delta_path,
     source_id_from_index_path as _source_id_from_index_path,
+    source_id_from_sync_status_path as _source_id_from_sync_status_path,
     source_object_ref_from_path as _source_object_ref_from_path,
 )
 from snapz_server.serializers import (
@@ -225,6 +226,10 @@ class SnapzHandler(BaseHTTPRequestHandler):
         if path == "/api/auth/login":
             self._handle_login()
             return
+        source_id = _source_id_from_sync_status_path(path)
+        if source_id:
+            self._handle_source_sync_status(source_id)
+            return
         if path == "/api/admin/users":
             self._handle_admin_create_user()
             return
@@ -338,6 +343,37 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 "user": _ctx_dict(ctx),
             },
         )
+
+    def _handle_source_sync_status(self, source_id: str) -> None:
+        ctx = self._require_auth()
+        if ctx is None:
+            return
+        try:
+            payload = self._read_json()
+            db.update_source_sync_status(
+                self.data_dir,
+                ctx,
+                source_id,
+                status=str(payload.get("status") or "running"),
+                phase=str(payload.get("phase") or ""),
+                display_name=str(payload.get("display_name") or ""),
+                origin_store_key=str(payload.get("key") or ""),
+                bytes_sent=int(payload.get("bytes_sent") or 0),
+                bytes_total=int(payload.get("bytes_total") or 0),
+                progress_percent=float(payload.get("progress_percent") or 0.0),
+                speed_bps=float(payload.get("speed_bps") or 0.0),
+                eta_seconds=(
+                    None
+                    if payload.get("eta_seconds") in {None, ""}
+                    else float(payload.get("eta_seconds") or 0.0)
+                ),
+                remote_only=bool(payload.get("remote_only", False)),
+                message=str(payload.get("message") or ""),
+            )
+        except (TypeError, ValueError) as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        self._send_json(HTTPStatus.OK, {"ok": True})
 
     def _handle_admin_create_user(self) -> None:
         if not self._require_admin():

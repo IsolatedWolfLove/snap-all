@@ -101,7 +101,8 @@ const sourceColumns: TableColumnsType = [
   { dataIndex: 'tenant', key: 'tenant', title: 'Tenant', width: 160 },
   { dataIndex: 'path_hint', key: 'path', title: 'Path' },
   { key: 'snapshots', title: 'Snapshots', width: 150 },
-  { dataIndex: 'updated_at', key: 'updated_at', title: 'Pushed', width: 220 },
+  { key: 'sync', title: 'Sync', width: 260 },
+  { dataIndex: 'updated_at', key: 'updated_at', title: 'Pushed by', width: 180 },
   { key: 'actions', title: 'Actions', width: 230 },
 ];
 
@@ -471,6 +472,32 @@ function formatBytes(value: number) {
   return `${scaled.toFixed(precision)} ${units[unit]}`;
 }
 
+function formatSpeed(value?: number) {
+  return `${formatBytes(Number(value || 0))}/s`;
+}
+
+function formatEta(value?: number | null) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return '-';
+  }
+  if (seconds < 1) {
+    return '<1s';
+  }
+  const whole = Math.round(seconds);
+  const minutes = Math.floor(whole / 60);
+  const secs = whole % 60;
+  if (minutes <= 0) {
+    return `${secs}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  if (hours <= 0) {
+    return `${minutes}m ${secs}s`;
+  }
+  return `${hours}h ${remMinutes}m`;
+}
+
 onMounted(() => {
   if (tokenInput.value) {
     connect();
@@ -557,7 +584,7 @@ onMounted(() => {
             :pagination="{ pageSize: 8 }"
             :row-key="sourceRowKey"
             :row-class-name="sourceRowClassName"
-            :scroll="{ x: 1080 }"
+            :scroll="{ x: 1260 }"
             size="small"
           >
             <template #bodyCell="{ column, record }">
@@ -575,6 +602,45 @@ onMounted(() => {
                 <Tag>{{ record.snapshot_count }} snapshot(s)</Tag>
                 <div class="text-xs text-gray-500">
                   {{ formatBytes(record.bundle_bytes) }}
+                </div>
+              </template>
+              <template v-else-if="column.key === 'sync'">
+                <div>
+                  <Tag
+                    :color="
+                      record.sync_status?.status === 'failed'
+                        ? 'error'
+                        : record.sync_status?.status === 'completed'
+                          ? 'success'
+                          : record.sync_status?.status === 'running'
+                            ? 'warning'
+                            : 'default'
+                    "
+                  >
+                    {{ record.sync_status?.status || 'idle' }}
+                  </Tag>
+                  <Tag v-if="record.sync_status?.remote_only" color="warning">
+                    remote_only
+                  </Tag>
+                </div>
+                <div class="snapz-sync-bar">
+                  <div
+                    class="snapz-sync-bar-fill"
+                    :style="{
+                      width: `${Math.max(
+                        0,
+                        Math.min(100, Number(record.sync_status?.progress_percent || 0)),
+                      )}%`,
+                    }"
+                  />
+                </div>
+                <div class="text-xs text-gray-500">
+                  {{ Number(record.sync_status?.progress_percent || 0).toFixed(0) }}%
+                  · {{ formatSpeed(record.sync_status?.speed_bps) }}
+                  · ETA {{ formatEta(record.sync_status?.eta_seconds) }}
+                </div>
+                <div class="text-xs text-gray-500">
+                  Last {{ formatDate(record.last_sync_at || record.sync_status?.last_sync_at) }}
                 </div>
               </template>
               <template v-else-if="column.key === 'updated_at'">
@@ -980,6 +1046,20 @@ onMounted(() => {
   gap: 16px;
   align-items: flex-end;
   justify-content: space-between;
+}
+
+.snapz-sync-bar {
+  height: 6px;
+  margin: 6px 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eef2f7;
+}
+
+.snapz-sync-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #1677ff, #10b981);
 }
 
 :deep(.snapz-table-row-selected > td) {

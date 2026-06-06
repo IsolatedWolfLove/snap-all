@@ -343,6 +343,31 @@ ADMIN_UI_HTML = r"""<!doctype html>
       align-items: flex-start;
       margin-bottom: .75rem;
     }
+    .mini-progress {
+      display: grid;
+      gap: .25rem;
+      min-width: 8rem;
+    }
+    .mini-progress-head {
+      display: flex;
+      justify-content: space-between;
+      gap: .5rem;
+      color: var(--muted);
+      font-size: .72rem;
+      font-weight: 600;
+    }
+    .mini-bar {
+      height: .45rem;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #eef2f7;
+    }
+    .mini-bar span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #1677ff, #10b981);
+    }
     .token-screen {
       display: flex;
       justify-content: center;
@@ -533,6 +558,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
       filter: '',
       sourceFilter: '',
     };
+    let refreshTimer = null;
 
     const el = (id) => document.getElementById(id);
 
@@ -600,6 +626,24 @@ ADMIN_UI_HTML = r"""<!doctype html>
       return `${scaled.toFixed(precision)} ${units[unit]}`;
     }
 
+    function formatSpeed(value) {
+      return `${formatBytes(Number(value || 0))}/s`;
+    }
+
+    function formatEta(value) {
+      const seconds = Number(value);
+      if (!Number.isFinite(seconds) || seconds < 0) return '-';
+      if (seconds < 1) return '<1s';
+      const whole = Math.round(seconds);
+      const mins = Math.floor(whole / 60);
+      const secs = whole % 60;
+      if (mins <= 0) return `${secs}s`;
+      const hours = Math.floor(mins / 60);
+      const remMins = mins % 60;
+      if (hours <= 0) return `${mins}m ${secs}s`;
+      return `${hours}h ${remMins}m`;
+    }
+
     function filteredSources() {
       const needle = state.sourceFilter.trim().toLowerCase();
       if (!needle) return state.sources;
@@ -633,69 +677,96 @@ ADMIN_UI_HTML = r"""<!doctype html>
       el('sourcesTable').innerHTML = `
         <div class="panel-body">
           <div class="table-wrap">
-            <table style="min-width: 1080px;">
+            <table style="min-width: 1260px;">
               <thead>
                 <tr>
-                  <th style="width: 20%;">Image</th>
-                  <th style="width: 12%;">Tenant</th>
-                  <th style="width: 24%;">Path</th>
-                  <th style="width: 14%;">Snapshots</th>
-                  <th style="width: 17%;">Pushed</th>
-                  <th style="width: 13%;">Actions</th>
+                  <th style="width: 18%;">Image</th>
+                  <th style="width: 10%;">Tenant</th>
+                  <th style="width: 22%;">Path</th>
+                  <th style="width: 12%;">Snapshots</th>
+                  <th style="width: 20%;">Sync</th>
+                  <th style="width: 10%;">Pushed by</th>
+                  <th style="width: 8%;">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                ${sources.map((source) => `
-                  <tr class="${sourceKey(source) === state.selectedSourceKey ? 'selected' : ''}">
-                    <td>
-                      <div class="cell-title">${escapeHtml(source.display_name)}</div>
-                      <div class="cell-subtitle mono">${escapeHtml(source.id)}</div>
-                    </td>
-                    <td>${escapeHtml(source.tenant)}</td>
-                    <td>
-                      <div class="cell-title">${escapeHtml(source.path_hint || '-')}</div>
-                      <div class="cell-subtitle mono">${escapeHtml(source.origin_store_key || '')}</div>
-                    </td>
-                    <td>
-                      <span class="badge">${source.snapshot_count} snapshot(s)</span>
-                      <div class="cell-subtitle">${formatBytes(source.bundle_bytes)}</div>
-                    </td>
-                    <td>
-                      <div class="cell-title">${formatDate(source.updated_at)}</div>
-                      <div class="cell-subtitle">
-                        ${escapeHtml(source.pushed_by_username || source.pushed_by_device_name || '-')}
-                      </div>
-                    </td>
-                    <td>
-                      <div class="actions">
-                        <button
-                          data-action="details-source"
-                          data-id="${source.id}"
-                          data-tenant-id="${source.tenant_id}"
-                          type="button"
-                        >Details</button>
-                        <button
-                          data-action="rename-source"
-                          data-id="${source.id}"
-                          data-tenant-id="${source.tenant_id}"
-                          type="button"
-                        >Rename</button>
-                        <button
-                          class="danger"
-                          data-action="delete-source"
-                          data-id="${source.id}"
-                          data-tenant-id="${source.tenant_id}"
-                          type="button"
-                        >Delete</button>
-                      </div>
-                    </td>
-                  </tr>
-                  ${sourceKey(source) === state.selectedSourceKey ? `
-                    <tr class="source-snapshot-row">
-                      <td colspan="6">${renderSourceSnapshots()}</td>
+                ${sources.map((source) => {
+                  const sync = source.sync_status || {};
+                  const pct = Math.max(0, Math.min(100, Number(sync.progress_percent || 0)));
+                  const badgeClass = sync.status === 'failed'
+                    ? 'bad'
+                    : sync.status === 'completed'
+                      ? 'ok'
+                      : sync.status === 'running'
+                        ? 'warn'
+                        : '';
+                  return `
+                    <tr class="${sourceKey(source) === state.selectedSourceKey ? 'selected' : ''}">
+                      <td>
+                        <div class="cell-title">${escapeHtml(source.display_name)}</div>
+                        <div class="cell-subtitle mono">${escapeHtml(source.id)}</div>
+                      </td>
+                      <td>${escapeHtml(source.tenant)}</td>
+                      <td>
+                        <div class="cell-title">${escapeHtml(source.path_hint || '-')}</div>
+                        <div class="cell-subtitle mono">${escapeHtml(source.origin_store_key || '')}</div>
+                      </td>
+                      <td>
+                        <span class="badge">${source.snapshot_count} snapshot(s)</span>
+                        <div class="cell-subtitle">${formatBytes(source.bundle_bytes)}</div>
+                      </td>
+                      <td>
+                        <div class="toolbar" style="gap: .4rem; margin-bottom: .35rem;">
+                          <span class="badge ${badgeClass}">${escapeHtml(sync.status || 'idle')}</span>
+                          ${sync.remote_only ? '<span class="badge warn">remote_only</span>' : ''}
+                        </div>
+                        <div class="mini-progress">
+                          <div class="mini-progress-head">
+                            <span>${escapeHtml(sync.phase || '-')}</span>
+                            <span>${pct.toFixed(0)}%</span>
+                          </div>
+                          <div class="mini-bar"><span style="width: ${pct}%;"></span></div>
+                        </div>
+                        <div class="cell-subtitle">
+                          ${formatSpeed(sync.speed_bps)} · ETA ${formatEta(sync.eta_seconds)}
+                        </div>
+                        <div class="cell-subtitle">Last ${formatDate(source.last_sync_at || sync.last_sync_at)}</div>
+                      </td>
+                      <td>
+                        <div class="cell-title">${escapeHtml(source.pushed_by_username || source.pushed_by_device_name || '-')}</div>
+                        <div class="cell-subtitle">${formatDate(source.updated_at)}</div>
+                      </td>
+                      <td>
+                        <div class="actions">
+                          <button
+                            data-action="details-source"
+                            data-id="${source.id}"
+                            data-tenant-id="${source.tenant_id}"
+                            type="button"
+                          >Details</button>
+                          <button
+                            data-action="rename-source"
+                            data-id="${source.id}"
+                            data-tenant-id="${source.tenant_id}"
+                            type="button"
+                          >Rename</button>
+                          <button
+                            class="danger"
+                            data-action="delete-source"
+                            data-id="${source.id}"
+                            data-tenant-id="${source.tenant_id}"
+                            type="button"
+                          >Delete</button>
+                        </div>
+                      </td>
                     </tr>
-                  ` : ''}
-                `).join('')}
+                    ${sourceKey(source) === state.selectedSourceKey ? `
+                      <tr class="source-snapshot-row">
+                        <td colspan="7">${renderSourceSnapshots()}</td>
+                      </tr>
+                    ` : ''}
+                  `;
+                }).join('')}
               </tbody>
             </table>
           </div>
@@ -947,6 +1018,20 @@ ADMIN_UI_HTML = r"""<!doctype html>
       renderUsers();
       renderDevices();
       showNotice('Loaded current server state.');
+      scheduleRefreshIfRunning();
+    }
+
+    function scheduleRefreshIfRunning() {
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
+      if (!state.sources.some((source) => (source.sync_status || {}).status === 'running')) {
+        return;
+      }
+      refreshTimer = setTimeout(() => {
+        refreshAll().catch((error) => showNotice(error.message, true));
+      }, 1000);
     }
 
     async function loadDevices(userId, render = true) {
@@ -1041,6 +1126,10 @@ ADMIN_UI_HTML = r"""<!doctype html>
     });
 
     el('logoutButton').addEventListener('click', () => {
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
       sessionStorage.removeItem('snapzAdminToken');
       state.token = '';
       setAuthed(false);

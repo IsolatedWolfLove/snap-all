@@ -12,10 +12,34 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from snapz import __version__, api
+from snapz import __version__, api, remote
 from snapz.config import RuntimeConfig, default_config
+from snapz.preferences import get_config_value
 from snapz.store import DirEntry, SnapshotMeta
-from snapz.util import format_size, is_auto_snapshot, resolve_path
+from snapz.util import format_size, is_auto_snapshot, now_iso, resolve_path
+
+
+REMOTE_SYNC_STATUS_FILENAME = "_remote_sync_status.json"
+REMOTE_SYNC_IDLE_STATUS = {
+    "status": "idle",
+    "phase": "idle",
+    "source_id": "",
+    "key": "",
+    "display_name": "",
+    "bytes_sent": 0,
+    "bytes_total": 0,
+    "progress_percent": 0.0,
+    "speed_bps": 0.0,
+    "eta_seconds": None,
+    "last_sync_at": "",
+    "started_at": "",
+    "updated_at": "",
+    "finished_at": "",
+    "remote_only": False,
+    "server_url": "",
+    "message": "Not started",
+    "error": "",
+}
 
 
 CLIENT_WEB_HTML = r"""<!doctype html>
@@ -367,6 +391,42 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       display: grid;
       gap: .75rem;
     }
+    .sync-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: .75rem;
+      margin-top: .8rem;
+    }
+    .sync-metric {
+      padding: .7rem;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f8fafc;
+    }
+    .sync-metric span {
+      display: block;
+      color: var(--muted);
+      font-size: .72rem;
+      font-weight: 600;
+    }
+    .sync-metric strong {
+      display: block;
+      margin-top: .25rem;
+      font-size: .95rem;
+      line-height: 1.3;
+    }
+    .sync-progress {
+      display: grid;
+      gap: .4rem;
+    }
+    .sync-progress-head {
+      display: flex;
+      justify-content: space-between;
+      gap: .75rem;
+      color: var(--muted);
+      font-size: .78rem;
+      font-weight: 600;
+    }
     .storage-row {
       display: grid;
       gap: .35rem;
@@ -469,37 +529,50 @@ CLIENT_WEB_HTML = r"""<!doctype html>
           <div id="recentSnapshots"></div>
         </section>
 
-        <section class="panel">
-          <div class="panel-head">
-            <div class="panel-title">
-              <h2>Create snapshot</h2>
-              <p>Capture the current state of a local directory.</p>
-            </div>
-          </div>
-          <div class="panel-body">
-            <form id="createSnapshotForm" class="form-grid">
-              <label class="field">
-                Path
-                <input name="path" placeholder="/path/to/project" required>
-              </label>
-              <label class="field">
-                Name
-                <input name="name" placeholder="auto generated if empty">
-              </label>
-              <label class="field">
-                Note
-                <textarea name="note" placeholder="Optional context"></textarea>
-              </label>
-              <div class="toolbar">
-                <button class="primary" type="submit">Create snapshot</button>
-                <label class="toolbar" style="color: var(--muted); font-size: .82rem;">
-                  <input name="include_large" type="checkbox" style="width: 1rem; height: 1rem;">
-                  Include large files
-                </label>
+        <div class="stack">
+          <section class="panel">
+            <div class="panel-head">
+              <div class="panel-title">
+                <h2>Create snapshot</h2>
+                <p>Capture the current state of a local directory.</p>
               </div>
-            </form>
-          </div>
-        </section>
+            </div>
+            <div class="panel-body">
+              <form id="createSnapshotForm" class="form-grid">
+                <label class="field">
+                  Path
+                  <input name="path" placeholder="/path/to/project" required>
+                </label>
+                <label class="field">
+                  Name
+                  <input name="name" placeholder="auto generated if empty">
+                </label>
+                <label class="field">
+                  Note
+                  <textarea name="note" placeholder="Optional context"></textarea>
+                </label>
+                <div class="toolbar">
+                  <button class="primary" type="submit">Create snapshot</button>
+                  <label class="toolbar" style="color: var(--muted); font-size: .82rem;">
+                    <input name="include_large" type="checkbox" style="width: 1rem; height: 1rem;">
+                    Include large files
+                  </label>
+                </div>
+              </form>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div class="panel-title">
+                <h2>Remote push</h2>
+                <p>Upload local snapshots to the configured snapz-server.</p>
+              </div>
+              <button id="pushRemoteButton" class="primary" type="button">Push now</button>
+            </div>
+            <div id="remoteSyncPanel" class="panel-body"></div>
+          </section>
+        </div>
       </section>
     </section>
 
@@ -589,6 +662,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       sources: [],
       snapshots: [],
       stats: [],
+      remoteStatus: {},
       path: new URLSearchParams(location.search).get('path') || '.',
       filter: '',
       showAuto: false,
@@ -632,6 +706,25 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       const parsed = Date.parse(value);
       if (Number.isNaN(parsed)) return value;
       return new Date(parsed).toLocaleString();
+    }
+
+    function formatSpeed(value) {
+      const speed = Number(value || 0);
+      return `${formatBytes(speed)}/s`;
+    }
+
+    function formatEta(value) {
+      const seconds = Number(value);
+      if (!Number.isFinite(seconds) || seconds < 0) return '-';
+      if (seconds < 1) return '<1s';
+      const whole = Math.round(seconds);
+      const mins = Math.floor(whole / 60);
+      const secs = whole % 60;
+      if (mins <= 0) return `${secs}s`;
+      const hours = Math.floor(mins / 60);
+      const remMins = mins % 60;
+      if (hours <= 0) return `${mins}m ${secs}s`;
+      return `${hours}h ${remMins}m`;
     }
 
     async function api(path, options = {}) {
@@ -764,37 +857,102 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         el('sourcesTable').innerHTML = '<div class="empty">No sources found.</div>';
         return;
       }
+      const sync = state.remoteStatus || {};
       el('sourcesTable').innerHTML = `
         <div class="panel-body">
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th style="width: 36%;">Source</th>
+                  <th style="width: 30%;">Source</th>
                   <th style="width: 14%;">Snapshots</th>
-                  <th style="width: 22%;">Last used</th>
+                  <th style="width: 18%;">Last used</th>
                   <th style="width: 14%;">Storage</th>
+                  <th style="width: 12%;">Remote</th>
                   <th style="width: 14%;">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                ${state.sources.map((source) => `
-                  <tr class="${source.abspath === state.path ? 'selected' : ''}">
-                    <td>
-                      <div class="cell-title">${escapeHtml(source.name || source.abspath)}</div>
-                      <div class="cell-subtitle">${escapeHtml(source.abspath)}</div>
-                    </td>
-                    <td><span class="badge">${source.snapshot_count} snapshot(s)</span></td>
-                    <td>${formatDate(source.last_used)}</td>
-                    <td>${formatBytes(source.on_disk_bytes || 0)}</td>
-                    <td>
-                      <button data-action="select-source" data-path="${escapeHtml(source.abspath)}" type="button">Open</button>
-                    </td>
-                  </tr>
-                `).join('')}
+                ${state.sources.map((source) => {
+                  const isCurrentSync = sync.key && sync.key === source.key;
+                  const pct = Math.max(0, Math.min(100, Number(sync.progress_percent || 0)));
+                  return `
+                    <tr class="${source.abspath === state.path ? 'selected' : ''}">
+                      <td>
+                        <div class="cell-title">${escapeHtml(source.name || source.abspath)}</div>
+                        <div class="cell-subtitle">${escapeHtml(source.abspath)}</div>
+                      </td>
+                      <td><span class="badge">${source.snapshot_count} snapshot(s)</span></td>
+                      <td>${formatDate(source.last_used)}</td>
+                      <td>${formatBytes(source.on_disk_bytes || 0)}</td>
+                      <td>
+                        ${isCurrentSync ? `
+                          <span class="badge ${sync.status === 'failed' ? 'bad' : sync.status === 'completed' ? 'ok' : 'warn'}">${escapeHtml(sync.phase || sync.status)}</span>
+                          <div class="cell-subtitle">${pct.toFixed(0)}% · ${formatSpeed(sync.speed_bps)}</div>
+                        ` : '<span class="badge">-</span>'}
+                      </td>
+                      <td>
+                        <button data-action="select-source" data-path="${escapeHtml(source.abspath)}" type="button">Open</button>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
               </tbody>
             </table>
           </div>
+        </div>
+      `;
+    }
+
+    function renderRemoteSync() {
+      const sync = state.remoteStatus || {};
+      const configured = Boolean(sync.configured);
+      const running = Boolean(sync.running || sync.status === 'running');
+      const pct = Math.max(0, Math.min(100, Number(sync.progress_percent || 0)));
+      const badgeClass = !configured
+        ? 'warn'
+        : sync.status === 'failed'
+          ? 'bad'
+          : running
+            ? 'warn'
+            : sync.status === 'completed'
+              ? 'ok'
+              : '';
+      el('pushRemoteButton').disabled = !configured || running;
+      el('remoteSyncPanel').innerHTML = `
+        <div class="toolbar" style="justify-content: space-between; margin-bottom: .75rem;">
+          <span class="badge ${badgeClass}">
+            ${configured ? escapeHtml(sync.status || 'idle') : 'Not logged in'}
+          </span>
+          <span class="cell-subtitle">${sync.remote_only ? 'remote_only enabled' : 'local blobs retained'}</span>
+        </div>
+        <div class="sync-progress">
+          <div class="sync-progress-head">
+            <span>${escapeHtml(sync.display_name || sync.server_url || '-')}</span>
+            <span>${pct.toFixed(1)}%</span>
+          </div>
+          <div class="bar"><span style="width: ${pct}%;"></span></div>
+        </div>
+        <div class="sync-metrics">
+          <div class="sync-metric">
+            <span>Speed</span>
+            <strong>${formatSpeed(sync.speed_bps)}</strong>
+          </div>
+          <div class="sync-metric">
+            <span>ETA</span>
+            <strong>${formatEta(sync.eta_seconds)}</strong>
+          </div>
+          <div class="sync-metric">
+            <span>Transferred</span>
+            <strong>${formatBytes(sync.bytes_sent)} / ${formatBytes(sync.bytes_total)}</strong>
+          </div>
+          <div class="sync-metric">
+            <span>Last sync</span>
+            <strong>${formatDate(sync.last_sync_at)}</strong>
+          </div>
+        </div>
+        <div class="cell-subtitle" style="margin-top: .75rem;">
+          ${escapeHtml(sync.message || (configured ? 'Ready.' : 'Run snapz login first.'))}
         </div>
       `;
     }
@@ -827,6 +985,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       renderHealth();
       renderStats();
       renderSnapshots();
+      renderRemoteSync();
       renderSources();
       renderStorage();
       el('pathInput').value = state.path;
@@ -840,12 +999,13 @@ CLIENT_WEB_HTML = r"""<!doctype html>
           path: state.path,
           show_auto: String(state.showAuto),
         });
-        const [health, overview, sources, snapshots, stats] = await Promise.all([
+        const [health, overview, sources, snapshots, stats, remoteStatus] = await Promise.all([
           api('/api/health'),
           api('/api/overview'),
           api('/api/sources'),
           api(`/api/snapshots?${params}`),
           api('/api/stats'),
+          api('/api/remote/status'),
         ]);
         state.health = health;
         state.overview = overview;
@@ -853,11 +1013,48 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         state.snapshots = snapshots.snapshots || [];
         state.path = snapshots.path || state.path;
         state.stats = stats.stats || [];
+        state.remoteStatus = remoteStatus.status || {};
         renderAll();
         showNotice('Loaded current snapz state.');
       } catch (error) {
         showNotice(error.message, true);
       }
+    }
+
+    async function loadRemoteStatus() {
+      try {
+        const result = await api('/api/remote/status');
+        state.remoteStatus = result.status || {};
+        renderRemoteSync();
+        renderSources();
+      } catch (error) {
+        showNotice(error.message, true);
+      }
+    }
+
+    async function pushRemoteNow() {
+      try {
+        const result = await api('/api/remote/push', { method: 'POST' });
+        state.remoteStatus = result.status || {};
+        renderRemoteSync();
+        showNotice(result.message || 'Remote push requested.');
+        pollRemoteStatus();
+      } catch (error) {
+        showNotice(error.message, true);
+      }
+    }
+
+    let remotePollTimer = null;
+    function pollRemoteStatus() {
+      if (remotePollTimer) {
+        clearTimeout(remotePollTimer);
+      }
+      remotePollTimer = setTimeout(async () => {
+        await loadRemoteStatus();
+        if (state.remoteStatus.running || state.remoteStatus.status === 'running') {
+          pollRemoteStatus();
+        }
+      }, 800);
     }
 
     async function createSnapshot(event) {
@@ -970,6 +1167,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       button.addEventListener('click', () => setActiveView(button.dataset.viewTarget));
     });
     el('refreshButton').addEventListener('click', loadAll);
+    el('pushRemoteButton').addEventListener('click', pushRemoteNow);
     el('loadPathButton').addEventListener('click', () => {
       state.path = el('pathInput').value.trim() || '.';
       loadAll();
@@ -1007,7 +1205,11 @@ CLIENT_WEB_HTML = r"""<!doctype html>
     });
 
     state.path = el('pathInput').value = state.path;
-    loadAll();
+    loadAll().then(() => {
+      if (state.remoteStatus.running || state.remoteStatus.status === 'running') {
+        pollRemoteStatus();
+      }
+    });
   </script>
 </body>
 </html>
@@ -1018,6 +1220,8 @@ class SnapzWebServer(ThreadingHTTPServer):
     """HTTP server carrying snapz runtime configuration."""
 
     daemon_threads = True
+    push_lock: threading.Lock
+    push_thread: threading.Thread | None
 
     def __init__(
         self,
@@ -1028,6 +1232,8 @@ class SnapzWebServer(ThreadingHTTPServer):
     ) -> None:
         super().__init__(server_address, handler_class)
         self.config = config or default_config()
+        self.push_lock = threading.Lock()
+        self.push_thread = None
 
 
 def _json_default(value: Any) -> Any:
@@ -1084,6 +1290,169 @@ def _stats_to_dict(entry: api.StatsEntry) -> dict[str, Any]:
         "dedup_ratio": round(entry.dedup_ratio, 2),
         "largest": _snapshot_to_dict(entry.largest) if entry.largest else None,
     }
+
+
+def _remote_status_path(config: RuntimeConfig) -> Path:
+    return Path(config.root) / REMOTE_SYNC_STATUS_FILENAME
+
+
+def _configured_remote_only(config: RuntimeConfig) -> bool:
+    try:
+        return bool(get_config_value(Path(config.root), "remote_only"))
+    except (KeyError, ValueError):
+        return bool(config.remote_only)
+
+
+def _remote_auth_summary(config: RuntimeConfig) -> dict[str, Any]:
+    try:
+        auth = remote.load_auth(config)
+    except FileNotFoundError:
+        return {
+            "configured": False,
+            "server_url": "",
+            "tenant": "",
+            "username": "",
+            "device_id": "",
+            "device_name": "",
+        }
+    return {
+        "configured": True,
+        "server_url": auth.server_url,
+        "tenant": auth.tenant,
+        "username": auth.username,
+        "device_id": auth.device_id,
+        "device_name": auth.device_name,
+    }
+
+
+def _read_remote_sync_status(config: RuntimeConfig) -> dict[str, Any]:
+    status = dict(REMOTE_SYNC_IDLE_STATUS)
+    path = _remote_status_path(config)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    except (OSError, json.JSONDecodeError):
+        data = {
+            "status": "failed",
+            "phase": "failed",
+            "message": "Could not read remote sync status",
+        }
+    if isinstance(data, dict):
+        status.update(data)
+    status["remote_only"] = _configured_remote_only(config)
+    status.update(_remote_auth_summary(config))
+    return status
+
+
+def _write_remote_sync_status(config: RuntimeConfig, status: dict[str, Any]) -> None:
+    path = _remote_status_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current = _read_remote_sync_status(config)
+    current.update(status)
+    current["updated_at"] = str(status.get("updated_at") or now_iso())
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _start_remote_push(server: SnapzWebServer) -> tuple[bool, dict[str, Any]]:
+    with server.push_lock:
+        if server.push_thread is not None and server.push_thread.is_alive():
+            status = _read_remote_sync_status(server.config)
+            status["running"] = True
+            return False, status
+        started_at = now_iso()
+        _write_remote_sync_status(
+            server.config,
+            {
+                "status": "running",
+                "phase": "starting",
+                "source_id": "",
+                "key": "",
+                "display_name": "",
+                "bytes_sent": 0,
+                "bytes_total": 0,
+                "progress_percent": 0.0,
+                "speed_bps": 0.0,
+                "eta_seconds": None,
+                "started_at": started_at,
+                "finished_at": "",
+                "updated_at": started_at,
+                "remote_only": _configured_remote_only(server.config),
+                "message": "Starting push",
+                "error": "",
+            },
+        )
+        thread = threading.Thread(
+            target=_run_remote_push,
+            args=(server.config,),
+            daemon=True,
+            name="snapz-web-remote-push",
+        )
+        server.push_thread = thread
+        thread.start()
+        status = _read_remote_sync_status(server.config)
+        status["running"] = True
+        return True, status
+
+
+def _run_remote_push(config: RuntimeConfig) -> None:
+    started_at = now_iso()
+
+    def record(status: dict[str, Any]) -> None:
+        _write_remote_sync_status(
+            config,
+            {
+                **status,
+                "status": status.get("status") or "running",
+                "started_at": started_at,
+                "updated_at": now_iso(),
+                "remote_only": _configured_remote_only(config),
+                "error": "" if status.get("status") != "failed" else status.get("message", ""),
+            },
+        )
+
+    try:
+        outcome = remote.push_all(config=config, progress=record)
+        finished_at = now_iso()
+        total_bytes = sum(item.bundle_bytes for item in outcome.items)
+        status = "completed" if outcome.ok else "failed"
+        message = (
+            f"Pushed {len(outcome.items)} source(s), {format_size(total_bytes)}."
+            if outcome.ok
+            else "; ".join(failure.message for failure in outcome.failures)
+        )
+        _write_remote_sync_status(
+            config,
+            {
+                "status": status,
+                "phase": "finished" if outcome.ok else "failed",
+                "progress_percent": 100.0 if outcome.ok else 0.0,
+                "speed_bps": 0.0,
+                "eta_seconds": 0.0 if outcome.ok else None,
+                "last_sync_at": finished_at if outcome.ok else _read_remote_sync_status(config).get("last_sync_at", ""),
+                "finished_at": finished_at,
+                "updated_at": finished_at,
+                "remote_only": _configured_remote_only(config),
+                "message": message,
+                "error": "" if outcome.ok else message,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        finished_at = now_iso()
+        _write_remote_sync_status(
+            config,
+            {
+                "status": "failed",
+                "phase": "failed",
+                "finished_at": finished_at,
+                "updated_at": finished_at,
+                "remote_only": _configured_remote_only(config),
+                "message": str(exc),
+                "error": str(exc),
+            },
+        )
 
 
 def _overview(config: RuntimeConfig) -> dict[str, Any]:
@@ -1160,6 +1529,11 @@ class SnapzWebHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/stats":
                 rows = api.stats(config=self.server.config)
                 self._send_json({"stats": [_stats_to_dict(entry) for entry in rows]})
+            elif parsed.path == "/api/remote/status":
+                status = _read_remote_sync_status(self.server.config)
+                thread = self.server.push_thread
+                status["running"] = thread is not None and thread.is_alive()
+                self._send_json({"status": status})
             elif parsed.path == "/api/snapshots":
                 self._handle_list_snapshots(query)
             elif parsed.path.startswith("/api/snapshots/"):
@@ -1182,6 +1556,20 @@ class SnapzWebHandler(BaseHTTPRequestHandler):
                 self._handle_init_source(body)
             elif parsed.path == "/api/gc":
                 self._handle_gc(body)
+            elif parsed.path == "/api/remote/push":
+                started, status = _start_remote_push(self.server)
+                self._send_json(
+                    {
+                        "started": started,
+                        "status": status,
+                        "message": (
+                            "Remote push started."
+                            if started
+                            else "Remote push is already running."
+                        ),
+                    },
+                    HTTPStatus.ACCEPTED if started else HTTPStatus.OK,
+                )
             else:
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:  # noqa: BLE001
@@ -1456,4 +1844,3 @@ def run_in_thread(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
-

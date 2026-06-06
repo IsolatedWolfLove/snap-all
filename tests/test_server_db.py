@@ -92,6 +92,52 @@ def test_admin_source_helpers_update_name_and_delete_bundle(tmp_path):
     assert db.delete_admin_source(root, ctx.tenant_id, source_id) is False
 
 
+def test_source_sync_status_tracks_progress_and_last_sync(tmp_path):
+    root = tmp_path / "server"
+    db.create_user(root, "acme", "alice", "secret")
+    ctx, _ = db.login_device(root, "acme", "alice", "secret", "laptop")
+    source_id = "src_abc"
+
+    db.update_source_sync_status(
+        root,
+        ctx,
+        source_id,
+        status="running",
+        phase="uploading_delta",
+        display_name="project",
+        origin_store_key="local-key",
+        bytes_sent=50,
+        bytes_total=100,
+        progress_percent=50,
+        speed_bps=25,
+        eta_seconds=2,
+        remote_only=True,
+    )
+
+    row = db.list_admin_sources(root)[0]
+    assert row["display_name"] == "project"
+    assert row["sync_status"] == "running"
+    assert row["sync_phase"] == "uploading_delta"
+    assert row["sync_progress_percent"] == 50
+    assert row["sync_remote_only"] == 1
+    assert row["last_sync_at"] == ""
+
+    db.update_source_sync_status(
+        root,
+        ctx,
+        source_id,
+        status="completed",
+        phase="finished",
+        bytes_sent=100,
+        bytes_total=100,
+        progress_percent=100,
+    )
+    row = db.list_admin_sources(root)[0]
+    assert row["sync_status"] == "completed"
+    assert row["sync_progress_percent"] == 100
+    assert row["last_sync_at"]
+
+
 def test_admin_source_rename_survives_next_push(tmp_path):
     root = tmp_path / "server"
     db.create_user(root, "acme", "alice", "secret")

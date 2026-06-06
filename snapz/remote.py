@@ -11,9 +11,10 @@ import platform
 import ssl
 import tarfile
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
 from snapz import api, cas
@@ -24,6 +25,8 @@ from snapz.util import format_size
 
 REMOTE_CONFIG_FILENAME = "_remote.json"
 CHUNK_SIZE = 1024 * 1024
+SyncProgressCallback = Callable[[dict[str, Any]], None]
+UploadProgressCallback = Callable[[int, int, float], None]
 
 
 @dataclass
@@ -189,7 +192,12 @@ def login(
     return auth
 
 
-def push_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
+def push_all(
+    *,
+    config: Optional[RuntimeConfig] = None,
+    progress: SyncProgressCallback | None = None,
+    report_to_server: bool = True,
+) -> SyncOutcome:
     cfg = config or default_config()
     auth = load_auth(cfg)
     store = Store(cfg)
@@ -200,13 +208,48 @@ def push_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
     for entry in entries:
         if not entry.snapshots:
             continue
+        source_id = ""
         try:
             with tempfile.TemporaryDirectory(prefix="snapz-push-") as tmpdir:
                 bundle = Path(tmpdir) / f"{entry.key}.snapz"
+                _emit_progress(
+                    progress,
+                    phase="exporting",
+                    status="running",
+                    source_id="",
+                    key=entry.key,
+                    display_name=Path(entry.meta.abspath).name or entry.key,
+                    remote_only=cfg.remote_only,
+                    message="Exporting source bundle",
+                )
                 exported = _export_entry_bundle(entry, bundle, cfg)
                 meta = read_bundle_meta(bundle)
                 source = dict(meta.get("source") or {})
                 source_id = source_id_for(source)
+                display_name = Path(source.get("abspath") or exported.source).name or entry.key
+                _emit_progress(
+                    progress,
+                    phase="checking",
+                    status="running",
+                    source_id=source_id,
+                    key=entry.key,
+                    display_name=display_name,
+                    remote_only=cfg.remote_only,
+                    message="Checking remote state",
+                )
+                if report_to_server:
+                    _report_sync_status(
+                        auth,
+                        source_id,
+                        {
+                            "status": "running",
+                            "phase": "checking",
+                            "display_name": display_name,
+                            "key": entry.key,
+                            "remote_only": cfg.remote_only,
+                            "message": "Checking remote state",
+                        },
+                    )
                 remote_index = _get_remote_index(auth, source_id)
                 if remote_index is None:
                     delta = bundle
@@ -232,12 +275,28 @@ def push_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
                         != remote_snapshot_fingerprints.get(name)
                     }
                     if not missing_snapshots and not missing_blobs:
+                        completed = {
+                            "status": "completed",
+                            "phase": "skipped",
+                            "source_id": source_id,
+                            "key": entry.key,
+                            "display_name": display_name,
+                            "bytes_sent": 0,
+                            "bytes_total": 0,
+                            "progress_percent": 100.0,
+                            "speed_bps": 0.0,
+                            "eta_seconds": 0.0,
+                            "remote_only": cfg.remote_only,
+                            "message": "Already up to date",
+                        }
+                        _emit_progress(progress, **completed)
+                        if report_to_server:
+                            _report_sync_status(auth, source_id, completed)
                         outcome.items.append(
                             SyncItem(
                                 source_id=source_id,
                                 key=entry.key,
-                                display_name=Path(source.get("abspath") or exported.source).name
-                                or entry.key,
+                                display_name=display_name,
                                 snapshot_count=exported.snapshot_count,
                                 bundle_bytes=0,
                                 archived=entry.archived,
@@ -255,15 +314,30 @@ def push_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
                         include_snapshot_names=missing_snapshots,
                     )
                     delta_meta = read_bundle_meta(delta)
-                delta_bytes = delta.stat().st_size
+                upload_bytes = delta.stat().st_size
                 payload = {
                     "source": source,
                     "snapshot_count": len(list(delta_meta.get("snapshots") or [])),
-                    "bundle_bytes": delta_bytes,
+                    "bundle_bytes": upload_bytes,
                     "bundle_sha256": _sha256_file(delta),
                 }
+                item_bundle_bytes = upload_bytes
                 try:
-                    _upload_delta(auth, source_id, payload, delta)
+                    _upload_delta(
+                        auth,
+                        source_id,
+                        payload,
+                        delta,
+                        on_progress=_source_upload_progress(
+                            progress,
+                            auth if report_to_server else None,
+                            source_id,
+                            entry.key,
+                            display_name,
+                            cfg.remote_only,
+                            "delta",
+                        ),
+                    )
                 except RemoteError as exc:
                     if exc.status != 404:
                         raise
@@ -273,25 +347,68 @@ def push_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
                         "bundle_bytes": bundle.stat().st_size,
                         "bundle_sha256": _sha256_file(bundle),
                     }
-                    _upload_bundle(auth, source_id, bundle_payload, bundle)
+                    item_bundle_bytes = bundle.stat().st_size
+                    _upload_bundle(
+                        auth,
+                        source_id,
+                        bundle_payload,
+                        bundle,
+                        on_progress=_source_upload_progress(
+                            progress,
+                            auth if report_to_server else None,
+                            source_id,
+                            entry.key,
+                            display_name,
+                            cfg.remote_only,
+                            "bundle",
+                        ),
+                    )
                 outcome.items.append(
                     SyncItem(
                         source_id=source_id,
                         key=entry.key,
-                        display_name=Path(source.get("abspath") or exported.source).name
-                        or entry.key,
+                        display_name=display_name,
                         snapshot_count=exported_delta.snapshot_count,
-                        bundle_bytes=delta_bytes,
+                        bundle_bytes=item_bundle_bytes,
                         archived=entry.archived,
                     )
                 )
+                completed = {
+                    "status": "completed",
+                    "phase": "uploaded",
+                    "source_id": source_id,
+                    "key": entry.key,
+                    "display_name": display_name,
+                    "bytes_sent": item_bundle_bytes,
+                    "bytes_total": item_bundle_bytes,
+                    "progress_percent": 100.0,
+                    "speed_bps": 0.0,
+                    "eta_seconds": 0.0,
+                    "remote_only": cfg.remote_only,
+                    "message": "Upload complete",
+                }
+                _emit_progress(progress, **completed)
+                if report_to_server:
+                    _report_sync_status(auth, source_id, completed)
                 uploaded_keys.add(entry.key)
                 uploaded_blobs.update(str(sha) for sha in meta.get("blobs") or [])
         except Exception as exc:  # keep syncing independent sources
+            failed = {
+                "status": "failed",
+                "phase": "failed",
+                "source_id": source_id,
+                "key": entry.key,
+                "display_name": Path(entry.meta.abspath).name or entry.key,
+                "remote_only": cfg.remote_only,
+                "message": str(exc),
+            }
+            _emit_progress(progress, **failed)
+            if report_to_server and source_id:
+                _report_sync_status(auth, source_id, failed)
             outcome.failures.append(
                 SyncFailure(
                     key=entry.key,
-                    source_id="",
+                    source_id=source_id,
                     message=str(exc),
                 )
             )
@@ -726,11 +843,114 @@ def _request_json(
     return data
 
 
+def _emit_progress(callback: SyncProgressCallback | None, **status: Any) -> None:
+    if callback is None:
+        return
+    payload = dict(status)
+    payload.setdefault("updated_at", now_iso())
+    callback(payload)
+
+
+def _report_sync_status(
+    auth: RemoteAuth,
+    source_id: str,
+    status: dict[str, Any],
+) -> None:
+    if not source_id:
+        return
+    payload = {
+        key: value
+        for key, value in status.items()
+        if key
+        in {
+            "status",
+            "phase",
+            "display_name",
+            "key",
+            "bytes_sent",
+            "bytes_total",
+            "progress_percent",
+            "speed_bps",
+            "eta_seconds",
+            "remote_only",
+            "message",
+            "updated_at",
+        }
+    }
+    try:
+        _request_json(
+            "POST",
+            auth.server_url,
+            f"/api/sources/{source_id}/sync-status",
+            payload=payload,
+            token=auth.token,
+            **auth.tls_kwargs(),
+        )
+    except RemoteError as exc:
+        if exc.status in {404, 405}:
+            return
+        return
+
+
+def _source_upload_progress(
+    callback: SyncProgressCallback | None,
+    auth: RemoteAuth | None,
+    source_id: str,
+    key: str,
+    display_name: str,
+    remote_only: bool,
+    kind: str,
+) -> UploadProgressCallback:
+    started = time.monotonic()
+    last_report = 0.0
+    last_percent = -1.0
+
+    def emit(sent: int, total: int, _elapsed: float) -> None:
+        nonlocal last_report, last_percent
+        now = time.monotonic()
+        elapsed = max(0.001, now - started)
+        speed = sent / elapsed if sent > 0 else 0.0
+        remaining = max(0, total - sent)
+        eta = remaining / speed if speed > 0 else None
+        percent = round((sent / total) * 100, 1) if total > 0 else 100.0
+        should_report = (
+            sent >= total
+            or last_report == 0.0
+            or now - last_report >= 0.5
+            or percent - last_percent >= 2.0
+        )
+        if not should_report:
+            return
+        last_report = now
+        last_percent = percent
+        status = {
+            "status": "running",
+            "phase": f"uploading_{kind}",
+            "source_id": source_id,
+            "key": key,
+            "display_name": display_name,
+            "bytes_sent": sent,
+            "bytes_total": total,
+            "progress_percent": percent,
+            "speed_bps": speed,
+            "eta_seconds": eta,
+            "remote_only": remote_only,
+            "message": f"Uploading {kind}",
+        }
+        _emit_progress(callback, **status)
+        if auth is not None:
+            _report_sync_status(auth, source_id, status)
+
+    return emit
+
+
 def _upload_bundle(
     auth: RemoteAuth,
     source_id: str,
     metadata: dict[str, Any],
     bundle: Path,
+    *,
+    on_progress: UploadProgressCallback | None = None,
 ) -> None:
     meta_raw = json.dumps(metadata, separators=(",", ":")).encode("utf-8")
     headers = {
@@ -744,6 +964,7 @@ def _upload_bundle(
         f"/api/sources/{source_id}/bundle",
         headers=headers,
         upload=bundle,
+        on_upload_progress=on_progress,
         **auth.tls_kwargs(),
     )
     if status >= 400:
@@ -755,6 +976,8 @@ def _upload_delta(
     source_id: str,
     metadata: dict[str, Any],
     bundle: Path,
+    *,
+    on_progress: UploadProgressCallback | None = None,
 ) -> None:
     meta_raw = json.dumps(metadata, separators=(",", ":")).encode("utf-8")
     headers = {
@@ -768,6 +991,7 @@ def _upload_delta(
         f"/api/sources/{source_id}/delta",
         headers=headers,
         upload=bundle,
+        on_upload_progress=on_progress,
         **auth.tls_kwargs(),
     )
     if status >= 400:
@@ -828,6 +1052,7 @@ def _http_request(
     body: Optional[bytes] = None,
     upload: Optional[Path] = None,
     download: Optional[Path] = None,
+    on_upload_progress: UploadProgressCallback | None = None,
     tls_ca: str = "",
     tls_client_cert: str = "",
     tls_client_key: str = "",
@@ -853,17 +1078,25 @@ def _http_request(
     try:
         if upload is not None:
             request_headers = dict(headers or {})
-            request_headers["Content-Length"] = str(upload.stat().st_size)
+            upload_size = upload.stat().st_size
+            request_headers["Content-Length"] = str(upload_size)
             conn.putrequest(method, request_path)
             for name, value in request_headers.items():
                 conn.putheader(name, value)
             conn.endheaders()
+            sent = 0
+            started = time.monotonic()
+            if on_upload_progress is not None:
+                on_upload_progress(0, upload_size, 0.0)
             with open(upload, "rb") as src:
                 while True:
                     chunk = src.read(CHUNK_SIZE)
                     if not chunk:
                         break
                     conn.send(chunk)
+                    sent += len(chunk)
+                    if on_upload_progress is not None:
+                        on_upload_progress(sent, upload_size, time.monotonic() - started)
             response = conn.getresponse()
         else:
             conn.request(method, request_path, body=body, headers=headers or {})

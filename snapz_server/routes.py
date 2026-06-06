@@ -27,6 +27,17 @@ def source_id_from_delta_path(path: str) -> str:
     return safe_id(parts[2])
 
 
+def source_id_from_sync_status_path(path: str) -> str:
+    parts = path.strip("/").split("/")
+    if (
+        len(parts) != 4
+        or parts[:2] != ["api", "sources"]
+        or parts[3] != "sync-status"
+    ):
+        return ""
+    return safe_id(parts[2])
+
+
 def source_object_ref_from_path(path: str) -> tuple[str, str] | None:
     parts = path.strip("/").split("/")
     if len(parts) != 5 or parts[:2] != ["api", "sources"] or parts[3] != "objects":

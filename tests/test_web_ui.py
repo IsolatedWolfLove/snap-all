@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
 
-from snapz import api, cli, web_ui
+from snapz import api, cli, remote, web_ui
 
 
 @pytest.fixture
@@ -115,3 +116,71 @@ def test_web_api_snapshot_not_found_returns_404(config, project_dir):
 
     assert status == 404
     assert "missing" in payload["error"]
+
+
+def test_web_remote_status_and_push_runs_in_background(config, monkeypatch):
+    def fake_push_all(*, config, progress=None, report_to_server=True):
+        assert report_to_server is True
+        if progress is not None:
+            progress({
+                "status": "running",
+                "phase": "uploading_delta",
+                "key": "local-key",
+                "display_name": "project",
+                "bytes_sent": 5,
+                "bytes_total": 10,
+                "progress_percent": 50.0,
+                "speed_bps": 2.0,
+                "eta_seconds": 2.5,
+            })
+        return remote.SyncOutcome(
+            server_url="http://server",
+            items=[
+                remote.SyncItem(
+                    source_id="src_123",
+                    key="local-key",
+                    display_name="project",
+                    snapshot_count=1,
+                    bundle_bytes=10,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(remote, "push_all", fake_push_all)
+    monkeypatch.setattr(
+        remote,
+        "load_auth",
+        lambda cfg: remote.RemoteAuth(
+            server_url="http://server",
+            tenant="acme",
+            username="alice",
+            token="secret",
+            device_id="dev_1",
+            device_name="laptop",
+        ),
+    )
+
+    server, thread = web_ui.run_in_thread(config=config)
+    try:
+        url = web_ui.server_url(server, "127.0.0.1")
+        initial = _json(url, "/api/remote/status")
+        assert initial["status"]["configured"] is True
+        started = _json(url, "/api/remote/push", method="POST")
+        assert started["started"] is True
+        deadline = time.time() + 2
+        final = started
+        while time.time() < deadline:
+            final = _json(url, "/api/remote/status")
+            if final["status"]["status"] == "completed":
+                break
+            time.sleep(0.05)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    status = final["status"]
+    assert status["status"] == "completed"
+    assert status["last_sync_at"]
+    assert status["server_url"] == "http://server"
+    assert status["username"] == "alice"

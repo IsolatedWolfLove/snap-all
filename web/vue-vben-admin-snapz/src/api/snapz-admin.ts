@@ -35,10 +35,27 @@ export interface SnapzAdminDevice {
   username: string;
 }
 
+export interface SnapzSyncStatus {
+  bytes_sent: number;
+  bytes_total: number;
+  error: string;
+  eta_seconds: number | null;
+  finished_at: string;
+  last_sync_at: string;
+  phase: string;
+  progress_percent: number;
+  remote_only: boolean;
+  speed_bps: number;
+  started_at: string;
+  status: string;
+  updated_at: string;
+}
+
 export interface SnapzAdminSource {
   bundle_bytes: number;
   display_name: string;
   id: string;
+  last_sync_at: string;
   origin_store_key: string;
   path_hint: string;
   pushed_by_device: string;
@@ -47,6 +64,7 @@ export interface SnapzAdminSource {
   pushed_by_username: string;
   snapshot_count: number;
   source_marker: string;
+  sync_status: SnapzSyncStatus;
   tenant: string;
   tenant_id: string;
   updated_at: string;
