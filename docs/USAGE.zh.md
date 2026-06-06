@@ -160,7 +160,14 @@ snapz --no-zstd save . -n gzip-test -y
 | `SNAPZ_ZSTD_LEVEL` | zstd 压缩等级，默认 `3` |
 | `SNAPZ_GZIP_LEVEL` | gzip 压缩等级，默认 `6` |
 | `SNAPZ_SERVER_DATA` | snapz-server 默认数据目录 |
+| `SNAPZ_SERVER_HOST` | snapz-server 默认监听地址 |
+| `SNAPZ_SERVER_PORT` | snapz-server 默认监听端口 |
 | `SNAPZ_SERVER_ADMIN_TOKEN` | snapz-server 管理接口 token |
+| `SNAPZ_SERVER_MAX_BUNDLE_MB` | snapz-server 单次上传 bundle 上限，单位 MiB |
+| `SNAPZ_SERVER_CORS_ORIGIN` | snapz-server 允许的跨域管理前端 Origin，多个用逗号分隔 |
+| `SNAPZ_SERVER_TLS_CERT` | snapz-server HTTPS 证书路径 |
+| `SNAPZ_SERVER_TLS_KEY` | snapz-server HTTPS 私钥路径 |
+| `SNAPZ_SERVER_TLS_CLIENT_CA` | snapz-server mTLS 客户端 CA 路径 |
 
 示例：
 
@@ -767,6 +774,17 @@ snapz-server --data /srv/snapz user add acme alice --password 'change-me'
 ```
 
 ### 13.2 启动服务端
+
+推荐用 `snapz-server init` 从头初始化服务端配置和 systemd 自启动：
+
+```bash
+sudo snapz-server init --data /srv/snapz --host 0.0.0.0 --port 8765
+sudo editor /etc/default/snapz-server
+```
+
+`init` 会创建 `/etc/default/snapz-server`、初始化数据目录、写入
+`/etc/systemd/system/snapz-server.service`，并启用/启动服务。已有配置默认保留；
+需要重写时加 `--force`。之后用 `sudo snapz-server update` 升级程序，配置不会被覆盖。
 
 本机测试：
 

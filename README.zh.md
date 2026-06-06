@@ -53,6 +53,11 @@ pipx install "dist/snapz_cli-*.whl[zstd]"
 pip install --user "dist/snapz_cli-*.whl[zstd]"
 ```
 
+Debian 包也会安装 `snapz-server.service` 和服务端运行配置
+`/etc/default/snapz-server`；这个配置文件是保留配置，升级时不会静默覆盖本机修改。
+执行 `sudo snapz-server init` 会创建服务端配置、初始化数据目录，并启用/启动
+systemd 服务。之后用 `sudo snapz-server update` 升级程序时会保留已有配置。
+
 ### 更新 / 卸载
 
 ```bash

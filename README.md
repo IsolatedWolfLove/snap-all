@@ -60,6 +60,14 @@ pipx install "dist/snapz_cli-*.whl[zstd]"
 pip install --user "dist/snapz_cli-*.whl[zstd]"
 ```
 
+The Debian package also installs `snapz-server.service` and the preserved
+runtime config file `/etc/default/snapz-server`; package upgrades keep local
+edits to that config.
+
+Use `sudo snapz-server init` to create the server config, initialize the data
+directory, and enable/start the systemd service. Later, `sudo snapz-server
+update` upgrades the installed package while leaving the config untouched.
+
 ### Update / uninstall
 
 ```bash

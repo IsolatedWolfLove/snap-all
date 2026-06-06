@@ -160,7 +160,42 @@ snapz-server --data /srv/snapz run \
 
 ### 5. Server 机器：用 systemd 常驻运行
 
-如果希望 server 开机自动启动，可以创建 systemd service：
+推荐直接用 `snapz-server init` 从头初始化服务端配置和自启动文件：
+
+```bash
+sudo snapz-server init \
+  --data /srv/snapz \
+  --host 0.0.0.0 \
+  --port 8765
+sudo editor /etc/default/snapz-server
+```
+
+`init` 会创建 `/etc/default/snapz-server`、初始化数据目录、写入
+`/etc/systemd/system/snapz-server.service`，并执行 `systemctl daemon-reload`
+和 `systemctl enable --now snapz-server`。如果配置文件或 service 已经存在，
+默认会保留原文件；需要从头重写时加 `--force`。
+
+之后升级程序用：
+
+```bash
+sudo snapz-server update
+```
+
+`update` 只升级程序，不覆盖 `/etc/default/snapz-server`。
+
+如果不用 `snapz-server init`，也可以手动创建同样风格的配置和 systemd service：
+
+```bash
+sudo tee /etc/default/snapz-server >/dev/null <<'EOF'
+SNAPZ_SERVER_DATA=/srv/snapz
+SNAPZ_SERVER_HOST=0.0.0.0
+SNAPZ_SERVER_PORT=8765
+SNAPZ_SERVER_ADMIN_TOKEN=change-this-admin-token
+SNAPZ_SERVER_TLS_CERT=
+SNAPZ_SERVER_TLS_KEY=
+SNAPZ_SERVER_TLS_CLIENT_CA=
+EOF
+```
 
 ```bash
 sudo tee /etc/systemd/system/snapz-server.service >/dev/null <<'EOF'
@@ -173,8 +208,8 @@ Wants=network-online.target
 Type=simple
 User=snapz
 Group=snapz
-Environment=SNAPZ_SERVER_ADMIN_TOKEN=change-this-admin-token
-ExecStart=/usr/local/bin/snapz-server --data /srv/snapz run --host 0.0.0.0 --port 8765
+EnvironmentFile=-/etc/default/snapz-server
+ExecStart=/usr/local/bin/snapz-server --config /etc/default/snapz-server run
 Restart=on-failure
 RestartSec=5
 
@@ -183,10 +218,11 @@ WantedBy=multi-user.target
 EOF
 ```
 
-如果你用 HTTPS，把 `ExecStart` 改成：
+如果你用 HTTPS，在 `/etc/default/snapz-server` 里填写：
 
 ```text
-ExecStart=/usr/local/bin/snapz-server --data /srv/snapz run --host 0.0.0.0 --port 8765 --tls-cert /etc/snapz/tls/fullchain.pem --tls-key /etc/snapz/tls/privkey.pem
+SNAPZ_SERVER_TLS_CERT=/etc/snapz/tls/fullchain.pem
+SNAPZ_SERVER_TLS_KEY=/etc/snapz/tls/privkey.pem
 ```
 
 启动并设置开机自启：

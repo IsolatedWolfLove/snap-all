@@ -188,6 +188,8 @@ build_deb() {
     rm -rf "$deb_root"
     mkdir -p \
         "$deb_root/DEBIAN" \
+        "$deb_root/etc/default" \
+        "$deb_root/lib/systemd/system" \
         "$deb_root/usr/bin" \
         "$deb_root/usr/share/doc/$package"
 
@@ -196,7 +198,54 @@ build_deb() {
     install -m 0644 "$ROOT/README.md" "$deb_root/usr/share/doc/$package/README.md"
     install -m 0644 "$ROOT/LICENSE" "$deb_root/usr/share/doc/$package/copyright"
 
-    installed_size="$(du -sk "$deb_root/usr" | awk '{print $1}')"
+    cat > "$deb_root/etc/default/snapz-server" <<'EOF'
+# snapz-server runtime configuration.
+#
+# This file is a Debian conffile. Package upgrades preserve local edits
+# and will not silently replace your server settings.
+
+SNAPZ_SERVER_DATA=/srv/snapz
+SNAPZ_SERVER_HOST=0.0.0.0
+SNAPZ_SERVER_PORT=8765
+
+# Required to enable /admin and /api/admin. Generate a strong value before
+# exposing the service:
+#   openssl rand -hex 32
+SNAPZ_SERVER_ADMIN_TOKEN=
+
+# Optional settings.
+SNAPZ_SERVER_MAX_BUNDLE_MB=10240
+SNAPZ_SERVER_CORS_ORIGIN=
+SNAPZ_SERVER_TLS_CERT=
+SNAPZ_SERVER_TLS_KEY=
+SNAPZ_SERVER_TLS_CLIENT_CA=
+EOF
+    chmod 0644 "$deb_root/etc/default/snapz-server"
+
+    cat > "$deb_root/lib/systemd/system/snapz-server.service" <<'EOF'
+[Unit]
+Description=snapz remote sync server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/snapz-server
+ExecStart=/usr/bin/snapz-server --config /etc/default/snapz-server run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 0644 "$deb_root/lib/systemd/system/snapz-server.service"
+
+    cat > "$deb_root/DEBIAN/conffiles" <<'EOF'
+/etc/default/snapz-server
+EOF
+    chmod 0644 "$deb_root/DEBIAN/conffiles"
+
+    installed_size="$(du -sk "$deb_root/usr" "$deb_root/etc" "$deb_root/lib" | awk '{sum += $1} END {print sum}')"
     cat > "$deb_root/DEBIAN/control" <<EOF
 Package: $package
 Version: $version
@@ -257,6 +306,9 @@ smoke() {
         dpkg-deb --contents "$deb" > "$deb_contents" || fail=1
         grep -q 'usr/bin/snapz$' "$deb_contents" || fail=1
         grep -q 'usr/bin/snapz-server$' "$deb_contents" || fail=1
+        grep -q 'etc/default/snapz-server$' "$deb_contents" || fail=1
+        grep -q 'lib/systemd/system/snapz-server.service$' "$deb_contents" || fail=1
+        dpkg-deb --ctrl-tarfile "$deb" | tar -xOf - ./conffiles | grep -q '^/etc/default/snapz-server$' || fail=1
     fi
     return "$fail"
 }
