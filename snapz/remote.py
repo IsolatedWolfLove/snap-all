@@ -208,25 +208,12 @@ def push_all(
     for entry in entries:
         if not entry.snapshots:
             continue
-        source_id = ""
+        source = _entry_source_payload(entry)
+        source_id = source_id_for(source)
+        display_name = Path(source.get("abspath") or entry.meta.abspath).name or entry.key
         try:
             with tempfile.TemporaryDirectory(prefix="snapz-push-") as tmpdir:
                 bundle = Path(tmpdir) / f"{entry.key}.snapz"
-                _emit_progress(
-                    progress,
-                    phase="exporting",
-                    status="running",
-                    source_id="",
-                    key=entry.key,
-                    display_name=Path(entry.meta.abspath).name or entry.key,
-                    remote_only=cfg.remote_only,
-                    message="Exporting source bundle",
-                )
-                exported = _export_entry_bundle(entry, bundle, cfg)
-                meta = read_bundle_meta(bundle)
-                source = dict(meta.get("source") or {})
-                source_id = source_id_for(source)
-                display_name = Path(source.get("abspath") or exported.source).name or entry.key
                 _emit_progress(
                     progress,
                     phase="checking",
@@ -252,22 +239,31 @@ def push_all(
                     )
                 remote_index = _get_remote_index(auth, source_id)
                 if remote_index is None:
+                    _emit_progress(
+                        progress,
+                        phase="exporting",
+                        status="running",
+                        source_id=source_id,
+                        key=entry.key,
+                        display_name=display_name,
+                        remote_only=cfg.remote_only,
+                        message="Exporting source bundle",
+                    )
+                    exported = _export_entry_bundle(entry, bundle, cfg)
+                    meta = read_bundle_meta(bundle)
                     delta = bundle
                     exported_delta = exported
                     delta_meta = meta
                 else:
-                    missing_blobs = set(meta.get("blobs") or []) - set(
+                    local_index = _entry_local_index(store, entry, cfg)
+                    missing_blobs = set(local_index["blobs"]) - set(
                         remote_index.get("blobs") or []
                     )
                     remote_snapshot_fingerprints = _remote_snapshot_fingerprints(
                         remote_index
                     )
-                    local_snapshot_names = {
-                        str(row.get("name") or "")
-                        for row in list(meta.get("snapshots") or [])
-                        if isinstance(row, dict)
-                    }
-                    local_snapshot_fingerprints = _local_snapshot_fingerprints(bundle)
+                    local_snapshot_names = set(local_index["snapshot_names"])
+                    local_snapshot_fingerprints = dict(local_index["fingerprints"])
                     missing_snapshots = {
                         name
                         for name in local_snapshot_names
@@ -297,15 +293,25 @@ def push_all(
                                 source_id=source_id,
                                 key=entry.key,
                                 display_name=display_name,
-                                snapshot_count=exported.snapshot_count,
+                                snapshot_count=len(entry.snapshots),
                                 bundle_bytes=0,
                                 archived=entry.archived,
                             )
                         )
                         uploaded_keys.add(entry.key)
-                        uploaded_blobs.update(str(sha) for sha in meta.get("blobs") or [])
+                        uploaded_blobs.update(str(sha) for sha in local_index["blobs"])
                         continue
                     delta = Path(tmpdir) / f"{entry.key}.delta.snapz"
+                    _emit_progress(
+                        progress,
+                        phase="exporting",
+                        status="running",
+                        source_id=source_id,
+                        key=entry.key,
+                        display_name=display_name,
+                        remote_only=cfg.remote_only,
+                        message="Exporting source delta",
+                    )
                     exported_delta = _export_entry_bundle(
                         entry,
                         delta,
@@ -314,6 +320,7 @@ def push_all(
                         include_snapshot_names=missing_snapshots,
                     )
                     delta_meta = read_bundle_meta(delta)
+                    meta = delta_meta
                 upload_bytes = delta.stat().st_size
                 payload = {
                     "source": source,
@@ -341,6 +348,18 @@ def push_all(
                 except RemoteError as exc:
                     if exc.status != 404:
                         raise
+                    _emit_progress(
+                        progress,
+                        phase="exporting",
+                        status="running",
+                        source_id=source_id,
+                        key=entry.key,
+                        display_name=display_name,
+                        remote_only=cfg.remote_only,
+                        message="Exporting source bundle",
+                    )
+                    exported = _export_entry_bundle(entry, bundle, cfg)
+                    meta = read_bundle_meta(bundle)
                     bundle_payload = {
                         "source": source,
                         "snapshot_count": len(list(meta.get("snapshots") or [])),
@@ -391,7 +410,7 @@ def push_all(
                 if report_to_server:
                     _report_sync_status(auth, source_id, completed)
                 uploaded_keys.add(entry.key)
-                uploaded_blobs.update(str(sha) for sha in meta.get("blobs") or [])
+                uploaded_blobs.update(str(sha) for sha in _entry_referenced_blobs(store, entry))
         except Exception as exc:  # keep syncing independent sources
             failed = {
                 "status": "failed",
@@ -415,6 +434,62 @@ def push_all(
     if cfg.remote_only and uploaded_blobs:
         _evict_uploaded_blobs(store, uploaded_keys, uploaded_blobs)
     return outcome
+
+
+def _entry_source_payload(entry: DirEntry) -> dict[str, Any]:
+    return {
+        "key": entry.key,
+        "abspath": entry.meta.abspath,
+        "first_seen": entry.meta.first_seen,
+        "last_used": entry.meta.last_used,
+        "snapshot_count": len(entry.snapshots),
+        "source_id": entry.meta.source_id,
+        "source_marker": entry.meta.source_marker,
+        "archived_at": entry.meta.archived_at,
+    }
+
+
+def _entry_referenced_blobs(store: Store, entry: DirEntry) -> set[str]:
+    return cas.referenced_blobs(store.dir_by_key(entry.key))
+
+
+def _entry_local_index(
+    store: Store,
+    entry: DirEntry,
+    config: RuntimeConfig,
+) -> dict[str, Any]:
+    dir_root = store.dir_by_key(entry.key)
+    blobs: set[str] = set()
+    fingerprints: dict[str, str] = {}
+    snapshot_names: list[str] = []
+    for snap in entry.snapshots:
+        meta_path = dir_root / f"{snap.name}{META_SUFFIX}"
+        artifact = store.find_archive_in_dir(dir_root, snap.name)
+        if artifact is None or not meta_path.exists():
+            raise FileNotFoundError(
+                f"snapshot {snap.name!r} is missing metadata or artifact"
+            )
+        name = str(snap.name)
+        snapshot_names.append(name)
+        meta_data = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not isinstance(meta_data, dict):
+            raise ValueError(f"snapshot metadata must be an object: {meta_path}")
+        manifest_data: dict[str, Any] = {}
+        if cas.is_manifest_artifact(artifact):
+            manifest = cas.read_manifest(artifact)
+            manifest_data = {
+                "format_version": manifest.format_version,
+                "snapshot": manifest.snapshot,
+                "created": manifest.created,
+                "entries": [item.to_dict() for item in manifest.entries],
+            }
+            blobs.update(cas.manifest_blob_refs(manifest))
+        fingerprints[name] = _snapshot_fingerprint(meta_data, manifest_data)
+    return {
+        "blobs": blobs,
+        "fingerprints": fingerprints,
+        "snapshot_names": snapshot_names,
+    }
 
 
 def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:

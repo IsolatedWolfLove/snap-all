@@ -306,6 +306,72 @@ def test_remote_index_pull_and_on_demand_object_hydration(tmp_path):
         server.server_close()
 
 
+def test_remote_only_push_after_eviction_uploads_delta(tmp_path, monkeypatch):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    uploaded_sizes: list[tuple[str, int]] = []
+    original_http_request = remote._http_request
+
+    def recording_request(method, server_url, path, **kwargs):
+        upload = kwargs.get("upload")
+        if method == "PUT" and upload is not None:
+            uploaded_sizes.append((path, Path(upload).stat().st_size))
+        return original_http_request(method, server_url, path, **kwargs)
+
+    monkeypatch.setattr(remote, "_http_request", recording_request)
+    try:
+        local_a = RuntimeConfig(root=tmp_path / "client-a", remote_only=True)
+        project = tmp_path / "project"
+        project.mkdir()
+        shared = "shared payload\n" * 200
+        (project / "keep.txt").write_text(shared, encoding="utf-8")
+        (project / "change.txt").write_text("one\n" * 200, encoding="utf-8")
+        api.save(project, "v1", config=local_a)
+
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-a",
+            config=local_a,
+        )
+        assert remote.push_all(config=local_a).ok
+        assert not list(cas.global_objects_root(local_a.root).glob("*/*"))
+        first_upload = uploaded_sizes[-1]
+
+        (project / "change.txt").write_text("two\n" * 200, encoding="utf-8")
+        api.save(project, "v2", config=local_a)
+        pushed = remote.push_all(config=local_a)
+        assert pushed.ok
+        second_upload = uploaded_sizes[-1]
+
+        assert first_upload[0].endswith("/delta")
+        assert second_upload[0].endswith("/delta")
+        assert second_upload[1] < first_upload[1]
+        assert not list(cas.global_objects_root(local_a.root).glob("*/*"))
+
+        local_b = RuntimeConfig(root=tmp_path / "client-b")
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-b",
+            config=local_b,
+        )
+        assert remote.pull_all(config=local_b).ok
+        archives = api.list_archives(config=local_b)
+        restored = tmp_path / "restored-v2"
+        api.restore_archive(archives[0].key, "v2", restored, config=local_b)
+        assert (restored / "keep.txt").read_text(encoding="utf-8") == shared
+        assert (restored / "change.txt").read_text(encoding="utf-8") == "two\n" * 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_push_all_reports_upload_progress(tmp_path):
     server_root = tmp_path / "server"
     db.create_user(server_root, "tenant-a", "alice", "secret")

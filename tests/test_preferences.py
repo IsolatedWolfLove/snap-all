@@ -51,6 +51,21 @@ def test_config_effective_overlays_defaults(snap_root):
     assert eff["save_picker"] is False  # untouched -> default
 
 
+def test_api_save_honors_persisted_remote_only(project_dir, config, monkeypatch):
+    preferences.set_config_value(config.root, "remote_only", "true")
+    calls: list[object] = []
+
+    monkeypatch.setattr(
+        "snapz.remote.push_all",
+        lambda *, config: calls.append(config) or None,
+    )
+
+    api.save(project_dir, "remote-only", config=config)
+
+    assert len(calls) == 1
+    assert calls[0].remote_only is True
+
+
 # ---------------- ui_mode ---------------------------------------------------
 
 

@@ -6,7 +6,7 @@ import json
 import os
 import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Iterable, Optional
@@ -353,6 +353,10 @@ def save(
     """
 
     config = config or default_config()
+    configured_remote_only = bool(config.remote_only)
+    disk_config = preferences.load_config(Path(config.root))
+    if "remote_only" in disk_config:
+        configured_remote_only = bool(disk_config["remote_only"])
     abspath = _source_path(path, config=config)
     if not abspath.is_dir():
         raise NotADirectoryError(f"not a directory: {abspath}")
@@ -571,11 +575,11 @@ def save(
     _auto_prune_after_save(abspath, config)
     store.refresh_cached_summary_in_dir(dir_root)
 
-    if config.remote_only:
+    if configured_remote_only:
         try:
             from snapz import remote
 
-            remote.push_all(config=config)
+            remote.push_all(config=replace(config, remote_only=configured_remote_only))
         except Exception:
             pass
 
