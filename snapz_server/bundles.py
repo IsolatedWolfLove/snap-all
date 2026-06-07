@@ -341,6 +341,7 @@ def rename_bundle_snapshot(bundle: Path, old_name: str, new_name: str) -> dict[s
     return {
         "snapshot_count": len(rows),
         "bundle_bytes": bundle.stat().st_size,
+        "bundle_sha256": _sha256_file(bundle),
         "memory": memory,
     }
 
@@ -366,6 +367,7 @@ def delete_bundle_snapshot(bundle: Path, name: str) -> dict[str, Any]:
             return {
                 "snapshot_count": 0,
                 "bundle_bytes": 0,
+                "bundle_sha256": "",
                 "memory": memory,
             }
 
@@ -397,6 +399,7 @@ def delete_bundle_snapshot(bundle: Path, name: str) -> dict[str, Any]:
     return {
         "snapshot_count": len(remaining),
         "bundle_bytes": bundle.stat().st_size,
+        "bundle_sha256": _sha256_file(bundle),
         "memory": memory,
     }
 

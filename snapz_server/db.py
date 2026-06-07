@@ -54,6 +54,7 @@ def _create_sources_table_sql(table_name: str = "sources") -> str:
                 path_hint TEXT NOT NULL DEFAULT '',
                 snapshot_count INTEGER NOT NULL DEFAULT 0,
                 bundle_bytes INTEGER NOT NULL DEFAULT 0,
+                bundle_sha256 TEXT NOT NULL DEFAULT '',
                 pushed_by_device TEXT NOT NULL DEFAULT '',
                 sync_status TEXT NOT NULL DEFAULT '',
                 sync_phase TEXT NOT NULL DEFAULT '',
@@ -89,11 +90,13 @@ def _migrate_sources_table(con: sqlite3.Connection) -> None:
         """
         INSERT OR REPLACE INTO sources(
           id, tenant_id, source_marker, origin_store_key, display_name,
-          path_hint, snapshot_count, bundle_bytes, pushed_by_device, updated_at
+          path_hint, snapshot_count, bundle_bytes, bundle_sha256,
+          pushed_by_device, updated_at
         )
         SELECT
           id, tenant_id, source_marker, origin_store_key, display_name,
-          path_hint, snapshot_count, bundle_bytes, pushed_by_device, updated_at
+          path_hint, snapshot_count, bundle_bytes, '',
+          pushed_by_device, updated_at
         FROM sources_old_pk
         """
     )
@@ -107,6 +110,7 @@ def _migrate_sources_columns(con: sqlite3.Connection) -> None:
         for row in con.execute("PRAGMA table_info(sources)")
     }
     migrations = {
+        "bundle_sha256": "TEXT NOT NULL DEFAULT ''",
         "sync_status": "TEXT NOT NULL DEFAULT ''",
         "sync_phase": "TEXT NOT NULL DEFAULT ''",
         "sync_progress_percent": "REAL NOT NULL DEFAULT 0",
@@ -492,6 +496,7 @@ def list_admin_sources(data_dir: str | Path) -> list[sqlite3.Row]:
                   s.path_hint AS path_hint,
                   s.snapshot_count AS snapshot_count,
                   s.bundle_bytes AS bundle_bytes,
+                  s.bundle_sha256 AS bundle_sha256,
                   s.pushed_by_device AS pushed_by_device,
                   s.sync_status AS sync_status,
                   s.sync_phase AS sync_phase,
@@ -539,6 +544,7 @@ def get_admin_source(
               s.path_hint AS path_hint,
               s.snapshot_count AS snapshot_count,
               s.bundle_bytes AS bundle_bytes,
+              s.bundle_sha256 AS bundle_sha256,
               s.pushed_by_device AS pushed_by_device,
               s.sync_status AS sync_status,
               s.sync_phase AS sync_phase,
@@ -608,17 +614,35 @@ def update_admin_source_bundle_stats(
     *,
     snapshot_count: int,
     bundle_bytes: int,
+    bundle_sha256: str | None = None,
 ) -> sqlite3.Row:
     init_db(data_dir)
     with connect(data_dir) as con:
-        cur = con.execute(
-            """
-            UPDATE sources
-            SET snapshot_count = ?, bundle_bytes = ?, updated_at = ?
-            WHERE tenant_id = ? AND id = ?
-            """,
-            (snapshot_count, bundle_bytes, now_iso(), tenant_id, source_id),
-        )
+        if bundle_sha256 is None:
+            cur = con.execute(
+                """
+                UPDATE sources
+                SET snapshot_count = ?, bundle_bytes = ?, updated_at = ?
+                WHERE tenant_id = ? AND id = ?
+                """,
+                (snapshot_count, bundle_bytes, now_iso(), tenant_id, source_id),
+            )
+        else:
+            cur = con.execute(
+                """
+                UPDATE sources
+                SET snapshot_count = ?, bundle_bytes = ?, bundle_sha256 = ?, updated_at = ?
+                WHERE tenant_id = ? AND id = ?
+                """,
+                (
+                    snapshot_count,
+                    bundle_bytes,
+                    bundle_sha256,
+                    now_iso(),
+                    tenant_id,
+                    source_id,
+                ),
+            )
         if cur.rowcount == 0:
             raise KeyError(f"source not found: {tenant_id}/{source_id}")
 
@@ -737,6 +761,7 @@ def upsert_source(
     *,
     snapshot_count: int,
     bundle_bytes: int,
+    bundle_sha256: str = "",
 ) -> None:
     timestamp = now_iso()
     path_hint = str(source.get("abspath", "") or "")
@@ -768,12 +793,12 @@ def upsert_source(
             """
             INSERT INTO sources(
               id, tenant_id, source_marker, origin_store_key, display_name,
-              path_hint, snapshot_count, bundle_bytes, pushed_by_device,
+              path_hint, snapshot_count, bundle_bytes, bundle_sha256, pushed_by_device,
               sync_status, sync_phase, sync_progress_percent, sync_bytes_sent,
               sync_bytes_total, sync_speed_bps, sync_eta_seconds,
               sync_updated_at, sync_finished_at, last_sync_at, sync_error, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tenant_id, id) DO UPDATE SET
               source_marker = excluded.source_marker,
               origin_store_key = excluded.origin_store_key,
@@ -781,6 +806,7 @@ def upsert_source(
               path_hint = excluded.path_hint,
               snapshot_count = excluded.snapshot_count,
               bundle_bytes = excluded.bundle_bytes,
+              bundle_sha256 = excluded.bundle_sha256,
               pushed_by_device = excluded.pushed_by_device,
               sync_status = excluded.sync_status,
               sync_phase = excluded.sync_phase,
@@ -804,6 +830,7 @@ def upsert_source(
                 path_hint,
                 snapshot_count,
                 bundle_bytes,
+                bundle_sha256,
                 ctx.device_id,
                 "completed",
                 "finished",

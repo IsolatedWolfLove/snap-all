@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import hashlib
 import shutil
 import subprocess
 import threading
@@ -306,6 +308,109 @@ def test_remote_index_pull_and_on_demand_object_hydration(tmp_path):
         server.server_close()
 
 
+def test_pull_all_skips_remote_index_when_bundle_hash_unchanged(tmp_path, monkeypatch):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        local_a = RuntimeConfig(root=tmp_path / "client-a")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("v1\n", encoding="utf-8")
+        api.save(project, "v1", config=local_a)
+
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-a",
+            config=local_a,
+        )
+        assert remote.push_all(config=local_a).ok
+
+        local_b = RuntimeConfig(root=tmp_path / "client-b")
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-b",
+            config=local_b,
+        )
+        first = remote.pull_all(config=local_b)
+        assert first.ok
+
+        original_http_request = remote._http_request
+        index_requests: list[str] = []
+
+        def recording_request(method, server_url, path, **kwargs):
+            if method == "GET" and path.endswith("/index"):
+                index_requests.append(path)
+            return original_http_request(method, server_url, path, **kwargs)
+
+        monkeypatch.setattr(remote, "_http_request", recording_request)
+
+        second = remote.pull_all(config=local_b)
+
+        assert second.ok
+        assert len(second.items) == 1
+        assert index_requests == []
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_push_all_skips_pulled_remote_index_archives(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        local_a = RuntimeConfig(root=tmp_path / "client-a", remote_only=True)
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("v1\n", encoding="utf-8")
+        api.save(project, "v1", config=local_a)
+
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-a",
+            config=local_a,
+        )
+        assert remote.push_all(config=local_a).ok
+
+        local_b = RuntimeConfig(root=tmp_path / "client-b")
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop-b",
+            config=local_b,
+        )
+        assert remote.pull_all(config=local_b).ok
+        archives = api.list_archives(config=local_b)
+        assert len(archives) == 1
+        assert archives[0].key.startswith("remote-src_")
+        assert not list(cas.global_objects_root(local_b.root).glob("*/*"))
+        meta_path = local_b.root / archives[0].key / "_meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["archived_at"] = ""
+        meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+
+        pushed = remote.push_all(config=local_b)
+
+        assert pushed.ok
+        assert pushed.items == []
+        assert pushed.failures == []
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_remote_only_push_after_eviction_uploads_delta(tmp_path, monkeypatch):
     server_root = tmp_path / "server"
     db.create_user(server_root, "tenant-a", "alice", "secret")
@@ -367,6 +472,60 @@ def test_remote_only_push_after_eviction_uploads_delta(tmp_path, monkeypatch):
         api.restore_archive(archives[0].key, "v2", restored, config=local_b)
         assert (restored / "keep.txt").read_text(encoding="utf-8") == shared
         assert (restored / "change.txt").read_text(encoding="utf-8") == "two\n" * 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_remote_only_push_failure_preserves_uploaded_source_blobs(tmp_path, monkeypatch):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        local = RuntimeConfig(root=tmp_path / "client", remote_only=True)
+        first = tmp_path / "first"
+        first.mkdir()
+        (first / "README.md").write_text("first\n", encoding="utf-8")
+        api.save(first, "v1", config=local)
+
+        second = tmp_path / "second"
+        second.mkdir()
+        (second / "README.md").write_text("second\n", encoding="utf-8")
+        api.save(second, "v1", config=local)
+
+        remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop",
+            config=local,
+        )
+
+        original_upload_delta = remote._upload_delta
+        calls = 0
+
+        def fail_second_delta(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise remote.RemoteError("interrupted upload")
+            return original_upload_delta(*args, **kwargs)
+
+        monkeypatch.setattr(remote, "_upload_delta", fail_second_delta)
+
+        pushed = remote.push_all(config=local)
+
+        assert not pushed.ok
+        assert len(pushed.items) == 1
+        assert len(pushed.failures) == 1
+        assert list(cas.global_objects_root(local.root).glob("*/*"))
+
+        monkeypatch.setattr(remote, "_upload_delta", original_upload_delta)
+        retried = remote.push_all(config=local)
+
+        assert retried.ok
+        assert not list(cas.global_objects_root(local.root).glob("*/*"))
     finally:
         server.shutdown()
         server.server_close()
@@ -569,6 +728,7 @@ def test_index_pull_replaces_previous_remote_index(tmp_path):
         from snapz_server.bundles import delete_bundle_snapshot
 
         delete_bundle_snapshot(bundle, "v1")
+        bundle_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest()
         db.upsert_source(
             server_root,
             ctx,
@@ -576,6 +736,7 @@ def test_index_pull_replaces_previous_remote_index(tmp_path):
             remote.read_bundle_meta(bundle)["source"],
             snapshot_count=1,
             bundle_bytes=bundle.stat().st_size,
+            bundle_sha256=bundle_sha256,
         )
 
         assert remote.pull_all(config=local_b).ok

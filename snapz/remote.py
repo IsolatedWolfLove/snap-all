@@ -12,9 +12,10 @@ import ssl
 import tarfile
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import urlsplit
 
 from snapz import api, cas
@@ -24,6 +25,7 @@ from snapz.util import now_iso
 from snapz.util import format_size
 
 REMOTE_CONFIG_FILENAME = "_remote.json"
+REMOTE_SYNC_LOCK_FILENAME = "_remote_sync.lock"
 CHUNK_SIZE = 1024 * 1024
 SyncProgressCallback = Callable[[dict[str, Any]], None]
 UploadProgressCallback = Callable[[int, int, float], None]
@@ -136,6 +138,69 @@ def save_auth(auth: RemoteAuth, config: Optional[RuntimeConfig] = None) -> Path:
     return path
 
 
+@contextmanager
+def _remote_sync_lock(config: RuntimeConfig) -> Iterator[None]:
+    Path(config.root).mkdir(parents=True, exist_ok=True)
+    path = Path(config.root) / REMOTE_SYNC_LOCK_FILENAME
+    payload = json.dumps(
+        {
+            "pid": os.getpid(),
+            "created": now_iso(),
+        },
+        separators=(",", ":"),
+    ) + "\n"
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            if _remove_stale_remote_sync_lock(path):
+                continue
+            raise RemoteError(f"remote sync already running: {path}")
+        break
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        yield
+    finally:
+        try:
+            if path.read_text(encoding="utf-8") == payload:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _remove_stale_remote_sync_lock(path: Path) -> bool:
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return False
+    pid = data.get("pid") if isinstance(data, dict) else None
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid_int <= 0:
+        return False
+    if os.name == "nt":
+        return False
+    try:
+        os.kill(pid_int, 0)
+    except ProcessLookupError:
+        try:
+            if path.read_text(encoding="utf-8") != raw:
+                return False
+        except OSError:
+            return False
+        path.unlink(missing_ok=True)
+        return True
+    except PermissionError:
+        return False
+    except OSError:
+        return False
+    return False
+
+
 def logout(config: Optional[RuntimeConfig] = None) -> bool:
     path = config_path(config)
     existed = path.exists()
@@ -202,237 +267,243 @@ def push_all(
     auth = load_auth(cfg)
     store = Store(cfg)
     outcome = SyncOutcome(server_url=auth.server_url)
-    entries = store.list_all(include_archived=True)
-    uploaded_keys: set[str] = set()
-    uploaded_blobs: set[str] = set()
-    for entry in entries:
-        if not entry.snapshots:
-            continue
-        source = _entry_source_payload(entry)
-        source_id = source_id_for(source)
-        display_name = Path(source.get("abspath") or entry.meta.abspath).name or entry.key
-        try:
-            with tempfile.TemporaryDirectory(prefix="snapz-push-") as tmpdir:
-                bundle = Path(tmpdir) / f"{entry.key}.snapz"
-                _emit_progress(
-                    progress,
-                    phase="checking",
-                    status="running",
-                    source_id=source_id,
-                    key=entry.key,
-                    display_name=display_name,
-                    remote_only=cfg.remote_only,
-                    message="Checking remote state",
-                )
-                if report_to_server:
-                    _report_sync_status(
-                        auth,
-                        source_id,
-                        {
-                            "status": "running",
-                            "phase": "checking",
-                            "display_name": display_name,
-                            "key": entry.key,
-                            "remote_only": cfg.remote_only,
-                            "message": "Checking remote state",
-                        },
-                    )
-                remote_index = _get_remote_index(auth, source_id)
-                if remote_index is None:
-                    _emit_progress(
-                        progress,
-                        phase="exporting",
-                        status="running",
-                        source_id=source_id,
-                        key=entry.key,
-                        display_name=display_name,
-                        remote_only=cfg.remote_only,
-                        message="Exporting source bundle",
-                    )
-                    exported = _export_entry_bundle(entry, bundle, cfg)
-                    meta = read_bundle_meta(bundle)
-                    delta = bundle
-                    exported_delta = exported
-                    delta_meta = meta
-                else:
-                    local_index = _entry_local_index(store, entry, cfg)
-                    missing_blobs = set(local_index["blobs"]) - set(
-                        remote_index.get("blobs") or []
-                    )
-                    remote_snapshot_fingerprints = _remote_snapshot_fingerprints(
-                        remote_index
-                    )
-                    local_snapshot_names = set(local_index["snapshot_names"])
-                    local_snapshot_fingerprints = dict(local_index["fingerprints"])
-                    missing_snapshots = {
-                        name
-                        for name in local_snapshot_names
-                        if local_snapshot_fingerprints.get(name)
-                        != remote_snapshot_fingerprints.get(name)
-                    }
-                    if not missing_snapshots and not missing_blobs:
-                        completed = {
-                            "status": "completed",
-                            "phase": "skipped",
-                            "source_id": source_id,
-                            "key": entry.key,
-                            "display_name": display_name,
-                            "bytes_sent": 0,
-                            "bytes_total": 0,
-                            "progress_percent": 100.0,
-                            "speed_bps": 0.0,
-                            "eta_seconds": 0.0,
-                            "remote_only": cfg.remote_only,
-                            "message": "Already up to date",
-                        }
-                        _emit_progress(progress, **completed)
+    try:
+        with _remote_sync_lock(cfg):
+            entries = store.list_all(include_archived=True)
+            uploaded_keys: set[str] = set()
+            uploaded_blobs: set[str] = set()
+            for entry in entries:
+                if not entry.snapshots:
+                    continue
+                if _is_pulled_remote_archive(entry):
+                    continue
+                source = _entry_source_payload(entry)
+                source_id = source_id_for(source)
+                display_name = Path(source.get("abspath") or entry.meta.abspath).name or entry.key
+                try:
+                    with tempfile.TemporaryDirectory(prefix="snapz-push-") as tmpdir:
+                        bundle = Path(tmpdir) / f"{entry.key}.snapz"
+                        _emit_progress(
+                            progress,
+                            phase="checking",
+                            status="running",
+                            source_id=source_id,
+                            key=entry.key,
+                            display_name=display_name,
+                            remote_only=cfg.remote_only,
+                            message="Checking remote state",
+                        )
                         if report_to_server:
-                            _report_sync_status(auth, source_id, completed)
+                            _report_sync_status(
+                                auth,
+                                source_id,
+                                {
+                                    "status": "running",
+                                    "phase": "checking",
+                                    "display_name": display_name,
+                                    "key": entry.key,
+                                    "remote_only": cfg.remote_only,
+                                    "message": "Checking remote state",
+                                },
+                            )
+                        remote_index = _get_remote_index(auth, source_id)
+                        if remote_index is None:
+                            _emit_progress(
+                                progress,
+                                phase="exporting",
+                                status="running",
+                                source_id=source_id,
+                                key=entry.key,
+                                display_name=display_name,
+                                remote_only=cfg.remote_only,
+                                message="Exporting source bundle",
+                            )
+                            exported = _export_entry_bundle(entry, bundle, cfg)
+                            meta = read_bundle_meta(bundle)
+                            delta = bundle
+                            exported_delta = exported
+                            delta_meta = meta
+                        else:
+                            local_index = _entry_local_index(store, entry, cfg)
+                            missing_blobs = set(local_index["blobs"]) - set(
+                                remote_index.get("blobs") or []
+                            )
+                            remote_snapshot_fingerprints = _remote_snapshot_fingerprints(
+                                remote_index
+                            )
+                            local_snapshot_names = set(local_index["snapshot_names"])
+                            local_snapshot_fingerprints = dict(local_index["fingerprints"])
+                            missing_snapshots = {
+                                name
+                                for name in local_snapshot_names
+                                if local_snapshot_fingerprints.get(name)
+                                != remote_snapshot_fingerprints.get(name)
+                            }
+                            if not missing_snapshots and not missing_blobs:
+                                completed = {
+                                    "status": "completed",
+                                    "phase": "skipped",
+                                    "source_id": source_id,
+                                    "key": entry.key,
+                                    "display_name": display_name,
+                                    "bytes_sent": 0,
+                                    "bytes_total": 0,
+                                    "progress_percent": 100.0,
+                                    "speed_bps": 0.0,
+                                    "eta_seconds": 0.0,
+                                    "remote_only": cfg.remote_only,
+                                    "message": "Already up to date",
+                                }
+                                _emit_progress(progress, **completed)
+                                if report_to_server:
+                                    _report_sync_status(auth, source_id, completed)
+                                outcome.items.append(
+                                    SyncItem(
+                                        source_id=source_id,
+                                        key=entry.key,
+                                        display_name=display_name,
+                                        snapshot_count=len(entry.snapshots),
+                                        bundle_bytes=0,
+                                        archived=entry.archived,
+                                    )
+                                )
+                                uploaded_keys.add(entry.key)
+                                uploaded_blobs.update(str(sha) for sha in local_index["blobs"])
+                                continue
+                            delta = Path(tmpdir) / f"{entry.key}.delta.snapz"
+                            _emit_progress(
+                                progress,
+                                phase="exporting",
+                                status="running",
+                                source_id=source_id,
+                                key=entry.key,
+                                display_name=display_name,
+                                remote_only=cfg.remote_only,
+                                message="Exporting source delta",
+                            )
+                            exported_delta = _export_entry_bundle(
+                                entry,
+                                delta,
+                                cfg,
+                                include_blobs=missing_blobs,
+                                include_snapshot_names=missing_snapshots,
+                            )
+                            delta_meta = read_bundle_meta(delta)
+                            meta = delta_meta
+                        upload_bytes = delta.stat().st_size
+                        payload = {
+                            "source": source,
+                            "snapshot_count": len(list(delta_meta.get("snapshots") or [])),
+                            "bundle_bytes": upload_bytes,
+                            "bundle_sha256": _sha256_file(delta),
+                        }
+                        item_bundle_bytes = upload_bytes
+                        try:
+                            _upload_delta(
+                                auth,
+                                source_id,
+                                payload,
+                                delta,
+                                on_progress=_source_upload_progress(
+                                    progress,
+                                    auth if report_to_server else None,
+                                    source_id,
+                                    entry.key,
+                                    display_name,
+                                    cfg.remote_only,
+                                    "delta",
+                                ),
+                            )
+                        except RemoteError as exc:
+                            if exc.status != 404:
+                                raise
+                            _emit_progress(
+                                progress,
+                                phase="exporting",
+                                status="running",
+                                source_id=source_id,
+                                key=entry.key,
+                                display_name=display_name,
+                                remote_only=cfg.remote_only,
+                                message="Exporting source bundle",
+                            )
+                            exported = _export_entry_bundle(entry, bundle, cfg)
+                            meta = read_bundle_meta(bundle)
+                            bundle_payload = {
+                                "source": source,
+                                "snapshot_count": len(list(meta.get("snapshots") or [])),
+                                "bundle_bytes": bundle.stat().st_size,
+                                "bundle_sha256": _sha256_file(bundle),
+                            }
+                            item_bundle_bytes = bundle.stat().st_size
+                            _upload_bundle(
+                                auth,
+                                source_id,
+                                bundle_payload,
+                                bundle,
+                                on_progress=_source_upload_progress(
+                                    progress,
+                                    auth if report_to_server else None,
+                                    source_id,
+                                    entry.key,
+                                    display_name,
+                                    cfg.remote_only,
+                                    "bundle",
+                                ),
+                            )
                         outcome.items.append(
                             SyncItem(
                                 source_id=source_id,
                                 key=entry.key,
                                 display_name=display_name,
-                                snapshot_count=len(entry.snapshots),
-                                bundle_bytes=0,
+                                snapshot_count=exported_delta.snapshot_count,
+                                bundle_bytes=item_bundle_bytes,
                                 archived=entry.archived,
                             )
                         )
+                        completed = {
+                            "status": "completed",
+                            "phase": "uploaded",
+                            "source_id": source_id,
+                            "key": entry.key,
+                            "display_name": display_name,
+                            "bytes_sent": item_bundle_bytes,
+                            "bytes_total": item_bundle_bytes,
+                            "progress_percent": 100.0,
+                            "speed_bps": 0.0,
+                            "eta_seconds": 0.0,
+                            "remote_only": cfg.remote_only,
+                            "message": "Upload complete",
+                        }
+                        _emit_progress(progress, **completed)
+                        if report_to_server:
+                            _report_sync_status(auth, source_id, completed)
                         uploaded_keys.add(entry.key)
-                        uploaded_blobs.update(str(sha) for sha in local_index["blobs"])
-                        continue
-                    delta = Path(tmpdir) / f"{entry.key}.delta.snapz"
-                    _emit_progress(
-                        progress,
-                        phase="exporting",
-                        status="running",
-                        source_id=source_id,
-                        key=entry.key,
-                        display_name=display_name,
-                        remote_only=cfg.remote_only,
-                        message="Exporting source delta",
-                    )
-                    exported_delta = _export_entry_bundle(
-                        entry,
-                        delta,
-                        cfg,
-                        include_blobs=missing_blobs,
-                        include_snapshot_names=missing_snapshots,
-                    )
-                    delta_meta = read_bundle_meta(delta)
-                    meta = delta_meta
-                upload_bytes = delta.stat().st_size
-                payload = {
-                    "source": source,
-                    "snapshot_count": len(list(delta_meta.get("snapshots") or [])),
-                    "bundle_bytes": upload_bytes,
-                    "bundle_sha256": _sha256_file(delta),
-                }
-                item_bundle_bytes = upload_bytes
-                try:
-                    _upload_delta(
-                        auth,
-                        source_id,
-                        payload,
-                        delta,
-                        on_progress=_source_upload_progress(
-                            progress,
-                            auth if report_to_server else None,
-                            source_id,
-                            entry.key,
-                            display_name,
-                            cfg.remote_only,
-                            "delta",
-                        ),
-                    )
-                except RemoteError as exc:
-                    if exc.status != 404:
-                        raise
-                    _emit_progress(
-                        progress,
-                        phase="exporting",
-                        status="running",
-                        source_id=source_id,
-                        key=entry.key,
-                        display_name=display_name,
-                        remote_only=cfg.remote_only,
-                        message="Exporting source bundle",
-                    )
-                    exported = _export_entry_bundle(entry, bundle, cfg)
-                    meta = read_bundle_meta(bundle)
-                    bundle_payload = {
-                        "source": source,
-                        "snapshot_count": len(list(meta.get("snapshots") or [])),
-                        "bundle_bytes": bundle.stat().st_size,
-                        "bundle_sha256": _sha256_file(bundle),
+                        uploaded_blobs.update(str(sha) for sha in _entry_referenced_blobs(store, entry))
+                except Exception as exc:  # keep syncing independent sources
+                    failed = {
+                        "status": "failed",
+                        "phase": "failed",
+                        "source_id": source_id,
+                        "key": entry.key,
+                        "display_name": Path(entry.meta.abspath).name or entry.key,
+                        "remote_only": cfg.remote_only,
+                        "message": str(exc),
                     }
-                    item_bundle_bytes = bundle.stat().st_size
-                    _upload_bundle(
-                        auth,
-                        source_id,
-                        bundle_payload,
-                        bundle,
-                        on_progress=_source_upload_progress(
-                            progress,
-                            auth if report_to_server else None,
-                            source_id,
-                            entry.key,
-                            display_name,
-                            cfg.remote_only,
-                            "bundle",
-                        ),
+                    _emit_progress(progress, **failed)
+                    if report_to_server and source_id:
+                        _report_sync_status(auth, source_id, failed)
+                    outcome.failures.append(
+                        SyncFailure(
+                            key=entry.key,
+                            source_id=source_id,
+                            message=str(exc),
+                        )
                     )
-                outcome.items.append(
-                    SyncItem(
-                        source_id=source_id,
-                        key=entry.key,
-                        display_name=display_name,
-                        snapshot_count=exported_delta.snapshot_count,
-                        bundle_bytes=item_bundle_bytes,
-                        archived=entry.archived,
-                    )
-                )
-                completed = {
-                    "status": "completed",
-                    "phase": "uploaded",
-                    "source_id": source_id,
-                    "key": entry.key,
-                    "display_name": display_name,
-                    "bytes_sent": item_bundle_bytes,
-                    "bytes_total": item_bundle_bytes,
-                    "progress_percent": 100.0,
-                    "speed_bps": 0.0,
-                    "eta_seconds": 0.0,
-                    "remote_only": cfg.remote_only,
-                    "message": "Upload complete",
-                }
-                _emit_progress(progress, **completed)
-                if report_to_server:
-                    _report_sync_status(auth, source_id, completed)
-                uploaded_keys.add(entry.key)
-                uploaded_blobs.update(str(sha) for sha in _entry_referenced_blobs(store, entry))
-        except Exception as exc:  # keep syncing independent sources
-            failed = {
-                "status": "failed",
-                "phase": "failed",
-                "source_id": source_id,
-                "key": entry.key,
-                "display_name": Path(entry.meta.abspath).name or entry.key,
-                "remote_only": cfg.remote_only,
-                "message": str(exc),
-            }
-            _emit_progress(progress, **failed)
-            if report_to_server and source_id:
-                _report_sync_status(auth, source_id, failed)
-            outcome.failures.append(
-                SyncFailure(
-                    key=entry.key,
-                    source_id=source_id,
-                    message=str(exc),
-                )
-            )
-    if cfg.remote_only and uploaded_blobs:
-        _evict_uploaded_blobs(store, uploaded_keys, uploaded_blobs)
+            if cfg.remote_only and uploaded_blobs and outcome.ok:
+                _evict_uploaded_blobs(store, uploaded_keys, uploaded_blobs)
+    except RemoteError as exc:
+        outcome.failures.append(SyncFailure(key="", source_id="", message=str(exc)))
     return outcome
 
 
@@ -492,9 +563,62 @@ def _entry_local_index(
     }
 
 
+def _source_bundle_sha256(source: dict[str, Any]) -> str:
+    value = str(source.get("bundle_sha256") or "").strip().lower()
+    if len(value) == 64 and all(c in "0123456789abcdef" for c in value):
+        return value
+    return ""
+
+
+def _current_remote_archive(
+    store: Store,
+    target_key: str,
+    source_id: str,
+    bundle_sha256: str,
+) -> DirEntry | None:
+    if not bundle_sha256:
+        return None
+    entry = store.entry_by_key(target_key)
+    if entry is None:
+        return None
+    if not _is_pulled_remote_archive(entry):
+        return None
+    if entry.meta.remote_source_id and entry.meta.remote_source_id != source_id:
+        return None
+    if entry.meta.remote_bundle_sha256 != bundle_sha256:
+        return None
+    return entry
+
+
+def _mark_remote_archive_synced(
+    config: RuntimeConfig,
+    key: str,
+    source_id: str,
+    bundle_sha256: str,
+) -> None:
+    if not bundle_sha256:
+        return
+    store = Store(config)
+    entry = store.entry_by_key(key)
+    if entry is None:
+        return
+    folder = store.dir_by_key(key)
+    meta = entry.meta
+    meta.remote_source_id = source_id
+    meta.remote_bundle_sha256 = bundle_sha256
+    dir_meta = store._write_dir_meta_with_cached_summary(folder, meta)  # noqa: SLF001
+    registry = store._load_registry()  # noqa: SLF001
+    registry.setdefault("version", 1)
+    registry.setdefault("dirs", {})[key] = store._registry_entry_for_meta(  # noqa: SLF001
+        dir_meta
+    )
+    store._save_registry(registry)  # noqa: SLF001
+
+
 def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
     cfg = config or default_config()
     auth = load_auth(cfg)
+    store = Store(cfg)
     response = _request_json(
         "GET",
         auth.server_url,
@@ -507,12 +631,32 @@ def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
         source_id = str(source.get("id") or "")
         target_key = remote_archive_key(source_id)
         try:
+            remote_bundle_sha256 = _source_bundle_sha256(source)
+            current = _current_remote_archive(
+                store,
+                target_key,
+                source_id,
+                remote_bundle_sha256,
+            )
+            if current is not None:
+                outcome.items.append(
+                    SyncItem(
+                        source_id=source_id,
+                        key=current.key,
+                        display_name=str(source.get("display_name") or source_id),
+                        snapshot_count=len(current.snapshots),
+                        bundle_bytes=int(source.get("bundle_bytes") or 0),
+                        archived=current.archived,
+                    )
+                )
+                continue
             index = _get_remote_index(auth, source_id)
             if index is not None:
                 imported = _import_remote_index(
                     index,
                     config=cfg,
                     target_key=target_key,
+                    source_summary=source,
                 )
                 outcome.items.append(
                     SyncItem(
@@ -533,6 +677,12 @@ def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
                     config=cfg,
                     target_key=target_key,
                     overwrite=True,
+                )
+                _mark_remote_archive_synced(
+                    cfg,
+                    imported_bundle.key,
+                    source_id,
+                    remote_bundle_sha256,
                 )
                 outcome.items.append(
                     SyncItem(
@@ -560,6 +710,10 @@ def remote_archive_key(source_id: str) -> str:
     if not safe:
         safe = "unknown"
     return f"remote-{safe}"
+
+
+def _is_pulled_remote_archive(entry: DirEntry) -> bool:
+    return entry.key.startswith("remote-src_")
 
 
 def _export_entry_bundle(
@@ -635,9 +789,11 @@ def _import_remote_index(
     *,
     config: RuntimeConfig,
     target_key: str,
+    source_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     store = Store(config)
     source_data = dict(index.get("source") or {})
+    source_summary = dict(source_summary or {})
     source_path = Path(str(source_data.get("abspath") or ".")).expanduser()
     target_key = _safe_store_key(target_key, remote_archive_key(source_id_for(source_data)))
     target_dir = store.dir_by_key(target_key)
@@ -713,6 +869,9 @@ def _import_remote_index(
         source_id=str(source_data.get("source_id", "") or ""),
         source_marker=str(source_data.get("source_marker", "") or ""),
         archived_at=now_iso(),
+        remote_source_id=str(source_summary.get("id") or ""),
+        remote_bundle_sha256=_source_bundle_sha256(source_summary)
+        or _source_bundle_sha256(index),
     )
     dir_meta = store._write_dir_meta_with_cached_summary(  # noqa: SLF001
         target_dir,

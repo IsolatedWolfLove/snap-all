@@ -200,6 +200,8 @@ class DirMeta:
     source_id: str = ""
     source_marker: str = ""
     archived_at: str = ""
+    remote_source_id: str = ""
+    remote_bundle_sha256: str = ""
 
     @classmethod
     def fresh(cls, abspath: Path) -> "DirMeta":
@@ -352,6 +354,8 @@ class Store:
             source_id=str(data.get("source_id", "") or ""),
             source_marker=str(data.get("source_marker", "") or ""),
             archived_at=str(data.get("archived_at", "") or ""),
+            remote_source_id=str(data.get("remote_source_id", "") or ""),
+            remote_bundle_sha256=str(data.get("remote_bundle_sha256", "") or ""),
         )
 
     # ----- per-dir folder ----------------------------------------------
@@ -429,6 +433,8 @@ class Store:
             "source_id": meta.source_id,
             "source_marker": meta.source_marker,
             "archived_at": meta.archived_at,
+            "remote_source_id": meta.remote_source_id,
+            "remote_bundle_sha256": meta.remote_bundle_sha256,
         }
 
     def _refresh_cached_summary(self, folder: Path, meta: DirMeta) -> DirMeta:

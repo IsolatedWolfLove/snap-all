@@ -334,11 +334,13 @@ def test_admin_api_manages_pushed_sources(tmp_path):
         assert source["tenant"] == "acme"
         assert source["display_name"] == "project"
         assert source["snapshot_count"] == 1
+        assert len(source["bundle_sha256"]) == 64
         assert source["pushed_by_username"] == "alice"
         assert source["pushed_by_device_name"] == "laptop"
 
         bundle = db.bundle_path(server_root, source["tenant_id"], source["id"])
         assert bundle.is_file()
+        assert source["bundle_sha256"] == hashlib.sha256(bundle.read_bytes()).hexdigest()
 
         renamed = _json(
             url,
@@ -350,6 +352,9 @@ def test_admin_api_manages_pushed_sources(tmp_path):
         assert _json(url, "/api/sources", token=auth.token)["sources"][0][
             "display_name"
         ] == "production-image"
+        assert _json(url, "/api/sources", token=auth.token)["sources"][0][
+            "bundle_sha256"
+        ] == source["bundle_sha256"]
 
         _json(
             url,

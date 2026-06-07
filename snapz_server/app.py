@@ -562,6 +562,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 source_id,
                 snapshot_count=int(result["snapshot_count"]),
                 bundle_bytes=int(result["bundle_bytes"]),
+                bundle_sha256=str(result.get("bundle_sha256") or ""),
             )
         except KeyError as exc:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc).strip("'\"")})
@@ -613,6 +614,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 source_id,
                 snapshot_count=int(result["snapshot_count"]),
                 bundle_bytes=int(result["bundle_bytes"]),
+                bundle_sha256=str(result.get("bundle_sha256") or ""),
             )
         except KeyError as exc:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc).strip("'\"")})
@@ -809,6 +811,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 bundle_source,
                 snapshot_count=snapshot_count,
                 bundle_bytes=received,
+                bundle_sha256=expected_sha256,
             )
             db.log_event(
                 self.data_dir,
@@ -923,6 +926,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 bundle_source,
                 snapshot_count=snapshot_count,
                 bundle_bytes=bundle_bytes,
+                bundle_sha256=str(index.get("bundle_sha256") or ""),
             )
             db.log_event(
                 self.data_dir,
@@ -1003,7 +1007,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         raw = (
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
         ).encode("utf-8")
         self._send_bytes(
             status,
