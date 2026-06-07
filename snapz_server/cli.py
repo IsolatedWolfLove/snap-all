@@ -26,11 +26,7 @@ DEFAULT_PORT = 8765
 DEFAULT_CONFIG_PATH = Path("/etc/default/snapz-server")
 DEFAULT_SERVICE_FILE = Path("/etc/systemd/system/snapz-server.service")
 DEFAULT_SERVICE_DATA_DIR = Path("/srv/snapz")
-SNAPZ_PACKAGE_NAME = "snapz-cli"
-SNAPZ_GITHUB_REPO = "https://github.com/IsolatedWolfLove/snap-all.git"
-SNAPZ_GITHUB_INSTALL_TARGET = (
-    f"{SNAPZ_PACKAGE_NAME}[zstd] @ git+{SNAPZ_GITHUB_REPO}"
-)
+SNAPZ_PACKAGE_NAME = "snapz-server"
 
 
 def _print_error(message: str) -> None:
@@ -111,10 +107,6 @@ def _write_text_file(path: Path, text: str, *, force: bool, mode: int = 0o644) -
     os.chmod(tmp, mode)
     os.replace(tmp, path)
     return True
-
-
-def _run_pip(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, "-m", "pip", *args], check=False, text=True)
 
 
 def _run_systemctl(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -403,15 +395,30 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_update(args: argparse.Namespace) -> int:
-    target = getattr(args, "target", None) or SNAPZ_GITHUB_INSTALL_TARGET
+    from snapz import self_update
+    from snapz.i18n import get_lang
+
+    release_url = getattr(args, "target", None) or self_update.GITHUB_RELEASE_API
     config_path = _config_path(args)
-    pip_args = ["install", "--upgrade", target]
-    print(f"updating snapz-server from {target}")
     if config_path.exists():
         print(f"preserving config: {config_path}")
-    result = _run_pip(pip_args)
+    try:
+        plan = self_update.plan_update(
+            language=get_lang(),
+            package=self_update.SERVER_PACKAGE_NAME,
+            release_url=release_url,
+        )
+    except Exception as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    print(f"updating snapz-server from {plan.download_url}")
+    try:
+        result = self_update.install_plan(plan)
+    except Exception as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
     if result.returncode != 0:
-        _print_error(f"update failed (pip exit code {result.returncode})")
+        _print_error(f"update failed (installer exit code {result.returncode})")
         return EXIT_ERROR
     print("updated snapz-server")
     return EXIT_OK
@@ -547,7 +554,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_update.add_argument("--config", help="server config file")
     p_update.add_argument(
         "--target",
-        default=SNAPZ_GITHUB_INSTALL_TARGET,
+        default=None,
         help=argparse.SUPPRESS,
     )
     p_update.set_defaults(func=cmd_update)

@@ -90,6 +90,7 @@ jobs:
           cp dist/snapz.pyz release-dist/snapz-zh.pyz
           cp dist/snapz-server.pyz release-dist/snapz-server-zh.pyz
           cp "dist/snapz-cli_${version}_all.deb" "release-dist/snapz-cli_${version}_all.zh.deb"
+          cp "dist/snapz-server_${version}_all.deb" "release-dist/snapz-server_${version}_all.zh.deb"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7

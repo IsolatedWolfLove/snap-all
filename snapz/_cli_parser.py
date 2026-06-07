@@ -799,7 +799,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_update = sub.add_parser("update", help=t("update.help"))
     p_update.add_argument(
         "--target",
-        default=SNAPZ_GITHUB_INSTALL_TARGET,
+        default=None,
         help=argparse.SUPPRESS,
     )
     p_update.set_defaults(func=cmd_update)

@@ -6,7 +6,8 @@
 #   snapz_cli-<version>-py3-none-any.whl    universal wheel
 #   snapz.pyz                               shiv zipapp for the client command
 #   snapz-server.pyz                        shiv zipapp for the standalone server
-#   snapz-cli_<version>_all.deb             Debian package with both commands
+#   snapz-cli_<version>_all.deb             Debian package with /usr/bin/snapz
+#   snapz-server_<version>_all.deb          Debian package with /usr/bin/snapz-server
 #
 # Usage:
 #   ./scripts/build.sh              # all targets (wheel + sdist + pyz + deb)
@@ -126,7 +127,13 @@ check_py310_compat() {
 }
 
 resolve_wheel() {
-    ls -1t "$DIST"/snapz_cli-*.whl 2>/dev/null | head -n 1 || true
+    local version
+    version="$(project_version)"
+    if [ -n "$version" ]; then
+        ls -1t "$DIST"/snapz_cli-"$version"-*.whl 2>/dev/null | head -n 1 || true
+    else
+        ls -1t "$DIST"/snapz_cli-*.whl 2>/dev/null | head -n 1 || true
+    fi
 }
 
 project_name() {
@@ -170,82 +177,14 @@ build_pyz() {
     chmod +x "$DIST/snapz-server.pyz"
 }
 
-build_deb() {
-    if ! command -v dpkg-deb >/dev/null 2>&1; then
-        echo "dpkg-deb not found; install dpkg-dev or dpkg first" >&2
-        exit 2
-    fi
-    build_pyz
-    local package version deb_root deb_name installed_size
-    package="$(project_name)"
-    version="$(project_version)"
-    if [ -z "$package" ] || [ -z "$version" ]; then
-        echo "cannot read project name/version from pyproject.toml" >&2
-        exit 2
-    fi
-    deb_root="$WORK/deb/${package}_${version}_all"
-    deb_name="$DIST/${package}_${version}_all.deb"
-    rm -rf "$deb_root"
-    mkdir -p \
-        "$deb_root/DEBIAN" \
-        "$deb_root/etc/default" \
-        "$deb_root/lib/systemd/system" \
-        "$deb_root/usr/bin" \
-        "$deb_root/usr/share/doc/$package"
-
-    install -m 0755 "$DIST/snapz.pyz" "$deb_root/usr/bin/snapz"
-    install -m 0755 "$DIST/snapz-server.pyz" "$deb_root/usr/bin/snapz-server"
-    install -m 0644 "$ROOT/README.md" "$deb_root/usr/share/doc/$package/README.md"
-    install -m 0644 "$ROOT/LICENSE" "$deb_root/usr/share/doc/$package/copyright"
-
-    cat > "$deb_root/etc/default/snapz-server" <<'EOF'
-# snapz-server runtime configuration.
-#
-# This file is a Debian conffile. Package upgrades preserve local edits
-# and will not silently replace your server settings.
-
-SNAPZ_SERVER_DATA=/srv/snapz
-SNAPZ_SERVER_HOST=0.0.0.0
-SNAPZ_SERVER_PORT=8765
-
-# Required to enable /admin and /api/admin. Generate a strong value before
-# exposing the service:
-#   openssl rand -hex 32
-SNAPZ_SERVER_ADMIN_TOKEN=
-
-# Optional settings.
-SNAPZ_SERVER_MAX_BUNDLE_MB=10240
-SNAPZ_SERVER_CORS_ORIGIN=
-SNAPZ_SERVER_TLS_CERT=
-SNAPZ_SERVER_TLS_KEY=
-SNAPZ_SERVER_TLS_CLIENT_CA=
-EOF
-    chmod 0644 "$deb_root/etc/default/snapz-server"
-
-    cat > "$deb_root/lib/systemd/system/snapz-server.service" <<'EOF'
-[Unit]
-Description=snapz remote sync server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=-/etc/default/snapz-server
-ExecStart=/usr/bin/snapz-server --config /etc/default/snapz-server run
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    chmod 0644 "$deb_root/lib/systemd/system/snapz-server.service"
-
-    cat > "$deb_root/DEBIAN/conffiles" <<'EOF'
-/etc/default/snapz-server
-EOF
-    chmod 0644 "$deb_root/DEBIAN/conffiles"
-
-    installed_size="$(du -sk "$deb_root/usr" "$deb_root/etc" "$deb_root/lib" | awk '{sum += $1} END {print sum}')"
+write_deb_control() {
+    local deb_root="$1"
+    local package="$2"
+    local version="$3"
+    local installed_size="$4"
+    local summary="$5"
+    local description="$6"
+    local extra_fields="${7:-}"
     cat > "$deb_root/DEBIAN/control" <<EOF
 Package: $package
 Version: $version
@@ -254,16 +193,83 @@ Priority: optional
 Architecture: all
 Maintainer: snapz contributors
 Depends: python3 (>= 3.10)
+EOF
+    if [ -n "$extra_fields" ]; then
+        printf '%s\n' "$extra_fields" >> "$deb_root/DEBIAN/control"
+    fi
+    cat >> "$deb_root/DEBIAN/control" <<EOF
 Installed-Size: $installed_size
 Homepage: https://github.com/IsolatedWolfLove/snap-all
-Description: Lightweight directory snapshot CLI
- snapz creates restorable directory snapshots and stores them under
- ~/.snapz-all. This package installs the snapz and snapz-server commands.
+Description: $summary
+ $description
 EOF
     chmod 0644 "$deb_root/DEBIAN/control"
+}
+
+build_single_deb() {
+    local package="$1"
+    local version="$2"
+    local source_pyz="$3"
+    local command_name="$4"
+    local summary="$5"
+    local description="$6"
+    local extra_fields="${7:-}"
+    local deb_root deb_name installed_size
+
+    deb_root="$WORK/deb/${package}_${version}_all"
+    deb_name="$DIST/${package}_${version}_all.deb"
+    rm -rf "$deb_root"
+    mkdir -p \
+        "$deb_root/DEBIAN" \
+        "$deb_root/usr/bin" \
+        "$deb_root/usr/share/doc/$package"
+
+    install -m 0755 "$source_pyz" "$deb_root/usr/bin/$command_name"
+    install -m 0644 "$ROOT/README.md" "$deb_root/usr/share/doc/$package/README.md"
+    install -m 0644 "$ROOT/LICENSE" "$deb_root/usr/share/doc/$package/copyright"
+
+    installed_size="$(du -sk "$deb_root/usr" | awk '{sum += $1} END {print sum}')"
+    write_deb_control \
+        "$deb_root" \
+        "$package" \
+        "$version" \
+        "$installed_size" \
+        "$summary" \
+        "$description" \
+        "$extra_fields"
 
     log "building Debian package -> $deb_name"
     dpkg-deb --build --root-owner-group "$deb_root" "$deb_name" >/dev/null
+}
+
+build_deb() {
+    if ! command -v dpkg-deb >/dev/null 2>&1; then
+        echo "dpkg-deb not found; install dpkg-dev or dpkg first" >&2
+        exit 2
+    fi
+    build_pyz
+    local package version
+    package="$(project_name)"
+    version="$(project_version)"
+    if [ -z "$package" ] || [ -z "$version" ]; then
+        echo "cannot read project name/version from pyproject.toml" >&2
+        exit 2
+    fi
+    build_single_deb \
+        "$package" \
+        "$version" \
+        "$DIST/snapz.pyz" \
+        "snapz" \
+        "Lightweight directory snapshot CLI" \
+        "snapz creates restorable directory snapshots and stores them under ~/.snapz-all."
+    build_single_deb \
+        "snapz-server" \
+        "$version" \
+        "$DIST/snapz-server.pyz" \
+        "snapz-server" \
+        "Standalone snapz remote sync server" \
+        "snapz-server serves multi-tenant remote sync APIs. Run snapz-server init to create config and systemd service files." \
+        "Replaces: snapz-cli (<< $version)"
 }
 
 smoke() {
@@ -295,20 +301,39 @@ smoke() {
         warn "  wheel missing"
         fail=1
     fi
-    local package version deb
+    local package version client_deb server_deb
     package="$(project_name)"
     version="$(project_version)"
-    deb="$DIST/${package}_${version}_all.deb"
-    if [ -f "$deb" ]; then
-        log "  dpkg-deb --info $(basename "$deb")"
-        dpkg-deb --info "$deb" >/dev/null || fail=1
-        local deb_contents="$WORK/deb-contents.txt"
-        dpkg-deb --contents "$deb" > "$deb_contents" || fail=1
-        grep -q 'usr/bin/snapz$' "$deb_contents" || fail=1
-        grep -q 'usr/bin/snapz-server$' "$deb_contents" || fail=1
-        grep -q 'etc/default/snapz-server$' "$deb_contents" || fail=1
-        grep -q 'lib/systemd/system/snapz-server.service$' "$deb_contents" || fail=1
-        dpkg-deb --ctrl-tarfile "$deb" | tar -xOf - ./conffiles | grep -q '^/etc/default/snapz-server$' || fail=1
+    client_deb="$DIST/${package}_${version}_all.deb"
+    server_deb="$DIST/snapz-server_${version}_all.deb"
+    if [ -f "$client_deb" ]; then
+        log "  dpkg-deb --info $(basename "$client_deb")"
+        dpkg-deb --info "$client_deb" >/dev/null || fail=1
+        local client_contents="$WORK/deb-client-contents.txt"
+        dpkg-deb --contents "$client_deb" > "$client_contents" || fail=1
+        grep -q 'usr/bin/snapz$' "$client_contents" || fail=1
+        if grep -q 'usr/bin/snapz-server$' "$client_contents"; then
+            fail=1
+        fi
+    fi
+    if [ -f "$server_deb" ]; then
+        log "  dpkg-deb --info $(basename "$server_deb")"
+        dpkg-deb --info "$server_deb" >/dev/null || fail=1
+        local server_contents="$WORK/deb-server-contents.txt"
+        dpkg-deb --contents "$server_deb" > "$server_contents" || fail=1
+        grep -q 'usr/bin/snapz-server$' "$server_contents" || fail=1
+        if grep -q 'usr/bin/snapz$' "$server_contents"; then
+            fail=1
+        fi
+        if grep -q 'etc/default/snapz-server$' "$server_contents"; then
+            fail=1
+        fi
+        if grep -q 'lib/systemd/system/snapz-server.service$' "$server_contents"; then
+            fail=1
+        fi
+        if dpkg-deb --ctrl-tarfile "$server_deb" | tar -tf - | grep -q './conffiles'; then
+            fail=1
+        fi
     fi
     return "$fail"
 }

@@ -358,10 +358,10 @@ _EN: dict[str, str] = {
     "completion.unknown_action": "unknown completion action: {action}",
 
     # ---- self-management ----
-    "update.help": "update snapz from the latest GitHub source",
+    "update.help": "update snapz from the latest GitHub .deb release",
     "update.source": "updating from",
     "update.done": "snapz updated",
-    "update.failed": "update failed (pip exit code {code})",
+    "update.failed": "update failed (installer exit code {code})",
     "update_check.notice": (
         "snapz {latest} is available (current {current}). Run `snapz update` "
         "to upgrade. Disable this check with "
@@ -895,10 +895,10 @@ _ZH: dict[str, str] = {
     "completion.unknown_action": "未知的 completion 操作: {action}",
 
     # ---- self-management ----
-    "update.help": "从 GitHub 最新源码更新 snapz",
+    "update.help": "从 GitHub 最新 .deb 发行包更新 snapz",
     "update.source": "更新来源",
     "update.done": "snapz 已更新",
-    "update.failed": "更新失败（pip 退出码 {code}）",
+    "update.failed": "更新失败（安装器退出码 {code}）",
     "update_check.notice": (
         "snapz {latest} 可更新（当前 {current}）。运行 `snapz update` 更新；"
         "可用 `snapz config set update_check.enabled false` 关闭检查。"

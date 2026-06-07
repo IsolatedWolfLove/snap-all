@@ -214,21 +214,42 @@ def test_init_keeps_existing_config_without_force(
 
 
 def test_update_preserves_existing_config(tmp_path: Path, monkeypatch) -> None:
-    calls: list[list[str]] = []
+    from snapz import self_update
+
+    calls = []
     config_path = tmp_path / "snapz-server.env"
     config_path.write_text("SNAPZ_SERVER_DATA=/custom\n", encoding="utf-8")
 
-    class Result:
-        returncode = 0
+    plan = self_update.DebUpdatePlan(
+        tag="v9.0.0",
+        package=self_update.SERVER_PACKAGE_NAME,
+        asset_name="snapz-server_9.0.0_all.deb",
+        download_url="https://example.test/snapz-server_9.0.0_all.deb",
+        language="en",
+    )
+    result = self_update.DebUpdateResult(
+        ok=True,
+        plan=plan,
+        deb_path=Path("/tmp/snapz-server_9.0.0_all.deb"),
+        command=["apt", "install", "-y", "/tmp/snapz-server_9.0.0_all.deb"],
+        returncode=0,
+    )
 
-    def fake_run_pip(args):
-        calls.append(args)
-        return Result()
+    def fake_plan_update(**kwargs):
+        calls.append(("plan", kwargs))
+        return plan
 
-    monkeypatch.setattr(cli, "_run_pip", fake_run_pip)
+    def fake_install_plan(plan_arg):
+        calls.append(("install", plan_arg))
+        return result
+
+    monkeypatch.setattr(self_update, "plan_update", fake_plan_update)
+    monkeypatch.setattr(self_update, "install_plan", fake_install_plan)
 
     rc = cli.main(["update", "--config", str(config_path)])
 
     assert rc == cli.EXIT_OK
     assert config_path.read_text(encoding="utf-8") == "SNAPZ_SERVER_DATA=/custom\n"
-    assert calls == [["install", "--upgrade", cli.SNAPZ_GITHUB_INSTALL_TARGET]]
+    assert calls[0][0] == "plan"
+    assert calls[0][1]["package"] == self_update.SERVER_PACKAGE_NAME
+    assert calls[1] == ("install", plan)

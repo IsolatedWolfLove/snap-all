@@ -31,7 +31,7 @@
 
 | 模式 | 文件 | 大小 | 适用 |
 |---|---|---|---|
-| Debian 包 | `dist/snapz-cli_*_all.deb` | ~10 MB | Ubuntu/Debian 安装；提供 `/usr/bin/snapz` 和 `/usr/bin/snapz-server` |
+| Debian 包 | `dist/snapz-cli_*_all.deb`、`dist/snapz-server_*_all.deb` | 单个 ~5 MB | Ubuntu/Debian 客户端和服务端命令安装 |
 | Zipapp | `dist/snapz.pyz`、`dist/snapz-server.pyz` | 单个 ~5 MB | 单文件可执行；目标机器需要 `python3 ≥ 3.10` |
 | Wheel | `dist/snapz_cli-*.whl` | ~30 KB | `pip install`、当作库用 |
 
@@ -40,8 +40,10 @@
 ```bash
 # 1. Debian / Ubuntu
 sudo apt install ./dist/snapz-cli_*_all.deb
+sudo apt install ./dist/snapz-server_*_all.deb
 # 或
 sudo dpkg -i dist/snapz-cli_*_all.deb
+sudo dpkg -i dist/snapz-server_*_all.deb
 
 # 2. Zipapp —— 自包含可执行（zstandard 已内嵌）
 install -m 0755 dist/snapz.pyz ~/.local/bin/snapz
@@ -53,15 +55,14 @@ pipx install "dist/snapz_cli-*.whl[zstd]"
 pip install --user "dist/snapz_cli-*.whl[zstd]"
 ```
 
-Debian 包也会安装 `snapz-server.service` 和服务端运行配置
-`/etc/default/snapz-server`；这个配置文件是保留配置，升级时不会静默覆盖本机修改。
-执行 `sudo snapz-server init` 会创建服务端配置、初始化数据目录，并启用/启动
-systemd 服务。之后用 `sudo snapz-server update` 升级程序时会保留已有配置。
+`snapz-server` Debian 包只安装 `/usr/bin/snapz-server`。执行
+`sudo snapz-server init` 会创建服务端配置、初始化数据目录，并启用/启动
+systemd 服务。之后用 `sudo snapz-server update` 升级程序时不会改这些文件。
 
 ### 更新 / 卸载
 
 ```bash
-snapz update        # 从 GitHub 重新安装最新 snapz
+snapz update        # 安装 GitHub Release 上最新的 .deb
 snapz uninstall     # 显示 ~/.snapz-all 大小，询问是否删除数据，然后卸载
 ```
 
@@ -85,7 +86,7 @@ ln -sf "$PWD/.venv/bin/snapz-server" ~/.local/bin/snapz-server
 `scripts/build.sh` 一把梭：
 
 ```bash
-./scripts/build.sh all              # wheel + sdist + 客户端/服务端 .pyz + .deb
+./scripts/build.sh all              # wheel + sdist + 客户端/服务端 .pyz + .deb 包
 ./scripts/build.sh wheel            # 仅 PEP 517 wheel + sdist
 ./scripts/build.sh pyz              # 仅 shiv zipapp
 ./scripts/build.sh deb              # 仅 Debian 包；会先重建 .pyz
@@ -111,8 +112,11 @@ git push origin main vX.Y.Z
 发布 workflow 会校验 tag 与 `pyproject.toml` 版本一致，跑测试，
 先构建英文 `dist/`，再用 `--lang zh` 重建中文版，并把标准 `.deb`、
 `.pyz`、wheel、sdist，以及默认中文的 `snapz-zh.pyz`、
-`snapz-server-zh.pyz`、`snapz-cli_<version>_all.zh.deb` 上传到
-GitHub Release。
+`snapz-server-zh.pyz`、`snapz-cli_<version>_all.zh.deb`、
+`snapz-server_<version>_all.zh.deb` 上传到 GitHub Release。
+`snapz update` 下载最新的 `snapz-cli` `.deb`；`snapz-server update`
+下载最新的 `snapz-server` `.deb`。中文构建或 `SNAPZ_LANG=zh` 会优先选择
+`.zh.deb`。
 
 原生 `.exe` / 单文件二进制不再属于发布链路；官方支持的免安装产物是
 `.pyz`，目标机器只需要 Python 3.10+。

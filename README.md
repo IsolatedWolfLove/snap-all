@@ -38,7 +38,7 @@ Pick whichever fits your environment:
 
 | Mode | File | Size | Best for |
 |---|---|---|---|
-| Debian package | `dist/snapz-cli_*_all.deb` | ~10 MB | Ubuntu/Debian installs with `/usr/bin/snapz` and `/usr/bin/snapz-server` |
+| Debian packages | `dist/snapz-cli_*_all.deb`, `dist/snapz-server_*_all.deb` | ~5 MB each | Ubuntu/Debian installs for the client and server commands |
 | Zipapp | `dist/snapz.pyz`, `dist/snapz-server.pyz` | ~5 MB each | drop-in single executables; need `python3 ≥ 3.10` on target |
 | Wheel | `dist/snapz_cli-*.whl` | ~30 KB | `pip install`, library use |
 
@@ -47,8 +47,10 @@ Pick whichever fits your environment:
 ```bash
 # 1. Debian / Ubuntu
 sudo apt install ./dist/snapz-cli_*_all.deb
+sudo apt install ./dist/snapz-server_*_all.deb
 # or
 sudo dpkg -i dist/snapz-cli_*_all.deb
+sudo dpkg -i dist/snapz-server_*_all.deb
 
 # 2. Zipapp — single self-contained executable (zstandard bundled inside)
 install -m 0755 dist/snapz.pyz ~/.local/bin/snapz
@@ -60,18 +62,15 @@ pipx install "dist/snapz_cli-*.whl[zstd]"
 pip install --user "dist/snapz_cli-*.whl[zstd]"
 ```
 
-The Debian package also installs `snapz-server.service` and the preserved
-runtime config file `/etc/default/snapz-server`; package upgrades keep local
-edits to that config.
-
+The `snapz-server` Debian package only installs `/usr/bin/snapz-server`.
 Use `sudo snapz-server init` to create the server config, initialize the data
 directory, and enable/start the systemd service. Later, `sudo snapz-server
-update` upgrades the installed package while leaving the config untouched.
+update` upgrades the installed package while leaving those files untouched.
 
 ### Update / uninstall
 
 ```bash
-snapz update        # reinstall the latest snapz from GitHub
+snapz update        # install the latest GitHub Release .deb
 snapz uninstall     # show ~/.snapz-all size, ask whether to delete data, then uninstall
 ```
 
@@ -96,10 +95,10 @@ ln -sf "$PWD/.venv/bin/snapz-server" ~/.local/bin/snapz-server
 Everything is wrapped by `scripts/build.sh`:
 
 ```bash
-./scripts/build.sh all              # wheel + sdist + client/server .pyz + .deb
+./scripts/build.sh all              # wheel + sdist + client/server .pyz + .deb packages
 ./scripts/build.sh wheel            # PEP 517 wheel + sdist only
 ./scripts/build.sh pyz              # shiv zipapp only
-./scripts/build.sh deb              # Debian package only (rebuilds .pyz first)
+./scripts/build.sh deb              # Debian packages only (rebuilds .pyz first)
 ./scripts/build.sh smoke            # run --version against the built artifacts
 ./scripts/build.sh --clean          # nuke dist/, build/, .build-venv/
 ./scripts/build.sh --lang zh all    # bake Chinese as the default --help language
@@ -123,8 +122,12 @@ git push origin main vX.Y.Z
 The release workflow verifies that the tag matches `pyproject.toml`,
 runs tests, builds the English `dist/`, then rebuilds with `--lang zh`
 and uploads the standard `.deb`, `.pyz`, wheel, and sdist files plus
-Chinese-default `snapz-zh.pyz`, `snapz-server-zh.pyz`, and
-`snapz-cli_<version>_all.zh.deb` files to the GitHub Release.
+Chinese-default `snapz-zh.pyz`, `snapz-server-zh.pyz`,
+`snapz-cli_<version>_all.zh.deb`, and
+`snapz-server_<version>_all.zh.deb` files to the GitHub Release. `snapz
+update` downloads the latest `snapz-cli` `.deb`; `snapz-server update`
+downloads the latest `snapz-server` `.deb`. Chinese builds or
+`SNAPZ_LANG=zh` prefer the `.zh.deb` asset.
 
 Native `.exe` / one-file binary builds are intentionally not part of the
 release pipeline. The `.pyz` artifacts are the supported drop-in

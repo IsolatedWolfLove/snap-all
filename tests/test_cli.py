@@ -87,24 +87,45 @@ def test_gc_rebuild_index_flag(env_root, project_dir, monkeypatch):
     assert seen["rebuild_index"] is True
 
 
-def test_update_installs_latest_from_github(env_root, monkeypatch, capsys):
+def test_update_installs_release_deb(env_root, monkeypatch, capsys):
+    from snapz import self_update
+
     calls = []
+    plan = self_update.DebUpdatePlan(
+        tag="v9.0.0",
+        package=self_update.CLIENT_PACKAGE_NAME,
+        asset_name="snapz-cli_9.0.0_all.deb",
+        download_url="https://example.test/snapz-cli_9.0.0_all.deb",
+        language="en",
+    )
+    result = self_update.DebUpdateResult(
+        ok=True,
+        plan=plan,
+        deb_path=Path("/tmp/snapz-cli_9.0.0_all.deb"),
+        command=["apt", "install", "-y", "/tmp/snapz-cli_9.0.0_all.deb"],
+        returncode=0,
+    )
 
-    class Result:
-        returncode = 0
+    def fake_plan_update(**kwargs):
+        calls.append(("plan", kwargs))
+        return plan
 
-    def fake_run_pip(args):
-        calls.append(args)
-        return Result()
+    def fake_install_plan(plan_arg):
+        calls.append(("install", plan_arg))
+        return result
 
-    monkeypatch.setattr(cli, "_run_pip", fake_run_pip)
+    monkeypatch.setattr(self_update, "plan_update", fake_plan_update)
+    monkeypatch.setattr(self_update, "install_plan", fake_install_plan)
 
     rc = cli.main(["update"])
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert calls == [["install", "--upgrade", cli.SNAPZ_GITHUB_INSTALL_TARGET]]
-    assert "github.com/IsolatedWolfLove/snap-all.git" in out
+    assert calls[0][0] == "plan"
+    assert calls[0][1]["language"] == "en"
+    assert calls[0][1]["package"] == self_update.CLIENT_PACKAGE_NAME
+    assert calls[1] == ("install", plan)
+    assert "snapz-cli_9.0.0_all.deb" in out
 
 
 def test_uninstall_keeps_data_when_user_says_no(

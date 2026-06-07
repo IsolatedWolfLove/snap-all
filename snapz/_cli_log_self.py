@@ -78,18 +78,47 @@ def cmd_log(args: argparse.Namespace, config: RuntimeConfig) -> int:
     return EXIT_OK
 
 def cmd_update(args: argparse.Namespace, config: RuntimeConfig) -> int:
-    target = getattr(args, "target", None) or SNAPZ_GITHUB_INSTALL_TARGET
-    pip_args = ["install", "--upgrade", target]
-    print(f"{st.muted(t('update.source'))} {st.path(target)}")
-    result = _cli_facade()._run_pip(pip_args)
+    from snapz import self_update
+    from snapz.i18n import get_lang
+
+    release_url = getattr(args, "target", None) or self_update.GITHUB_RELEASE_API
+    language = get_lang()
     if _wants_json(args):
+        try:
+            plan = self_update.plan_update(
+                language=language,
+                package=self_update.CLIENT_PACKAGE_NAME,
+                release_url=release_url,
+            )
+            result = self_update.install_plan(plan)
+        except Exception as exc:
+            _emit_json({"updated": False, "error": str(exc)})
+            return EXIT_ERROR
         _emit_json({
-            "updated": result.returncode == 0,
-            "target": target,
-            "command": [sys.executable, "-m", "pip", *pip_args],
+            "updated": result.ok,
+            "target": result.plan.download_url,
+            "asset": result.plan.asset_name,
+            "tag": result.plan.tag,
+            "language": result.plan.language,
+            "command": result.command,
             "returncode": result.returncode,
         })
-        return EXIT_OK if result.returncode == 0 else EXIT_ERROR
+        return EXIT_OK if result.ok else EXIT_ERROR
+    try:
+        plan = self_update.plan_update(
+            language=language,
+            package=self_update.CLIENT_PACKAGE_NAME,
+            release_url=release_url,
+        )
+    except Exception as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    print(f"{st.muted(t('update.source'))} {st.path(plan.download_url)}")
+    try:
+        result = self_update.install_plan(plan)
+    except Exception as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
     if result.returncode != 0:
         _print_error(t("update.failed", code=result.returncode))
         return EXIT_ERROR
@@ -166,4 +195,3 @@ def cmd_uninstall(args: argparse.Namespace, config: RuntimeConfig) -> int:
         print(f"{st.ok_mark()} {t('uninstall.data_deleted', path=st.path(str(data_root)))}")
     print(f"{st.ok_mark()} {t('uninstall.done')}")
     return EXIT_OK
-
