@@ -59,6 +59,15 @@ def _completion_path(parsed_args: argparse.Namespace) -> Path:
     return resolve_path(raw)
 
 
+def _configured_remote_only(config: RuntimeConfig) -> bool:
+    disk_config = preferences.load_config(Path(config.root))
+    return (
+        bool(disk_config["remote_only"])
+        if "remote_only" in disk_config
+        else config.remote_only
+    )
+
+
 def _snapshot_description(snap: SnapshotMeta) -> str:
     details = [format_iso(snap.created)]
     note = snap.note.strip()
@@ -861,6 +870,9 @@ def _main_impl(argv: Optional[list[str]]) -> int:
             st.configure(str(preferences.get_config_value(Path(config.root), "color")))
         except (KeyError, ValueError):
             st.configure("auto")
+        remote_only = _configured_remote_only(config)
+        if remote_only != config.remote_only:
+            config = _runtime_config_with(config, remote_only=remote_only)
         update_check.maybe_start(
             Path(config.root),
             current_version=__version__,
@@ -892,12 +904,7 @@ def _main_impl(argv: Optional[list[str]]) -> int:
         st.configure(str(preferences.get_config_value(Path(config.root), "color")))
     except (KeyError, ValueError):
         st.configure("auto")
-    disk_config = preferences.load_config(Path(config.root))
-    remote_only = (
-        bool(disk_config["remote_only"])
-        if "remote_only" in disk_config
-        else config.remote_only
-    )
+    remote_only = _configured_remote_only(config)
     if remote_only != config.remote_only:
         config = _runtime_config_with(config, remote_only=remote_only)
     if getattr(args, "no_zstd", False) or no_zstd_requested:

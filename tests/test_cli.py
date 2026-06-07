@@ -292,6 +292,30 @@ def test_bare_invocation_runs_interactive_with_inputs(
     assert api.list_snapshots(project_dir)[0].name == "v1"
 
 
+def test_bare_invocation_remote_only_starts_background_push(
+    env_root, project_dir, monkeypatch, capsys,
+):
+    preferences.set_config_value(env_root, "remote_only", "true")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_popen(command, **kwargs):
+        calls.append((list(command), kwargs))
+        return object()
+
+    monkeypatch.setattr("snapz._api_core.subprocess.Popen", fake_popen)
+    answers = iter(["v1", "y", ""])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+
+    rc = cli.main([str(project_dir)])
+
+    assert rc == 0
+    capsys.readouterr()
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command[-3:] == ["snapz", "push", "all"]
+    assert kwargs["env"]["SNAPZ_ALL_ROOT"] == str(env_root)
+
+
 def test_bare_invocation_lists_existing_snapshots_before_prompt(
     env_root, project_dir, monkeypatch, capsys
 ):
