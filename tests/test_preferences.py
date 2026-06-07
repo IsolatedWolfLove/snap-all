@@ -51,19 +51,56 @@ def test_config_effective_overlays_defaults(snap_root):
     assert eff["save_picker"] is False  # untouched -> default
 
 
-def test_api_save_honors_persisted_remote_only(project_dir, config, monkeypatch):
-    preferences.set_config_value(config.root, "remote_only", "true")
-    calls: list[object] = []
+def test_default_config_reads_remote_only_env(monkeypatch):
+    from snapz.config import default_config
 
-    monkeypatch.setattr(
-        "snapz.remote.push_all",
-        lambda *, config: calls.append(config) or None,
-    )
+    monkeypatch.setenv("SNAPZ_REMOTE_ONLY", "1")
+
+    assert default_config().remote_only is True
+
+
+def test_api_save_starts_remote_only_push_in_background(project_dir, config, monkeypatch):
+    preferences.set_config_value(config.root, "remote_only", "true")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_popen(command, **kwargs):
+        calls.append((list(command), kwargs))
+        return object()
+
+    monkeypatch.setattr("snapz._api_core.subprocess.Popen", fake_popen)
 
     api.save(project_dir, "remote-only", config=config)
 
     assert len(calls) == 1
-    assert calls[0].remote_only is True
+    command, kwargs = calls[0]
+    assert command[-3:] == ["snapz", "push", "all"]
+    assert kwargs["stdin"] is not None
+    assert kwargs["stdout"] is not None
+    assert kwargs["stderr"] is not None
+    assert kwargs["close_fds"] is True
+    assert kwargs["env"]["SNAPZ_ALL_ROOT"] == str(config.root)
+
+
+def test_api_save_background_push_preserves_runtime_remote_only(
+    project_dir, snap_root, monkeypatch,
+):
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_popen(command, **kwargs):
+        calls.append((list(command), kwargs))
+        return object()
+
+    monkeypatch.setattr("snapz._api_core.subprocess.Popen", fake_popen)
+
+    from snapz.config import RuntimeConfig
+
+    api.save(project_dir, "runtime-remote-only", config=RuntimeConfig(
+        root=snap_root,
+        remote_only=True,
+    ))
+
+    assert len(calls) == 1
+    assert calls[0][1]["env"]["SNAPZ_REMOTE_ONLY"] == "1"
 
 
 # ---------------- ui_mode ---------------------------------------------------

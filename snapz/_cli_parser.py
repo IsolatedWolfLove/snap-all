@@ -892,10 +892,12 @@ def _main_impl(argv: Optional[list[str]]) -> int:
         st.configure(str(preferences.get_config_value(Path(config.root), "color")))
     except (KeyError, ValueError):
         st.configure("auto")
-    try:
-        remote_only = bool(preferences.get_config_value(Path(config.root), "remote_only"))
-    except (KeyError, ValueError):
-        remote_only = config.remote_only
+    disk_config = preferences.load_config(Path(config.root))
+    remote_only = (
+        bool(disk_config["remote_only"])
+        if "remote_only" in disk_config
+        else config.remote_only
+    )
     if remote_only != config.remote_only:
         config = _runtime_config_with(config, remote_only=remote_only)
     if getattr(args, "no_zstd", False) or no_zstd_requested:

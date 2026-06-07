@@ -58,6 +58,13 @@ def _default_gzip_level() -> int:
     return _env_int("SNAPZ_GZIP_LEVEL", DEFAULT_GZIP_LEVEL, min_value=1, max_value=9)
 
 
+def _default_remote_only() -> bool:
+    raw = os.environ.get("SNAPZ_REMOTE_ONLY")
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
 def storage_root() -> Path:
     """Return the configured storage root, honoring ``SNAPZ_ALL_ROOT``."""
 
@@ -90,7 +97,7 @@ class RuntimeConfig:
     chunk_min_bytes: int = DEFAULT_CHUNK_MIN_BYTES
     chunk_avg_bytes: int = DEFAULT_CHUNK_AVG_BYTES
     chunk_max_bytes: int = DEFAULT_CHUNK_MAX_BYTES
-    remote_only: bool = False
+    remote_only: bool = field(default_factory=_default_remote_only)
 
     def with_root(self, root: Path) -> "RuntimeConfig":
         return type(self)(

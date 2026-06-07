@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Iterable, Optional
@@ -48,6 +50,30 @@ class _SaveFileResult:
     blob_bytes: int
     new_blob_count: int = 0
     chunks: list[cas.ChunkRef] = field(default_factory=list)
+
+
+def _start_remote_only_push(config: RuntimeConfig) -> bool:
+    env = os.environ.copy()
+    env["SNAPZ_ALL_ROOT"] = str(Path(config.root))
+    if config.remote_only:
+        env["SNAPZ_REMOTE_ONLY"] = "1"
+    kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+        "env": env,
+    }
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "snapz", "push", "all"],
+            **kwargs,
+        )
+    except Exception:
+        return False
+    return True
 
 
 def _rotl(value: int, bits: int) -> int:
@@ -576,12 +602,7 @@ def save(
     store.refresh_cached_summary_in_dir(dir_root)
 
     if configured_remote_only:
-        try:
-            from snapz import remote
-
-            remote.push_all(config=replace(config, remote_only=configured_remote_only))
-        except Exception:
-            pass
+        _start_remote_only_push(config)
 
     pack_result = PackResult(
         archive_path=m_path,
