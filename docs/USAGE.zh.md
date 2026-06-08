@@ -1,7 +1,8 @@
 # snapz 中文使用手册
 
 本文是一份面向日常使用的完整手册，覆盖本地快照、恢复、对比、清理、迁移、
-远程同步和排错。快速示例可以先看仓库根目录的 `README.zh.md`。
+远程同步和排错。快速示例可以先看仓库根目录的 `README.zh.md`；紧凑命令参考见
+[`COMMANDS.zh.md`](./COMMANDS.zh.md)。英文版见 [`USAGE.md`](./USAGE.md)。
 
 ## 1. snapz 是什么
 
@@ -24,6 +25,14 @@ snapz 的新格式使用内容寻址存储（CAS）：相同文件内容只保�
 如果已有构建产物：
 
 ```bash
+# Debian / Ubuntu
+sudo apt install ./dist/snapz-cli_*_all.deb
+sudo apt install ./dist/snapz-server_*_all.deb
+# 或
+sudo dpkg -i dist/snapz-cli_*_all.deb
+sudo dpkg -i dist/snapz-server_*_all.deb
+
+# Zipapp
 install -m 0755 dist/snapz.pyz ~/.local/bin/snapz
 install -m 0755 dist/snapz-server.pyz ~/.local/bin/snapz-server
 ```
@@ -36,6 +45,11 @@ pipx install "dist/snapz_cli-*.whl[zstd]"
 
 `[zstd]` 可选依赖会安装 `zstandard`，用于更快、更小的压缩格式。没有它时，
 snapz 会自动退回 gzip。
+
+`snapz-cli` Debian 包安装 `/usr/bin/snapz`。`snapz-server` Debian 包只安装
+`/usr/bin/snapz-server` 和 `/usr/share/doc/snapz-server/` 下的文档；不会自动写入
+`/etc/default/snapz-server` 或 systemd unit。执行 `sudo snapz-server init`
+才会创建配置、初始化数据目录并启用服务。
 
 ### 2.2 从源码安装开发版
 
@@ -159,6 +173,7 @@ snapz --no-zstd save . -n gzip-test -y
 | `SNAPZ_SAVE_WORKERS` | 默认保存并发 worker 数 |
 | `SNAPZ_ZSTD_LEVEL` | zstd 压缩等级，默认 `3` |
 | `SNAPZ_GZIP_LEVEL` | gzip 压缩等级，默认 `6` |
+| `SNAPZ_REMOTE_ONLY` | remote-only 本地 blob 驱逐的运行时默认值 |
 | `SNAPZ_SERVER_DATA` | snapz-server 默认数据目录 |
 | `SNAPZ_SERVER_HOST` | snapz-server 默认监听地址 |
 | `SNAPZ_SERVER_PORT` | snapz-server 默认监听端口 |
@@ -173,6 +188,7 @@ snapz --no-zstd save . -n gzip-test -y
 
 ```bash
 SNAPZ_LANG=zh snapz --help
+SNAPZ_LANG=zh snapz-server --help
 SNAPZ_SAVE_WORKERS=4 snapz save . -n v1 -y
 SNAPZ_ALL_ROOT=/tmp/snapz-test snapz list .
 SNAPZ_ZSTD_LEVEL=10 snapz save . -n smaller -y
@@ -609,6 +625,7 @@ snapz config set color always
 snapz config set save_picker true
 snapz config set ui_mode minimal
 snapz config set update_check.enabled false
+snapz config set remote_only true
 ```
 
 取消覆盖，回到默认值：
@@ -631,6 +648,7 @@ snapz config unset save_picker
 | `retention.keep_weekly` | `0` | prune 默认按周保留 N 个 |
 | `retention.keep_within_days` | `0` | prune 默认保留最近 N 天 |
 | `retention.auto_prune_after_save` | `false` | 保存后自动应用保留策略 |
+| `remote_only` | `false` | 远端确认上传后保留本地索引、驱逐可从服务端取回的本地内容 blob |
 
 ### 10.3 排除规则来源
 

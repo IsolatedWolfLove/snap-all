@@ -25,33 +25,7 @@ from snapz._cli_snapshot import cmd_export, cmd_mv, cmd_protect, cmd_restore, cm
 from snapz._cli_stats_prune import cmd_prune, cmd_stats
 from snapz._cli_web import cmd_web
 from snapz import update_check
-
-
-_ARGPARSE_I18N_KEYS = {
-    "usage: ": "argparse.usage",
-    "positional arguments": "argparse.positionals",
-    "options": "argparse.options",
-    "show this help message and exit": "argparse.help",
-    "%(prog)s: error: %(message)s\n": "argparse.error_format",
-    "unrecognized arguments: %s": "argparse.unrecognized",
-    "the following arguments are required: %s": "argparse.required",
-    "invalid choice: %(value)r (choose from %(choices)s)": "argparse.invalid_choice",
-    "expected one argument": "argparse.expected_one",
-    "expected at least one argument": "argparse.expected_at_least_one",
-    "expected at most one argument": "argparse.expected_at_most_one",
-    "argument %(argument_name)s: %(message)s": "argparse.argument_message",
-    "one of the arguments %s is required": "argparse.one_required",
-    "not allowed with argument %s": "argparse.not_allowed",
-}
-
-
-def _argparse_gettext(message: str) -> str:
-    key = _ARGPARSE_I18N_KEYS.get(message)
-    return t(key) if key is not None else message
-
-
-def _install_argparse_i18n() -> None:
-    argparse._ = _argparse_gettext  # type: ignore[attr-defined]  # noqa: SLF001
+from snapz.i18n import install_argparse_i18n
 
 
 def _completion_path(parsed_args: argparse.Namespace) -> Path:
@@ -122,7 +96,7 @@ def _tag_completer(prefix, parsed_args, **kwargs):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    _install_argparse_i18n()
+    install_argparse_i18n()
     parser = argparse.ArgumentParser(
         prog="snapz",
         description=t("root.description"),

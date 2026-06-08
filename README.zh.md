@@ -16,7 +16,10 @@
 > `snapz gc` 可在删除后回收孤儿 blob。共 248 个单元测试，在普通
 > 笔记本上 ~2 秒跑完。
 
-[**English README**](./README.md) · [**详细中文使用手册**](./docs/USAGE.zh.md)
+[**English README**](./README.md) ·
+[**详细中文使用手册**](./docs/USAGE.zh.md) ·
+[**中文命令参考**](./docs/COMMANDS.zh.md) ·
+[**remote_only 同步流程**](./docs/REMOTE_ONLY_SYNC.zh.md)
 
 ## 为什么用它
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from snapz_server import cli
 
 
@@ -17,6 +19,34 @@ class _FakeServer:
 
     def server_close(self) -> None:
         return None
+
+
+def test_server_help_zh_flips_descriptions(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("SNAPZ_LANG", "zh")
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--help"])
+
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "面向 snapz 客户端的多租户 HTTP 快照服务器" in out
+    assert "初始化配置、数据目录和 systemd 服务" in out
+    assert "用法:" in out
+    assert "位置参数" in out
+    assert "选项" in out
+    assert "Multi-tenant HTTP snapshot server" not in out
+    assert "initialize config, data, and systemd service" not in out
+
+
+def test_server_subcommand_help_zh(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("SNAPZ_LANG", "zh")
+
+    with pytest.raises(SystemExit):
+        cli.main(["run", "--help"])
+
+    out = capsys.readouterr().out
+    assert "监听地址" in out
+    assert "启用 mTLS" in out
 
 
 def test_run_uses_server_env_defaults(

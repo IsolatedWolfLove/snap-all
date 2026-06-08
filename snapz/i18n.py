@@ -25,12 +25,30 @@ stay grep-friendly.
 
 from __future__ import annotations
 
+import argparse
 import os
 
 # build-time bake target — keep on its own line, exact spelling.
 DEFAULT_LANG = "en"
 
 SUPPORTED_LANGS = ("en", "zh")
+
+_ARGPARSE_I18N_KEYS = {
+    "usage: ": "argparse.usage",
+    "positional arguments": "argparse.positionals",
+    "options": "argparse.options",
+    "show this help message and exit": "argparse.help",
+    "%(prog)s: error: %(message)s\n": "argparse.error_format",
+    "unrecognized arguments: %s": "argparse.unrecognized",
+    "the following arguments are required: %s": "argparse.required",
+    "invalid choice: %(value)r (choose from %(choices)s)": "argparse.invalid_choice",
+    "expected one argument": "argparse.expected_one",
+    "expected at least one argument": "argparse.expected_at_least_one",
+    "expected at most one argument": "argparse.expected_at_most_one",
+    "argument %(argument_name)s: %(message)s": "argparse.argument_message",
+    "one of the arguments %s is required": "argparse.one_required",
+    "not allowed with argument %s": "argparse.not_allowed",
+}
 
 
 def get_lang() -> str:
@@ -40,6 +58,15 @@ def get_lang() -> str:
     if DEFAULT_LANG in SUPPORTED_LANGS:
         return DEFAULT_LANG
     return "en"
+
+
+def _argparse_gettext(message: str) -> str:
+    key = _ARGPARSE_I18N_KEYS.get(message)
+    return t(key) if key is not None else message
+
+
+def install_argparse_i18n() -> None:
+    argparse._ = _argparse_gettext  # type: ignore[attr-defined]  # noqa: SLF001
 
 
 _EN: dict[str, str] = {
@@ -61,6 +88,69 @@ _EN: dict[str, str] = {
     "argparse.argument_message": "argument %(argument_name)s: %(message)s",
     "argparse.one_required": "one of the arguments %s is required",
     "argparse.not_allowed": "not allowed with argument %s",
+
+    # ---- snapz-server parser ----
+    "server.root.description": (
+        "Multi-tenant HTTP snapshot server for snapz clients."
+    ),
+    "server.flag.data": (
+        "server data directory (default: ~/.snapz-server or SNAPZ_SERVER_DATA)"
+    ),
+    "server.flag.config": (
+        "server config file "
+        "(default: /etc/default/snapz-server or SNAPZ_SERVER_CONFIG)"
+    ),
+    "server.arg.config": "server config file",
+    "server.arg.max_bundle_mb": "maximum upload bundle size in MiB",
+    "server.arg.cors_origin": (
+        "allow this browser Origin for cross-origin admin API calls; "
+        "repeat for multiple origins"
+    ),
+    "server.arg.tls_cert": "PEM certificate for HTTPS",
+    "server.arg.tls_key": "PEM private key for HTTPS",
+    "server.arg.tls_client_ca": "PEM CA bundle for client certificates",
+    "server.init.help": "initialize config, data, and systemd service",
+    "server.init.data": "server data directory (default: /srv/snapz)",
+    "server.init.host": "listen host (default: 0.0.0.0)",
+    "server.init.port": "listen port (default: 8765)",
+    "server.init.admin_token": "admin API bearer token (default: generated)",
+    "server.init.service_file": "systemd service path",
+    "server.init.server_bin": "snapz-server executable path for systemd",
+    "server.init.force": "overwrite existing config/service",
+    "server.init.no_enable": "do not enable/start systemd service",
+    "server.setup.help": "initialize the server data directory",
+    "server.run.help": "run the HTTP server",
+    "server.run.host": "listen host (default: 127.0.0.1 or SNAPZ_SERVER_HOST)",
+    "server.run.port": "listen port (default: 8765 or SNAPZ_SERVER_PORT)",
+    "server.run.cors_origin": (
+        "allow this browser Origin for cross-origin admin API calls; "
+        "repeat for multiple origins (default: same-origin only)"
+    ),
+    "server.run.max_bundle_mb": (
+        "maximum upload bundle size in MiB "
+        "(default: 10240 or SNAPZ_SERVER_MAX_BUNDLE_MB)"
+    ),
+    "server.run.tls_client_ca": (
+        "PEM CA bundle that enables mTLS and requires client certificates"
+    ),
+    "server.run.admin_token": (
+        "enable /admin and /api/admin with this bearer token "
+        "(or set SNAPZ_SERVER_ADMIN_TOKEN)"
+    ),
+    "server.tenant.help": "manage tenants",
+    "server.tenant.add_help": "create a tenant",
+    "server.tenant.name": "tenant name",
+    "server.user.help": "manage users",
+    "server.user.add_help": "create a user",
+    "server.user.tenant": "tenant name",
+    "server.user.username": "username",
+    "server.user.password": "password (prompts when omitted)",
+    "server.user.reset_help": "set a new password",
+    "server.device.help": "manage devices",
+    "server.device.revoke_help": "revoke a device token",
+    "server.device.id": "device id",
+    "server.doctor.help": "show server health and storage stats",
+    "server.update.help": "upgrade snapz-server without touching config",
 
     # ---- save (scripted) ----
     "save.help": "non-interactive snapshot create",
@@ -632,6 +722,59 @@ _ZH: dict[str, str] = {
     "argparse.argument_message": "参数 %(argument_name)s: %(message)s",
     "argparse.one_required": "以下参数至少需要一个: %s",
     "argparse.not_allowed": "不能与参数 %s 同时使用",
+
+    # ---- snapz-server parser ----
+    "server.root.description": "面向 snapz 客户端的多租户 HTTP 快照服务器。",
+    "server.flag.data": "服务端数据目录（默认: ~/.snapz-server 或 SNAPZ_SERVER_DATA）",
+    "server.flag.config": (
+        "服务端配置文件（默认: /etc/default/snapz-server 或 SNAPZ_SERVER_CONFIG）"
+    ),
+    "server.arg.config": "服务端配置文件",
+    "server.arg.max_bundle_mb": "单次上传 bundle 的最大 MiB 数",
+    "server.arg.cors_origin": "允许该浏览器 Origin 跨域访问管理 API；可重复",
+    "server.arg.tls_cert": "HTTPS 使用的 PEM 证书",
+    "server.arg.tls_key": "HTTPS 使用的 PEM 私钥",
+    "server.arg.tls_client_ca": "用于客户端证书的 PEM CA bundle",
+    "server.init.help": "初始化配置、数据目录和 systemd 服务",
+    "server.init.data": "服务端数据目录（默认: /srv/snapz）",
+    "server.init.host": "监听地址（默认: 0.0.0.0）",
+    "server.init.port": "监听端口（默认: 8765）",
+    "server.init.admin_token": "管理 API bearer token（默认: 自动生成）",
+    "server.init.service_file": "systemd service 路径",
+    "server.init.server_bin": "写入 systemd 的 snapz-server 可执行文件路径",
+    "server.init.force": "覆盖已存在的配置/service",
+    "server.init.no_enable": "不启用/启动 systemd 服务",
+    "server.setup.help": "初始化服务端数据目录",
+    "server.run.help": "运行 HTTP 服务器",
+    "server.run.host": "监听地址（默认: 127.0.0.1 或 SNAPZ_SERVER_HOST）",
+    "server.run.port": "监听端口（默认: 8765 或 SNAPZ_SERVER_PORT）",
+    "server.run.cors_origin": (
+        "允许该浏览器 Origin 跨域访问管理 API；可重复"
+        "（默认: 仅同源）"
+    ),
+    "server.run.max_bundle_mb": (
+        "单次上传 bundle 的最大 MiB 数"
+        "（默认: 10240 或 SNAPZ_SERVER_MAX_BUNDLE_MB）"
+    ),
+    "server.run.tls_client_ca": "启用 mTLS 并要求客户端证书的 PEM CA bundle",
+    "server.run.admin_token": (
+        "用该 bearer token 启用 /admin 和 /api/admin"
+        "（或设置 SNAPZ_SERVER_ADMIN_TOKEN）"
+    ),
+    "server.tenant.help": "管理租户",
+    "server.tenant.add_help": "创建租户",
+    "server.tenant.name": "租户名",
+    "server.user.help": "管理用户",
+    "server.user.add_help": "创建用户",
+    "server.user.tenant": "租户名",
+    "server.user.username": "用户名",
+    "server.user.password": "密码（省略时提示输入）",
+    "server.user.reset_help": "设置新密码",
+    "server.device.help": "管理设备",
+    "server.device.revoke_help": "吊销设备 token",
+    "server.device.id": "设备 id",
+    "server.doctor.help": "显示服务健康状态和存储统计",
+    "server.update.help": "升级 snapz-server，且不修改配置",
 
     # ---- save (scripted) ----
     "save.help": "非交互式创建快照",

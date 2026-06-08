@@ -22,7 +22,10 @@ destructive action.
 > pool shared across recorded source directories, while v2 per-dir CAS
 > snapshots remain readable.
 
-[**中文文档 / Chinese README**](./README.zh.md)
+[**中文文档 / Chinese README**](./README.zh.md) ·
+[**Full usage manual**](./docs/USAGE.md) ·
+[**Command reference**](./docs/COMMANDS.md) ·
+[**Remote-only sync**](./docs/REMOTE_ONLY_SYNC.md)
 
 ## Why
 

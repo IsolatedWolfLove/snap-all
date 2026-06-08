@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from snapz import __version__
+from snapz.i18n import install_argparse_i18n, t
 from snapz.util import format_size
 from snapz_server import db
 from snapz_server.app import make_server
@@ -425,133 +426,143 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    install_argparse_i18n()
     parser = argparse.ArgumentParser(
         prog="snapz-server",
-        description="Multi-tenant HTTP snapshot server for snapz clients.",
+        description=t("server.root.description"),
     )
-    parser.add_argument("--version", action="version", version=f"snapz-server {__version__}")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"snapz-server {__version__}",
+        help=t("flag.version"),
+    )
     parser.add_argument(
         "--data",
-        help="server data directory (default: ~/.snapz-server or SNAPZ_SERVER_DATA)",
+        help=t("server.flag.data"),
     )
     parser.add_argument(
         "--config",
         dest="global_config",
-        help=(
-            "server config file "
-            "(default: /etc/default/snapz-server or SNAPZ_SERVER_CONFIG)"
-        ),
+        help=t("server.flag.config"),
     )
     sub = parser.add_subparsers(dest="command")
 
-    p_init = sub.add_parser("init", help="initialize config, data, and systemd service")
-    p_init.add_argument("--config", help="server config file")
-    p_init.add_argument("--data", help="server data directory (default: /srv/snapz)")
-    p_init.add_argument("--host", default=None, help="listen host (default: 0.0.0.0)")
-    p_init.add_argument("--port", default=None, type=int, help="listen port (default: 8765)")
-    p_init.add_argument("--admin-token", help="admin API bearer token (default: generated)")
-    p_init.add_argument("--max-bundle-mb", default=None, type=int)
-    p_init.add_argument("--cors-origin", action="append", default=[])
-    p_init.add_argument("--tls-cert", help="PEM certificate for HTTPS")
-    p_init.add_argument("--tls-key", help="PEM private key for HTTPS")
-    p_init.add_argument("--tls-client-ca", help="PEM CA bundle for client certificates")
-    p_init.add_argument("--service-file", help="systemd service path")
-    p_init.add_argument("--server-bin", help="snapz-server executable path for systemd")
-    p_init.add_argument("--force", action="store_true", help="overwrite existing config/service")
-    p_init.add_argument("--no-enable", action="store_true", help="do not enable/start systemd service")
+    p_init = sub.add_parser("init", help=t("server.init.help"))
+    p_init.add_argument("--config", help=t("server.arg.config"))
+    p_init.add_argument("--data", help=t("server.init.data"))
+    p_init.add_argument("--host", default=None, help=t("server.init.host"))
+    p_init.add_argument("--port", default=None, type=int, help=t("server.init.port"))
+    p_init.add_argument("--admin-token", help=t("server.init.admin_token"))
+    p_init.add_argument(
+        "--max-bundle-mb",
+        default=None,
+        type=int,
+        help=t("server.arg.max_bundle_mb"),
+    )
+    p_init.add_argument(
+        "--cors-origin",
+        action="append",
+        default=[],
+        help=t("server.arg.cors_origin"),
+    )
+    p_init.add_argument("--tls-cert", help=t("server.arg.tls_cert"))
+    p_init.add_argument("--tls-key", help=t("server.arg.tls_key"))
+    p_init.add_argument("--tls-client-ca", help=t("server.arg.tls_client_ca"))
+    p_init.add_argument("--service-file", help=t("server.init.service_file"))
+    p_init.add_argument("--server-bin", help=t("server.init.server_bin"))
+    p_init.add_argument("--force", action="store_true", help=t("server.init.force"))
+    p_init.add_argument("--no-enable", action="store_true", help=t("server.init.no_enable"))
     p_init.set_defaults(func=cmd_init)
 
-    p_setup = sub.add_parser("setup", help="initialize the server data directory")
-    p_setup.add_argument("--config", help="server config file")
+    p_setup = sub.add_parser("setup", help=t("server.setup.help"))
+    p_setup.add_argument("--config", help=t("server.arg.config"))
     p_setup.set_defaults(func=cmd_setup)
 
-    p_run = sub.add_parser("run", help="run the HTTP server")
-    p_run.add_argument("--config", help="server config file")
+    p_run = sub.add_parser("run", help=t("server.run.help"))
+    p_run.add_argument("--config", help=t("server.arg.config"))
     p_run.add_argument(
         "--host",
         default=None,
-        help="listen host (default: 127.0.0.1 or SNAPZ_SERVER_HOST)",
+        help=t("server.run.host"),
     )
     p_run.add_argument(
         "--port",
         default=None,
         type=int,
-        help="listen port (default: 8765 or SNAPZ_SERVER_PORT)",
+        help=t("server.run.port"),
     )
     p_run.add_argument(
         "--cors-origin",
         action="append",
         default=[],
-        help=(
-            "allow this browser Origin for cross-origin admin API calls; "
-            "repeat for multiple origins (default: same-origin only)"
-        ),
+        help=t("server.run.cors_origin"),
     )
     p_run.add_argument(
         "--max-bundle-mb",
         default=None,
         type=int,
-        help=(
-            "maximum upload bundle size in MiB "
-            "(default: 10240 or SNAPZ_SERVER_MAX_BUNDLE_MB)"
-        ),
+        help=t("server.run.max_bundle_mb"),
     )
     p_run.add_argument(
         "--tls-cert",
-        help="PEM certificate for HTTPS",
+        help=t("server.arg.tls_cert"),
     )
     p_run.add_argument(
         "--tls-key",
-        help="PEM private key for HTTPS",
+        help=t("server.arg.tls_key"),
     )
     p_run.add_argument(
         "--tls-client-ca",
-        help="PEM CA bundle that enables mTLS and requires client certificates",
+        help=t("server.run.tls_client_ca"),
     )
     p_run.add_argument(
         "--admin-token",
-        help=(
-            "enable /admin and /api/admin with this bearer token "
-            "(or set SNAPZ_SERVER_ADMIN_TOKEN)"
-        ),
+        help=t("server.run.admin_token"),
     )
     p_run.set_defaults(func=cmd_run)
 
-    p_tenant = sub.add_parser("tenant", help="manage tenants")
-    p_tenant.add_argument("--config", help="server config file")
+    p_tenant = sub.add_parser("tenant", help=t("server.tenant.help"))
+    p_tenant.add_argument("--config", help=t("server.arg.config"))
     tenant_sub = p_tenant.add_subparsers(dest="tenant_op")
-    p_tenant_add = tenant_sub.add_parser("add", help="create a tenant")
-    p_tenant_add.add_argument("name")
+    p_tenant_add = tenant_sub.add_parser("add", help=t("server.tenant.add_help"))
+    p_tenant_add.add_argument("name", help=t("server.tenant.name"))
     p_tenant_add.set_defaults(func=cmd_tenant_add)
 
-    p_user = sub.add_parser("user", help="manage users")
-    p_user.add_argument("--config", help="server config file")
+    p_user = sub.add_parser("user", help=t("server.user.help"))
+    p_user.add_argument("--config", help=t("server.arg.config"))
     user_sub = p_user.add_subparsers(dest="user_op")
-    p_user_add = user_sub.add_parser("add", help="create a user")
-    p_user_add.add_argument("tenant")
-    p_user_add.add_argument("username")
-    p_user_add.add_argument("--password")
+    p_user_add = user_sub.add_parser("add", help=t("server.user.add_help"))
+    p_user_add.add_argument("tenant", help=t("server.user.tenant"))
+    p_user_add.add_argument("username", help=t("server.user.username"))
+    p_user_add.add_argument("--password", help=t("server.user.password"))
     p_user_add.set_defaults(func=cmd_user_add)
 
-    p_user_reset = user_sub.add_parser("reset-password", help="set a new password")
-    p_user_reset.add_argument("tenant")
-    p_user_reset.add_argument("username")
-    p_user_reset.add_argument("--password")
+    p_user_reset = user_sub.add_parser(
+        "reset-password",
+        help=t("server.user.reset_help"),
+    )
+    p_user_reset.add_argument("tenant", help=t("server.user.tenant"))
+    p_user_reset.add_argument("username", help=t("server.user.username"))
+    p_user_reset.add_argument("--password", help=t("server.user.password"))
     p_user_reset.set_defaults(func=cmd_user_reset_password)
 
-    p_device = sub.add_parser("device", help="manage devices")
-    p_device.add_argument("--config", help="server config file")
+    p_device = sub.add_parser("device", help=t("server.device.help"))
+    p_device.add_argument("--config", help=t("server.arg.config"))
     device_sub = p_device.add_subparsers(dest="device_op")
-    p_device_revoke = device_sub.add_parser("revoke", help="revoke a device token")
-    p_device_revoke.add_argument("device_id")
+    p_device_revoke = device_sub.add_parser(
+        "revoke",
+        help=t("server.device.revoke_help"),
+    )
+    p_device_revoke.add_argument("device_id", help=t("server.device.id"))
     p_device_revoke.set_defaults(func=cmd_device_revoke)
 
-    p_doctor = sub.add_parser("doctor", help="show server health and storage stats")
-    p_doctor.add_argument("--config", help="server config file")
+    p_doctor = sub.add_parser("doctor", help=t("server.doctor.help"))
+    p_doctor.add_argument("--config", help=t("server.arg.config"))
     p_doctor.set_defaults(func=cmd_doctor)
 
-    p_update = sub.add_parser("update", help="upgrade snapz-server without touching config")
-    p_update.add_argument("--config", help="server config file")
+    p_update = sub.add_parser("update", help=t("server.update.help"))
+    p_update.add_argument("--config", help=t("server.arg.config"))
     p_update.add_argument(
         "--target",
         default=None,
