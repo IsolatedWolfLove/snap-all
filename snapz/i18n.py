@@ -466,7 +466,7 @@ _EN: dict[str, str] = {
     "uninstall.data_missing": "data directory does not exist",
     "uninstall.data_deleted": "deleted data at {path}",
     "uninstall.done": "snapz uninstalled",
-    "uninstall.failed": "uninstall failed (pip exit code {code})",
+    "uninstall.failed": "uninstall failed (exit code {code})",
     "uninstall.refuse_delete_root": "refusing to delete unsafe data path: {path}",
 
     # ---- global --json ----
@@ -555,6 +555,7 @@ _EN: dict[str, str] = {
     "kv.blobs": "blobs",
     "kv.key": "key",
     "kv.package": "package",
+    "kv.command": "command",
     "kv.data_root": "data root",
     "kv.data_size": "data size",
     "kv.state": "state",
@@ -1055,7 +1056,7 @@ _ZH: dict[str, str] = {
     "uninstall.data_missing": "数据目录不存在",
     "uninstall.data_deleted": "已删除数据目录 {path}",
     "uninstall.done": "snapz 已卸载",
-    "uninstall.failed": "卸载失败（pip 退出码 {code}）",
+    "uninstall.failed": "卸载失败（退出码 {code}）",
     "uninstall.refuse_delete_root": "拒绝删除不安全的数据路径:{path}",
 
     # ---- global --json ----
@@ -1134,6 +1135,7 @@ _ZH: dict[str, str] = {
     "kv.blobs": "blob 数",
     "kv.key": "key",
     "kv.package": "包名",
+    "kv.command": "命令",
     "kv.data_root": "数据目录",
     "kv.data_size": "数据大小",
     "kv.state": "状态",

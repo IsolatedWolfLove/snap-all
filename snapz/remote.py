@@ -85,6 +85,34 @@ class RemoteError(RuntimeError):
         self.status = status
 
 
+def machine_id() -> str:
+    candidates = [
+        Path("/etc/machine-id"),
+        Path("/var/lib/dbus/machine-id"),
+    ]
+    for path in candidates:
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if value:
+            return _machine_id_hash(value)
+    fallback = "|".join(
+        part
+        for part in (
+            platform.node(),
+            platform.system(),
+            platform.machine(),
+        )
+        if part
+    )
+    return _machine_id_hash(fallback or "unknown-device")
+
+
+def _machine_id_hash(value: str) -> str:
+    return hashlib.sha256(f"snapz:{value}".encode("utf-8")).hexdigest()
+
+
 def config_path(config: Optional[RuntimeConfig] = None) -> Path:
     cfg = config or default_config()
     return Path(cfg.root) / REMOTE_CONFIG_FILENAME
@@ -202,10 +230,29 @@ def _remove_stale_remote_sync_lock(path: Path) -> bool:
 
 
 def logout(config: Optional[RuntimeConfig] = None) -> bool:
+    unregister_device(config=config)
     path = config_path(config)
     existed = path.exists()
     path.unlink(missing_ok=True)
     return existed
+
+
+def unregister_device(config: Optional[RuntimeConfig] = None) -> bool:
+    try:
+        auth = load_auth(config)
+    except (FileNotFoundError, ValueError, KeyError):
+        return False
+    try:
+        _request_json(
+            "POST",
+            auth.server_url,
+            "/api/auth/logout",
+            token=auth.token,
+            **auth.tls_kwargs(),
+        )
+    except Exception:
+        return False
+    return True
 
 
 def login(
@@ -232,6 +279,7 @@ def login(
         "username": username,
         "password": password,
         "device_name": device_name or platform.node() or "device",
+        "machine_id": machine_id(),
     }
     response = _request_json(
         "POST",

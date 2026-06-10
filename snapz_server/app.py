@@ -10,6 +10,7 @@ import os
 import sqlite3
 import tarfile
 import tempfile
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -69,6 +70,7 @@ from snapz_server.server_config import (
 
 MAX_JSON_BYTES = 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
+DEVICE_SWEEP_INTERVAL_SECONDS = db.DEVICE_OFFLINE_AFTER_HOURS * 60 * 60
 
 
 class SnapzHTTPServer(ThreadingHTTPServer):
@@ -81,6 +83,17 @@ class SnapzHTTPServer(ThreadingHTTPServer):
     tls_certfile: str
     tls_keyfile: str
     tls_client_ca: str
+    _device_sweeper_stop: threading.Event
+    _device_sweeper_thread: threading.Thread | None
+
+    def server_close(self) -> None:
+        stop = getattr(self, "_device_sweeper_stop", None)
+        if stop is not None:
+            stop.set()
+        thread = getattr(self, "_device_sweeper_thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1)
+        super().server_close()
 
 
 def make_server(
@@ -94,6 +107,7 @@ def make_server(
     tls_certfile: str | None = None,
     tls_keyfile: str | None = None,
     tls_client_ca: str | None = None,
+    device_sweep_interval_seconds: float | None = None,
 ) -> SnapzHTTPServer:
     root = db.resolve_data_dir(data_dir)
     db.init_db(root)
@@ -119,7 +133,46 @@ def make_server(
         env_name="SNAPZ_SERVER_TLS_CLIENT_CA",
     )
     _enable_tls(server)
+    _start_device_sweeper(
+        server,
+        (
+            DEVICE_SWEEP_INTERVAL_SECONDS
+            if device_sweep_interval_seconds is None
+            else device_sweep_interval_seconds
+        ),
+    )
     return server
+
+
+def _start_device_sweeper(
+    server: SnapzHTTPServer,
+    interval_seconds: float,
+) -> None:
+    stop = threading.Event()
+    server._device_sweeper_stop = stop
+    if interval_seconds <= 0:
+        server._device_sweeper_thread = None
+        return
+    thread = threading.Thread(
+        target=_device_sweeper_loop,
+        args=(server, stop, interval_seconds),
+        name="snapz-device-sweeper",
+        daemon=True,
+    )
+    server._device_sweeper_thread = thread
+    thread.start()
+
+
+def _device_sweeper_loop(
+    server: SnapzHTTPServer,
+    stop: threading.Event,
+    interval_seconds: float,
+) -> None:
+    while not stop.wait(interval_seconds):
+        try:
+            db.mark_stale_devices_offline(server.data_dir)
+        except Exception:
+            pass
 
 
 class SnapzHandler(BaseHTTPRequestHandler):
@@ -130,6 +183,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
         return self.server.data_dir  # type: ignore[attr-defined]
 
     def do_GET(self) -> None:  # noqa: N802
+        db.mark_stale_devices_offline(self.data_dir)
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         if path == "/":
@@ -221,10 +275,14 @@ class SnapzHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        db.mark_stale_devices_offline(self.data_dir)
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         if path == "/api/auth/login":
             self._handle_login()
+            return
+        if path == "/api/auth/logout":
+            self._handle_logout()
             return
         source_id = _source_id_from_sync_status_path(path)
         if source_id:
@@ -248,6 +306,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_PUT(self) -> None:  # noqa: N802
+        db.mark_stale_devices_offline(self.data_dir)
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         if path.startswith("/api/sources/") and path.endswith("/bundle"):
@@ -259,6 +318,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_PATCH(self) -> None:  # noqa: N802
+        db.mark_stale_devices_offline(self.data_dir)
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         snapshot_ref = _admin_source_snapshot_ref_from_path(path)
@@ -282,6 +342,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_DELETE(self) -> None:  # noqa: N802
+        db.mark_stale_devices_offline(self.data_dir)
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         snapshot_ref = _admin_source_snapshot_ref_from_path(path)
@@ -317,6 +378,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
             username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or "")
             device_name = str(payload.get("device_name") or "device").strip()
+            machine_id = str(payload.get("machine_id") or "").strip()
             if not tenant or not username or not password:
                 raise ValueError("tenant, username and password are required")
             ctx, token = db.login_device(
@@ -325,6 +387,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 username,
                 password,
                 device_name,
+                machine_id,
             )
         except PermissionError as exc:
             self._send_json(HTTPStatus.UNAUTHORIZED, {"error": str(exc)})
@@ -343,6 +406,13 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 "user": _ctx_dict(ctx),
             },
         )
+
+    def _handle_logout(self) -> None:
+        ctx = self._require_auth()
+        if ctx is None:
+            return
+        db.unregister_device(self.data_dir, ctx)
+        self._send_json(HTTPStatus.OK, {"ok": True, "device_id": ctx.device_id})
 
     def _handle_source_sync_status(self, source_id: str) -> None:
         ctx = self._require_auth()

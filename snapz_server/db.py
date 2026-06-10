@@ -8,6 +8,7 @@ import os
 import secrets
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +16,7 @@ from snapz.util import now_iso
 
 DEFAULT_DATA_DIR = Path("~/.snapz-server").expanduser()
 PBKDF2_ROUNDS = 210_000
+DEVICE_OFFLINE_AFTER_HOURS = 24
 
 
 @dataclass
@@ -25,6 +27,7 @@ class AuthContext:
     username: str
     device_id: str = ""
     device_name: str = ""
+    machine_id: str = ""
 
 
 def resolve_data_dir(path: str | Path | None = None) -> Path:
@@ -156,7 +159,16 @@ def init_db(data_dir: str | Path) -> None:
                 tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
+                machine_id TEXT NOT NULL DEFAULT '',
                 token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                offline_at TEXT NOT NULL DEFAULT '',
+                revoked_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS device_tokens (
+                token_hash TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
                 created_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
                 revoked_at TEXT NOT NULL DEFAULT ''
@@ -175,6 +187,43 @@ def init_db(data_dir: str | Path) -> None:
             """
         )
         _migrate_sources_table(con)
+        _migrate_devices_columns(con)
+        _migrate_device_tokens(con)
+
+
+def _migrate_devices_columns(con: sqlite3.Connection) -> None:
+    existing = {
+        row["name"]
+        for row in con.execute("PRAGMA table_info(devices)")
+    }
+    if "offline_at" not in existing:
+        con.execute("ALTER TABLE devices ADD COLUMN offline_at TEXT NOT NULL DEFAULT ''")
+    if "machine_id" not in existing:
+        con.execute("ALTER TABLE devices ADD COLUMN machine_id TEXT NOT NULL DEFAULT ''")
+
+
+def _migrate_device_tokens(con: sqlite3.Connection) -> None:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            token_hash TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            revoked_at TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT OR IGNORE INTO device_tokens(
+          token_hash, device_id, created_at, last_seen_at, revoked_at
+        )
+        SELECT token_hash, id, created_at, last_seen_at, revoked_at
+        FROM devices
+        WHERE token_hash != ''
+        """
+    )
 
 
 def _new_id(prefix: str) -> str:
@@ -281,6 +330,7 @@ def login_device(
     username: str,
     password: str,
     device_name: str,
+    machine_id: str = "",
 ) -> tuple[AuthContext, str]:
     tenant = get_tenant(data_dir, tenant_name)
     if tenant is None:
@@ -296,24 +346,62 @@ def login_device(
         if user is None or not verify_password(password, user["password_hash"]):
             raise PermissionError("invalid username or password")
         token = secrets.token_urlsafe(32)
-        device_id = _new_id("dev")
         ts = now_iso()
+        machine_id = str(machine_id or "").strip()
+        existing = None
+        if machine_id:
+            existing = con.execute(
+                """
+                SELECT * FROM devices
+                WHERE tenant_id = ? AND user_id = ? AND machine_id = ?
+                """,
+                (tenant["id"], user["id"], machine_id),
+            ).fetchone()
+        if existing is not None:
+            device_id = existing["id"]
+            saved_name = device_name or existing["name"] or "device"
+            con.execute(
+                """
+                UPDATE devices
+                SET name = ?, last_seen_at = ?, offline_at = '', revoked_at = ''
+                WHERE id = ?
+                """,
+                (
+                    saved_name,
+                    ts,
+                    device_id,
+                ),
+            )
+        else:
+            device_id = _new_id("dev")
+            saved_name = device_name or "device"
+            con.execute(
+                """
+                INSERT INTO devices(
+                  id, tenant_id, user_id, name, machine_id, token_hash,
+                  created_at, last_seen_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    device_id,
+                    tenant["id"],
+                    user["id"],
+                    saved_name,
+                    machine_id,
+                    hash_token(token),
+                    ts,
+                    ts,
+                ),
+            )
         con.execute(
             """
-            INSERT INTO devices(
-              id, tenant_id, user_id, name, token_hash, created_at, last_seen_at
+            INSERT INTO device_tokens(
+              token_hash, device_id, created_at, last_seen_at, revoked_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, '')
             """,
-            (
-                device_id,
-                tenant["id"],
-                user["id"],
-                device_name or "device",
-                hash_token(token),
-                ts,
-                ts,
-            ),
+            (hash_token(token), device_id, ts, ts),
         )
     return (
         AuthContext(
@@ -322,7 +410,8 @@ def login_device(
             user_id=user["id"],
             username=user["username"],
             device_id=device_id,
-            device_name=device_name or "device",
+            device_name=saved_name,
+            machine_id=machine_id,
         ),
         token,
     )
@@ -338,19 +427,28 @@ def authenticate_token(data_dir: str | Path, token: str) -> Optional[AuthContext
             SELECT
               t.id AS tenant_id, t.name AS tenant_name,
               u.id AS user_id, u.username AS username,
-              d.id AS device_id, d.name AS device_name
-            FROM devices d
+              d.id AS device_id, d.name AS device_name, d.machine_id AS machine_id
+            FROM device_tokens tok
+            JOIN devices d ON d.id = tok.device_id
             JOIN users u ON u.id = d.user_id
             JOIN tenants t ON t.id = d.tenant_id
-            WHERE d.token_hash = ? AND d.revoked_at = '' AND u.disabled = 0
+            WHERE tok.token_hash = ?
+              AND tok.revoked_at = ''
+              AND d.revoked_at = ''
+              AND u.disabled = 0
             """,
             (token_hash,),
         ).fetchone()
         if row is None:
             return None
+        ts = now_iso()
         con.execute(
-            "UPDATE devices SET last_seen_at = ? WHERE id = ?",
-            (now_iso(), row["device_id"]),
+            "UPDATE devices SET last_seen_at = ?, offline_at = '' WHERE id = ?",
+            (ts, row["device_id"]),
+        )
+        con.execute(
+            "UPDATE device_tokens SET last_seen_at = ? WHERE token_hash = ?",
+            (ts, token_hash),
         )
         return AuthContext(
             tenant_id=row["tenant_id"],
@@ -359,16 +457,112 @@ def authenticate_token(data_dir: str | Path, token: str) -> Optional[AuthContext
             username=row["username"],
             device_id=row["device_id"],
             device_name=row["device_name"],
+            machine_id=row["machine_id"],
         )
 
 
 def revoke_device(data_dir: str | Path, device_id: str) -> bool:
     with connect(data_dir) as con:
+        ts = now_iso()
         cur = con.execute(
             "UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at = ''",
-            (now_iso(), device_id),
+            (ts, device_id),
+        )
+        if cur.rowcount > 0:
+            _revoke_device_tokens(con, device_id, ts)
+            return True
+        return False
+
+
+def _revoke_device_tokens(con: sqlite3.Connection, device_id: str, ts: str) -> None:
+    con.execute(
+        """
+        UPDATE device_tokens
+        SET revoked_at = ?
+        WHERE device_id = ? AND revoked_at = ''
+        """,
+        (ts, device_id),
+    )
+
+
+def _revoke_user_device_tokens(con: sqlite3.Connection, user_id: str, ts: str) -> None:
+    con.execute(
+        """
+        UPDATE device_tokens
+        SET revoked_at = ?
+        WHERE revoked_at = ''
+          AND device_id IN (
+            SELECT id FROM devices WHERE user_id = ?
+          )
+        """,
+        (ts, user_id),
+    )
+
+
+def mark_device_offline(data_dir: str | Path, ctx: AuthContext) -> bool:
+    with connect(data_dir) as con:
+        ts = now_iso()
+        cur = con.execute(
+            """
+            UPDATE devices
+            SET offline_at = ?
+            WHERE id = ?
+              AND tenant_id = ?
+              AND user_id = ?
+              AND revoked_at = ''
+            """,
+            (ts, ctx.device_id, ctx.tenant_id, ctx.user_id),
         )
         return cur.rowcount > 0
+
+
+def unregister_device(data_dir: str | Path, ctx: AuthContext) -> bool:
+    with connect(data_dir) as con:
+        ts = now_iso()
+        cur = con.execute(
+            """
+            UPDATE devices
+            SET offline_at = ?, revoked_at = ?
+            WHERE id = ?
+              AND tenant_id = ?
+              AND user_id = ?
+            """,
+            (ts, ts, ctx.device_id, ctx.tenant_id, ctx.user_id),
+        )
+        if cur.rowcount > 0:
+            _revoke_device_tokens(con, ctx.device_id, ts)
+            return True
+        return False
+
+
+def mark_stale_devices_offline(
+    data_dir: str | Path,
+    *,
+    now: str | None = None,
+    offline_after_hours: int = DEVICE_OFFLINE_AFTER_HOURS,
+) -> int:
+    init_db(data_dir)
+    cutoff = _iso_minus_hours(now or now_iso(), offline_after_hours)
+    with connect(data_dir) as con:
+        cur = con.execute(
+            """
+            UPDATE devices
+            SET offline_at = ?
+            WHERE revoked_at = ''
+              AND offline_at = ''
+              AND last_seen_at <= ?
+            """,
+            (now or now_iso(), cutoff),
+        )
+        return cur.rowcount
+
+
+def _iso_minus_hours(value: str, hours: int) -> str:
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        dt = datetime.fromisoformat(now_iso())
+    return (dt - timedelta(hours=hours)).replace(microsecond=0).isoformat()
 
 
 def list_admin_users(data_dir: str | Path) -> list[sqlite3.Row]:
@@ -385,8 +579,10 @@ def list_admin_users(data_dir: str | Path) -> list[sqlite3.Row]:
                   u.disabled AS disabled,
                   u.created_at AS created_at,
                   COUNT(d.id) AS device_count,
-                  COALESCE(SUM(CASE WHEN d.revoked_at = '' THEN 1 ELSE 0 END), 0)
-                    AS active_device_count,
+                  COALESCE(SUM(
+                    CASE WHEN d.revoked_at = '' AND d.offline_at = ''
+                    THEN 1 ELSE 0 END
+                  ), 0) AS active_device_count,
                   COALESCE(MAX(NULLIF(d.last_seen_at, '')), '') AS last_seen_at
                 FROM users u
                 JOIN tenants t ON t.id = u.tenant_id
@@ -411,8 +607,10 @@ def get_admin_user(data_dir: str | Path, user_id: str) -> Optional[sqlite3.Row]:
               u.disabled AS disabled,
               u.created_at AS created_at,
               COUNT(d.id) AS device_count,
-              COALESCE(SUM(CASE WHEN d.revoked_at = '' THEN 1 ELSE 0 END), 0)
-                AS active_device_count,
+              COALESCE(SUM(
+                CASE WHEN d.revoked_at = '' AND d.offline_at = ''
+                THEN 1 ELSE 0 END
+              ), 0) AS active_device_count,
               COALESCE(MAX(NULLIF(d.last_seen_at, '')), '') AS last_seen_at
             FROM users u
             JOIN tenants t ON t.id = u.tenant_id
@@ -694,8 +892,10 @@ def list_admin_devices(
                   d.user_id AS user_id,
                   u.username AS username,
                   d.name AS name,
+                  d.machine_id AS machine_id,
                   d.created_at AS created_at,
                   d.last_seen_at AS last_seen_at,
+                  d.offline_at AS offline_at,
                   d.revoked_at AS revoked_at
                 FROM devices d
                 JOIN tenants t ON t.id = d.tenant_id
@@ -711,14 +911,17 @@ def list_admin_devices(
 def revoke_user_devices(data_dir: str | Path, user_id: str) -> int:
     init_db(data_dir)
     with connect(data_dir) as con:
+        ts = now_iso()
         cur = con.execute(
             """
             UPDATE devices
             SET revoked_at = ?
             WHERE user_id = ? AND revoked_at = ''
             """,
-            (now_iso(), user_id),
+            (ts, user_id),
         )
+        if cur.rowcount > 0:
+            _revoke_user_device_tokens(con, user_id, ts)
         return cur.rowcount
 
 

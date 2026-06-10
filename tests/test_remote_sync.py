@@ -53,6 +53,67 @@ def _run_openssl(*args: str) -> None:
     )
 
 
+def test_login_sends_stable_machine_id(config, monkeypatch):
+    seen: dict[str, object] = {}
+
+    def fake_request_json(method, server_url, path, **kwargs):
+        seen["method"] = method
+        seen["server_url"] = server_url
+        seen["path"] = path
+        seen["payload"] = kwargs["payload"]
+        return {
+            "token": "tok",
+            "device": {"id": "dev_1", "name": "laptop"},
+        }
+
+    monkeypatch.setattr(remote, "machine_id", lambda: "machine-hash")
+    monkeypatch.setattr(remote, "_request_json", fake_request_json)
+
+    auth = remote.login(
+        "http://server.example",
+        tenant="acme",
+        username="alice",
+        password="secret",
+        device_name="laptop",
+        config=config,
+    )
+
+    assert auth.device_id == "dev_1"
+    assert seen["path"] == "/api/auth/login"
+    assert seen["payload"]["machine_id"] == "machine-hash"
+
+
+def test_logout_unregisters_remote_device_once(config, monkeypatch):
+    auth = remote.RemoteAuth(
+        server_url="http://server.example",
+        tenant="acme",
+        username="alice",
+        token="tok",
+        device_id="dev_1",
+        device_name="laptop",
+    )
+    remote.save_auth(auth, config)
+    calls: list[tuple[str, str, str, dict[str, object]]] = []
+
+    def fake_request_json(method, server_url, path, **kwargs):
+        calls.append((method, server_url, path, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(remote, "_request_json", fake_request_json)
+
+    assert remote.logout(config) is True
+
+    assert not remote.config_path(config).exists()
+    assert len(calls) == 1
+    method, server_url, path, kwargs = calls[0]
+    assert (method, server_url, path) == (
+        "POST",
+        "http://server.example",
+        "/api/auth/logout",
+    )
+    assert kwargs["token"] == "tok"
+
+
 def _generate_self_signed_server_cert(tmp_path: Path) -> tuple[Path, Path]:
     cert = tmp_path / "server-cert.pem"
     key = tmp_path / "server-key.pem"

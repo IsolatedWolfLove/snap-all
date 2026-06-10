@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import tarfile
+import time
 import base64
 import hashlib
 from pathlib import Path
@@ -380,6 +381,151 @@ def test_admin_api_manages_pushed_sources(tmp_path):
         )
     finally:
         server.shutdown()
+        server.server_close()
+
+
+def test_logout_revokes_token_but_keeps_sources_and_reuses_machine_device(tmp_path):
+    server_root = tmp_path / "server"
+    server, url = _start_server(server_root)
+    try:
+        _json(
+            url,
+            "/api/admin/users",
+            method="POST",
+            payload={
+                "tenant": "acme",
+                "username": "alice",
+                "password": "secret",
+            },
+            expect=201,
+        )
+        login = _json(
+            url,
+            "/api/auth/login",
+            method="POST",
+            payload={
+                "tenant": "acme",
+                "username": "alice",
+                "password": "secret",
+                "device_name": "laptop",
+                "machine_id": "machine-1",
+            },
+            token=None,
+        )
+        token = login["token"]
+        device_id = login["device"]["id"]
+        source = {"key": "local-key", "abspath": "/tmp/project"}
+        source_id = db.source_id_for(source)
+        ctx = db.authenticate_token(server_root, token)
+        assert ctx is not None
+        db.upsert_source(
+            server_root,
+            ctx,
+            source_id,
+            source,
+            snapshot_count=1,
+            bundle_bytes=123,
+            bundle_sha256="a" * 64,
+        )
+
+        _json(url, "/api/auth/logout", method="POST", token=token)
+
+        _json(url, "/api/me", token=token, expect=401)
+        sources = _json(url, "/api/admin/sources")["sources"]
+        assert [item["id"] for item in sources] == [source_id]
+        devices = _json(url, "/api/admin/devices")["devices"]
+        assert devices[0]["id"] == device_id
+        assert devices[0]["revoked"] is True
+
+        relogin = _json(
+            url,
+            "/api/auth/login",
+            method="POST",
+            payload={
+                "tenant": "acme",
+                "username": "alice",
+                "password": "secret",
+                "device_name": "laptop-again",
+                "machine_id": "machine-1",
+            },
+            token=None,
+        )
+
+        assert relogin["device"]["id"] == device_id
+        assert relogin["device"]["name"] == "laptop-again"
+        _json(url, "/api/me", token=token, expect=401)
+        assert _json(url, "/api/me", token=relogin["token"])["user"]["device_id"] == device_id
+        devices = _json(url, "/api/admin/devices")["devices"]
+        assert len(devices) == 1
+        assert devices[0]["revoked"] is False
+        assert devices[0]["offline"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_stale_device_goes_offline_but_token_stays_valid(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "acme", "alice", "secret")
+    ctx, token = db.login_device(
+        server_root,
+        "acme",
+        "alice",
+        "secret",
+        "laptop",
+        machine_id="machine-1",
+    )
+    with db.connect(server_root) as con:
+        con.execute(
+            "UPDATE devices SET last_seen_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00", ctx.device_id),
+        )
+
+    assert db.mark_stale_devices_offline(server_root, now="2020-01-02T01:00:00") == 1
+    devices = db.list_admin_devices(server_root)
+    assert devices[0]["offline_at"] == "2020-01-02T01:00:00"
+    assert devices[0]["revoked_at"] == ""
+
+    assert db.authenticate_token(server_root, token) is not None
+    devices = db.list_admin_devices(server_root)
+    assert devices[0]["offline_at"] == ""
+
+
+def test_server_background_sweeper_marks_stale_device_offline(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "acme", "alice", "secret")
+    ctx, token = db.login_device(
+        server_root,
+        "acme",
+        "alice",
+        "secret",
+        "laptop",
+        machine_id="machine-1",
+    )
+    with db.connect(server_root) as con:
+        con.execute(
+            "UPDATE devices SET last_seen_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00", ctx.device_id),
+        )
+
+    server = make_server(
+        server_root,
+        host="127.0.0.1",
+        port=0,
+        device_sweep_interval_seconds=0.01,
+    )
+    try:
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            devices = db.list_admin_devices(server_root)
+            if devices[0]["offline_at"]:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("stale device was not marked offline")
+
+        assert db.authenticate_token(server_root, token) is not None
+    finally:
         server.server_close()
 
 

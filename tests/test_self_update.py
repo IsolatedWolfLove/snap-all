@@ -141,3 +141,61 @@ def test_install_deb_uses_sudo_for_non_root(monkeypatch, tmp_path):
     command = self_update.installer_command(tmp_path / "snapz.deb")
 
     assert command[:2] == ["/usr/bin/sudo", "/usr/bin/apt"]
+
+
+def test_remover_command_uses_apt_when_available(monkeypatch):
+    def fake_which(name):
+        if name == "apt":
+            return "/usr/bin/apt"
+        if name == "sudo":
+            return None
+        return None
+
+    monkeypatch.setattr(self_update.shutil, "which", fake_which)
+    monkeypatch.setattr(self_update.os, "geteuid", lambda: 0, raising=False)
+
+    assert self_update.remover_command("snapz-cli") == [
+        "/usr/bin/apt",
+        "remove",
+        "-y",
+        "snapz-cli",
+    ]
+
+
+def test_remover_command_uses_dpkg_fallback(monkeypatch):
+    def fake_which(name):
+        if name == "dpkg":
+            return "/usr/bin/dpkg"
+        return None
+
+    monkeypatch.setattr(self_update.shutil, "which", fake_which)
+    monkeypatch.setattr(self_update.os, "geteuid", lambda: 0, raising=False)
+
+    assert self_update.remover_command("snapz-cli") == [
+        "/usr/bin/dpkg",
+        "-r",
+        "snapz-cli",
+    ]
+
+
+def test_deb_package_installed_checks_dpkg_status(monkeypatch):
+    calls = []
+
+    def fake_which(name):
+        if name == "dpkg-query":
+            return "/usr/bin/dpkg-query"
+        return None
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="install ok installed")
+
+    monkeypatch.setattr(self_update.shutil, "which", fake_which)
+
+    assert self_update.deb_package_installed("snapz-cli", runner=fake_run) is True
+    assert calls[0][0] == [
+        "/usr/bin/dpkg-query",
+        "-W",
+        "-f=${Status}",
+        "snapz-cli",
+    ]

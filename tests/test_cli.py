@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from snapz import api, cas, cli, filecache, preferences
+from snapz import api, cas, cli, filecache, preferences, self_update
 from snapz.store import Store
 
 
@@ -142,6 +144,7 @@ def test_uninstall_keeps_data_when_user_says_no(
 
     answers = iter(["n", "y"])
     monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+    monkeypatch.setattr(self_update, "deb_package_installed", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(cli, "_run_pip", fake_run_pip)
     (env_root / "registry.json").write_text("{}", encoding="utf-8")
 
@@ -169,6 +172,7 @@ def test_uninstall_deletes_data_when_user_says_yes(
 
     answers = iter(["y", "y"])
     monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+    monkeypatch.setattr(self_update, "deb_package_installed", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(cli, "_run_pip", fake_run_pip)
     (env_root / "registry.json").write_text("{}", encoding="utf-8")
 
@@ -195,6 +199,7 @@ def test_uninstall_yes_purge_data_is_non_interactive(env_root, monkeypatch):
         raise AssertionError("uninstall -y --purge-data should not prompt")
 
     monkeypatch.setattr("builtins.input", fail_input)
+    monkeypatch.setattr(self_update, "deb_package_installed", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(cli, "_run_pip", fake_run_pip)
     (env_root / "registry.json").write_text("{}", encoding="utf-8")
 
@@ -203,6 +208,51 @@ def test_uninstall_yes_purge_data_is_non_interactive(env_root, monkeypatch):
     assert rc == 0
     assert not env_root.exists()
     assert calls == [["uninstall", "-y", cli.SNAPZ_PACKAGE_NAME]]
+
+
+def test_uninstall_deb_uses_package_manager(env_root, monkeypatch):
+    calls = []
+    unregister_calls = []
+    remote_config = env_root / "_remote.json"
+    remote_config.write_text("{}", encoding="utf-8")
+
+    def fake_remove(package):
+        calls.append(package)
+        return subprocess.CompletedProcess(["apt", "remove", "-y", package], 0)
+
+    monkeypatch.setattr(
+        "snapz._cli_log_self.remote.unregister_device",
+        lambda config=None: unregister_calls.append(config) or True,
+    )
+    monkeypatch.setattr(self_update, "deb_package_installed", lambda package: True)
+    monkeypatch.setattr(self_update, "remove_deb_package", fake_remove)
+    monkeypatch.setattr(cli, "_run_pip", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("deb uninstall should not call pip")
+    ))
+
+    rc = cli.main(["uninstall", "-y"])
+
+    assert rc == 0
+    assert calls == [cli.SNAPZ_PACKAGE_NAME]
+    assert len(unregister_calls) == 1
+    assert not remote_config.exists()
+
+
+def test_uninstall_zipapp_deletes_current_executable(env_root, monkeypatch, tmp_path):
+    executable = tmp_path / "snapz"
+    with zipfile.ZipFile(executable, "w") as zf:
+        zf.writestr("__main__.py", "print('snapz')\n")
+
+    monkeypatch.setattr(sys, "argv", [str(executable), "uninstall", "-y"])
+    monkeypatch.setattr(self_update, "deb_package_installed", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(cli, "_run_pip", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("zipapp uninstall should not call pip")
+    ))
+
+    rc = cli.main(["uninstall", "-y"])
+
+    assert rc == 0
+    assert not executable.exists()
 
 
 def test_list_subcommand_prints_table(env_root, project_dir, capsys):

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from snapz import api, preferences
+from snapz._api_core import _background_push_command
 from snapz.store import Store
 
 
@@ -101,6 +104,25 @@ def test_api_save_background_push_preserves_runtime_remote_only(
 
     assert len(calls) == 1
     assert calls[0][1]["env"]["SNAPZ_REMOTE_ONLY"] == "1"
+
+
+def test_background_push_command_reuses_snapz_executable(monkeypatch, tmp_path):
+    executable = tmp_path / "snapz.pyz"
+    monkeypatch.setattr(sys, "argv", [str(executable), "."])
+
+    assert _background_push_command() == [str(executable), "push", "all"]
+
+
+def test_background_push_command_falls_back_to_module(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+
+    assert _background_push_command() == [
+        sys.executable,
+        "-m",
+        "snapz",
+        "push",
+        "all",
+    ]
 
 
 # ---------------- ui_mode ---------------------------------------------------

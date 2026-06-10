@@ -123,6 +123,33 @@ def install_deb(
     return runner(command, check=False, text=True)
 
 
+def deb_package_installed(
+    package: str,
+    *,
+    runner: Runner = subprocess.run,
+) -> bool:
+    dpkg_query = shutil.which("dpkg-query")
+    if not dpkg_query:
+        return False
+    result = runner(
+        [dpkg_query, "-W", "-f=${Status}", package],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.returncode == 0 and "install ok installed" in str(result.stdout)
+
+
+def remove_deb_package(
+    package: str,
+    *,
+    runner: Runner = subprocess.run,
+) -> subprocess.CompletedProcess[str]:
+    command = remover_command(package)
+    return runner(command, check=False, text=True)
+
+
 def installer_command(deb_path: Path) -> list[str]:
     apt = shutil.which("apt")
     dpkg = shutil.which("dpkg")
@@ -132,10 +159,28 @@ def installer_command(deb_path: Path) -> list[str]:
         command = [dpkg, "-i", str(deb_path)]
     else:
         raise RuntimeError("apt or dpkg is required to install .deb packages")
+    return _with_sudo_if_needed(command)
+
+
+def remover_command(package: str) -> list[str]:
+    if not package:
+        raise ValueError("package name is required")
+    apt = shutil.which("apt")
+    dpkg = shutil.which("dpkg")
+    if apt:
+        command = [apt, "remove", "-y", package]
+    elif dpkg:
+        command = [dpkg, "-r", package]
+    else:
+        raise RuntimeError("apt or dpkg is required to remove .deb packages")
+    return _with_sudo_if_needed(command)
+
+
+def _with_sudo_if_needed(command: list[str]) -> list[str]:
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         sudo = shutil.which("sudo")
         if sudo:
-            command = [sudo, *command]
+            return [sudo, *command]
     return command
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import zipfile
+
 from snapz._cli_common import *
 
 
@@ -125,6 +127,71 @@ def cmd_update(args: argparse.Namespace, config: RuntimeConfig) -> int:
     print(f"{st.ok_mark()} {t('update.done')}")
     return EXIT_OK
 
+
+def _uninstall_action() -> tuple[str, list[str], subprocess.CompletedProcess[str]]:
+    from snapz import self_update
+
+    if self_update.deb_package_installed(SNAPZ_PACKAGE_NAME):
+        result = self_update.remove_deb_package(SNAPZ_PACKAGE_NAME)
+        command = list(result.args) if isinstance(result.args, list) else []
+        return "deb", command, result
+
+    executable = _current_command_path()
+    if executable is not None and _is_zipapp_executable(executable):
+        command = ["rm", "-f", str(executable)]
+        try:
+            executable.unlink()
+            return "zipapp", command, subprocess.CompletedProcess(command, 0)
+        except OSError as exc:
+            return (
+                "zipapp",
+                command,
+                subprocess.CompletedProcess(command, 1, stderr=str(exc)),
+            )
+
+    pip_args = ["uninstall", "-y", SNAPZ_PACKAGE_NAME]
+    result = _cli_facade()._run_pip(pip_args)
+    return (
+        "pip",
+        [sys.executable, "-m", "pip", *pip_args],
+        result,
+    )
+
+
+def _unregister_remote_device(config: RuntimeConfig) -> bool:
+    unregistered = False
+    try:
+        unregistered = remote.unregister_device(config=config)
+    except Exception:
+        pass
+    try:
+        remote.config_path(config).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return unregistered
+
+
+def _current_command_path() -> Path | None:
+    argv0 = Path(sys.argv[0]).expanduser()
+    if argv0.is_absolute() or argv0.parent != Path("."):
+        return argv0
+    resolved = shutil.which(sys.argv[0])
+    return Path(resolved) if resolved else None
+
+
+def _is_zipapp_executable(path: Path) -> bool:
+    name = path.name
+    if not (
+        name == "snapz"
+        or (name.startswith("snapz") and name.endswith(".pyz"))
+    ):
+        return False
+    try:
+        return path.is_file() and zipfile.is_zipfile(path)
+    except OSError:
+        return False
+
+
 def cmd_uninstall(args: argparse.Namespace, config: RuntimeConfig) -> int:
     data_root = Path(config.root).expanduser()
     data_bytes = _path_total_bytes(data_root)
@@ -136,6 +203,7 @@ def cmd_uninstall(args: argparse.Namespace, config: RuntimeConfig) -> int:
                 "uninstalled": False,
                 "reason": "needs-confirmation",
                 "package": SNAPZ_PACKAGE_NAME,
+                "install_type": "unknown",
                 "data_root": data_root,
                 "data_bytes": data_bytes,
                 "data_size": _format_data_size(data_bytes),
@@ -144,6 +212,7 @@ def cmd_uninstall(args: argparse.Namespace, config: RuntimeConfig) -> int:
     else:
         print(st.bold(t("uninstall.heading")))
         print(_kv(t("kv.package"), st.name(SNAPZ_PACKAGE_NAME)))
+        print(_kv(t("kv.command"), st.path(sys.argv[0])))
         print(_kv(t("kv.data_root"), st.path(str(data_root))))
         print(_kv(t("kv.data_size"), st.numeric(_format_data_size(data_bytes))))
         if data_root.exists():
@@ -164,8 +233,8 @@ def cmd_uninstall(args: argparse.Namespace, config: RuntimeConfig) -> int:
             print(st.muted(t("status.aborted")))
             return EXIT_USER_ABORT
 
-    pip_args = ["uninstall", "-y", SNAPZ_PACKAGE_NAME]
-    result = _cli_facade()._run_pip(pip_args)
+    remote_unregistered = _unregister_remote_device(config)
+    install_type, command, result = _uninstall_action()
     deleted_data = False
     data_error = ""
     if result.returncode == 0 and delete_data:
@@ -177,11 +246,13 @@ def cmd_uninstall(args: argparse.Namespace, config: RuntimeConfig) -> int:
         _emit_json({
             "uninstalled": result.returncode == 0,
             "package": SNAPZ_PACKAGE_NAME,
+            "install_type": install_type,
             "data_root": data_root,
             "data_bytes": data_bytes,
             "deleted_data": deleted_data,
             "data_error": data_error,
-            "command": [sys.executable, "-m", "pip", *pip_args],
+            "remote_unregistered": remote_unregistered,
+            "command": command,
             "returncode": result.returncode,
         })
         return EXIT_OK if result.returncode == 0 and not data_error else EXIT_ERROR

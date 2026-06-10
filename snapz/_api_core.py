@@ -67,13 +67,20 @@ def _start_remote_only_push(config: RuntimeConfig) -> bool:
     if os.name != "nt":
         kwargs["start_new_session"] = True
     try:
-        subprocess.Popen(
-            [sys.executable, "-m", "snapz", "push", "all"],
-            **kwargs,
-        )
+        subprocess.Popen(_background_push_command(), **kwargs)
     except Exception:
         return False
     return True
+
+
+def _background_push_command() -> list[str]:
+    argv0 = Path(sys.argv[0])
+    name = argv0.name
+    if name == "snapz" or (
+        name.endswith(".pyz") and name.startswith("snapz")
+    ):
+        return [str(argv0), "push", "all"]
+    return [sys.executable, "-m", "snapz", "push", "all"]
 
 
 def _rotl(value: int, bits: int) -> int:
