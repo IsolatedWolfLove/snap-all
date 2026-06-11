@@ -18,6 +18,7 @@ from typing import Any, Iterable, Optional
 from urllib.parse import parse_qs, urlparse
 
 from snapz.util import format_size
+from snapz import __version__
 from snapz_server import db
 from snapz_server.admin_ui import ADMIN_UI_HTML
 from snapz_server.bundles import (
@@ -196,7 +197,14 @@ class SnapzHandler(BaseHTTPRequestHandler):
             if not self._require_admin():
                 return
             stats = db.server_stats(self.data_dir)
-            self._send_json(HTTPStatus.OK, {"stats": stats})
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "stats": stats,
+                    "version": __version__,
+                    "server_version": self.server_version,
+                },
+            )
             return
         if path == "/api/admin/users":
             if not self._require_admin():
@@ -379,6 +387,11 @@ class SnapzHandler(BaseHTTPRequestHandler):
             password = str(payload.get("password") or "")
             device_name = str(payload.get("device_name") or "device").strip()
             machine_id = str(payload.get("machine_id") or "").strip()
+            machine_id_aliases = [
+                str(item).strip()
+                for item in (payload.get("machine_id_aliases") or [])
+                if str(item).strip()
+            ]
             if not tenant or not username or not password:
                 raise ValueError("tenant, username and password are required")
             ctx, token = db.login_device(
@@ -388,6 +401,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 password,
                 device_name,
                 machine_id,
+                machine_id_aliases,
             )
         except PermissionError as exc:
             self._send_json(HTTPStatus.UNAUTHORIZED, {"error": str(exc)})
@@ -1168,6 +1182,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 html.escape(value),
             )
             for label, value in [
+                ("version", __version__),
                 ("data dir", str(self.data_dir)),
                 ("tenants", str(stats["tenants"])),
                 ("users", str(stats["users"])),

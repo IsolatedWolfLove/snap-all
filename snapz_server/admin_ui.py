@@ -420,7 +420,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
   <header>
     <div>
       <h1>snapz-server Admin</h1>
-      <p class="muted">Manage tenants, users, and registered sync devices.</p>
+      <p class="muted">Manage tenants, users, and registered sync devices. <span id="headerVersion"></span></p>
     </div>
   </header>
 
@@ -452,6 +452,7 @@ ADMIN_UI_HTML = r"""<!doctype html>
           <h2>snapz-server admin</h2>
         </div>
         <div class="toolbar hero-actions">
+          <span id="versionBadge" class="badge">Version unknown</span>
           <span class="badge ok">Admin API active</span>
           <button id="refreshButton" class="primary hidden" type="button">Refresh</button>
           <button id="logoutButton" class="hidden" type="button">Forget token</button>
@@ -545,6 +546,8 @@ ADMIN_UI_HTML = r"""<!doctype html>
     const state = {
       token: sessionStorage.getItem('snapzAdminToken') || '',
       stats: {},
+      version: '',
+      serverVersion: '',
       users: [],
       devices: [],
       sources: [],
@@ -597,6 +600,11 @@ ADMIN_UI_HTML = r"""<!doctype html>
     }
 
     function renderStats() {
+      const versionText = state.version
+        ? `snapz ${state.version}`
+        : 'Version unknown';
+      el('versionBadge').textContent = versionText;
+      el('headerVersion').textContent = state.version ? `Version ${state.version}` : '';
       const labels = [
         ['tenants', 'Tenants', 'Workspace groups', 'sky'],
         ['users', 'Users', 'Login accounts', 'violet'],
@@ -935,13 +943,14 @@ ADMIN_UI_HTML = r"""<!doctype html>
       el('devicesTable').innerHTML = `
         <div class="panel-body">
           <div class="table-wrap">
-            <table style="min-width: 720px;">
+            <table style="min-width: 900px;">
               <thead>
                 <tr>
-                  <th style="width: 32%;">Device</th>
-                  <th style="width: 18%;">Status</th>
-                  <th style="width: 32%;">Last seen</th>
-                  <th style="width: 18%;">Actions</th>
+                  <th style="width: 28%;">Device</th>
+                  <th style="width: 26%;">Machine</th>
+                  <th style="width: 16%;">Status</th>
+                  <th style="width: 18%;">Last seen</th>
+                  <th style="width: 12%;">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -950,6 +959,10 @@ ADMIN_UI_HTML = r"""<!doctype html>
                     <td>
                       <div class="cell-title">${escapeHtml(device.name)}</div>
                       <div class="cell-subtitle mono">${escapeHtml(device.id)}</div>
+                    </td>
+                    <td>
+                      <div class="cell-title mono">${escapeHtml(device.machine_id || '-')}</div>
+                      <div class="cell-subtitle">Updated by client fingerprint</div>
                     </td>
                     <td>
                       <span class="badge ${device.revoked ? 'warn' : 'ok'}">
@@ -995,6 +1008,8 @@ ADMIN_UI_HTML = r"""<!doctype html>
         api('/api/admin/sources'),
       ]);
       state.stats = overview.stats || {};
+      state.version = overview.version || '';
+      state.serverVersion = overview.server_version || '';
       state.users = users.users || [];
       state.sources = sources.sources || [];
       if (!state.sources.some((source) => sourceKey(source) === state.selectedSourceKey)) {

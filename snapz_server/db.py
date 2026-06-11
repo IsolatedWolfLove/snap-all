@@ -331,6 +331,7 @@ def login_device(
     password: str,
     device_name: str,
     machine_id: str = "",
+    machine_id_aliases: list[str] | tuple[str, ...] | None = None,
 ) -> tuple[AuthContext, str]:
     tenant = get_tenant(data_dir, tenant_name)
     if tenant is None:
@@ -348,15 +349,24 @@ def login_device(
         token = secrets.token_urlsafe(32)
         ts = now_iso()
         machine_id = str(machine_id or "").strip()
+        match_machine_ids = _machine_id_match_values(machine_id, machine_id_aliases)
         existing = None
         if machine_id:
-            existing = con.execute(
-                """
-                SELECT * FROM devices
-                WHERE tenant_id = ? AND user_id = ? AND machine_id = ?
-                """,
-                (tenant["id"], user["id"], machine_id),
-            ).fetchone()
+            existing = _canonical_machine_device(
+                con,
+                tenant_id=tenant["id"],
+                user_id=user["id"],
+                machine_id=machine_id,
+                match_machine_ids=match_machine_ids,
+                device_name=device_name or "device",
+            )
+        else:
+            existing = _canonical_named_device(
+                con,
+                tenant_id=tenant["id"],
+                user_id=user["id"],
+                device_name=device_name or "device",
+            )
         if existing is not None:
             device_id = existing["id"]
             saved_name = device_name or existing["name"] or "device"
@@ -415,6 +425,124 @@ def login_device(
         ),
         token,
     )
+
+
+def _canonical_machine_device(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    machine_id: str,
+    match_machine_ids: list[str],
+    device_name: str,
+) -> Optional[sqlite3.Row]:
+    if not match_machine_ids:
+        match_machine_ids = [machine_id]
+    placeholders = ", ".join("?" for _ in match_machine_ids)
+    rows = list(
+        con.execute(
+            f"""
+            SELECT * FROM devices
+            WHERE tenant_id = ? AND user_id = ?
+              AND (
+                machine_id IN ({placeholders})
+                OR (machine_id = '' AND name = ?)
+              )
+            ORDER BY
+              CASE WHEN machine_id = ? THEN 0 ELSE 1 END,
+              CASE WHEN revoked_at = '' THEN 0 ELSE 1 END,
+              datetime(last_seen_at) DESC,
+              datetime(created_at) DESC
+            """,
+            (
+                tenant_id,
+                user_id,
+                *match_machine_ids,
+                device_name,
+                machine_id,
+            ),
+        )
+    )
+    if not rows:
+        return None
+    canonical = rows[0]
+    con.execute(
+        "UPDATE devices SET machine_id = ? WHERE id = ?",
+        (machine_id, canonical["id"]),
+    )
+    for row in rows[1:]:
+        _merge_device(con, source_id=row["id"], target_id=canonical["id"])
+    return con.execute(
+        "SELECT * FROM devices WHERE id = ?",
+        (canonical["id"],),
+    ).fetchone()
+
+
+def _machine_id_match_values(
+    machine_id: str,
+    aliases: list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    values: list[str] = []
+    for value in (machine_id, *(aliases or ())):
+        clean = str(value or "").strip()
+        if clean and clean not in values:
+            values.append(clean)
+    return values
+
+
+def _canonical_named_device(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    device_name: str,
+) -> Optional[sqlite3.Row]:
+    rows = list(
+        con.execute(
+            """
+            SELECT * FROM devices
+            WHERE tenant_id = ? AND user_id = ?
+              AND machine_id = '' AND name = ?
+            ORDER BY
+              CASE WHEN revoked_at = '' THEN 0 ELSE 1 END,
+              datetime(last_seen_at) DESC,
+              datetime(created_at) DESC
+            """,
+            (tenant_id, user_id, device_name),
+        )
+    )
+    if not rows:
+        return None
+    canonical = rows[0]
+    for row in rows[1:]:
+        _merge_device(con, source_id=row["id"], target_id=canonical["id"])
+    return con.execute(
+        "SELECT * FROM devices WHERE id = ?",
+        (canonical["id"],),
+    ).fetchone()
+
+
+def _merge_device(
+    con: sqlite3.Connection,
+    *,
+    source_id: str,
+    target_id: str,
+) -> None:
+    if source_id == target_id:
+        return
+    con.execute(
+        "UPDATE device_tokens SET device_id = ? WHERE device_id = ?",
+        (target_id, source_id),
+    )
+    con.execute(
+        "UPDATE sources SET pushed_by_device = ? WHERE pushed_by_device = ?",
+        (target_id, source_id),
+    )
+    con.execute(
+        "UPDATE sync_logs SET device_id = ? WHERE device_id = ?",
+        (target_id, source_id),
+    )
+    con.execute("DELETE FROM devices WHERE id = ?", (source_id,))
 
 
 def authenticate_token(data_dir: str | Path, token: str) -> Optional[AuthContext]:

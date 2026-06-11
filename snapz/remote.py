@@ -86,17 +86,69 @@ class RemoteError(RuntimeError):
 
 
 def machine_id() -> str:
+    return _machine_id_hash("\n".join(_machine_id_parts()))
+
+
+def machine_id_aliases(current: str | None = None) -> list[str]:
+    aliases: list[str] = []
+    for value in _legacy_machine_id_values():
+        alias = _machine_id_hash(value)
+        if alias not in aliases:
+            aliases.append(alias)
+    current = current or machine_id()
+    return [alias for alias in aliases if alias != current]
+
+
+def _machine_id_parts() -> list[str]:
+    parts: list[str] = []
+    for label, value in _stable_machine_id_values():
+        clean = _normalize_machine_id_value(value)
+        if clean:
+            parts.append(f"{label}:{clean}")
+    if parts:
+        return parts
+    fallback = "|".join(
+        part
+        for part in (
+            platform.system(),
+            platform.machine(),
+            platform.node(),
+        )
+        if part
+    )
+    return [f"fallback:{fallback or 'unknown-device'}"]
+
+
+def _stable_machine_id_values() -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
+    for label, path in (
+        ("linux-machine-id", Path("/etc/machine-id")),
+        ("dbus-machine-id", Path("/var/lib/dbus/machine-id")),
+        ("product-uuid", Path("/sys/class/dmi/id/product_uuid")),
+        ("product-serial", Path("/sys/class/dmi/id/product_serial")),
+        ("board-serial", Path("/sys/class/dmi/id/board_serial")),
+        ("chassis-serial", Path("/sys/class/dmi/id/chassis_serial")),
+    ):
+        value = _read_machine_id_file(path)
+        if value:
+            values.append((label, value))
+    values.extend(_platform_machine_id_values())
+    return values
+
+
+def _legacy_machine_id_values() -> list[str]:
     candidates = [
         Path("/etc/machine-id"),
         Path("/var/lib/dbus/machine-id"),
     ]
+    values: list[str] = []
     for path in candidates:
-        try:
-            value = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
+        value = _read_machine_id_file(path)
         if value:
-            return _machine_id_hash(value)
+            values.append(value)
+            break
+    if values:
+        return values
     fallback = "|".join(
         part
         for part in (
@@ -106,7 +158,65 @@ def machine_id() -> str:
         )
         if part
     )
-    return _machine_id_hash(fallback or "unknown-device")
+    if fallback:
+        values.append(fallback)
+    return values
+
+
+def _read_machine_id_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _platform_machine_id_values() -> list[tuple[str, str]]:
+    if platform.system().lower() != "darwin":
+        return []
+    serial = _run_text(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"])
+    if not serial:
+        return []
+    marker = '"IOPlatformUUID" = "'
+    for line in serial.splitlines():
+        line = line.strip()
+        if marker in line:
+            return [("darwin-platform-uuid", line.split(marker, 1)[1].split('"', 1)[0])]
+    return []
+
+
+def _run_text(command: list[str]) -> str:
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return ""
+    return result.stdout if result.returncode == 0 else ""
+
+
+def _normalize_machine_id_value(value: str) -> str:
+    clean = " ".join(value.strip().lower().split())
+    if clean in {
+        "",
+        "none",
+        "unknown",
+        "default string",
+        "system serial number",
+        "to be filled by o.e.m.",
+        "to be filled by oem",
+    }:
+        return ""
+    compact = clean.replace("-", "").replace(" ", "")
+    if compact and set(compact) == {"0"}:
+        return ""
+    return clean
 
 
 def _machine_id_hash(value: str) -> str:
@@ -274,12 +384,14 @@ def login(
         tls_client_cert=tls_client_cert,
         tls_client_key=tls_client_key,
     )
+    current_machine_id = machine_id()
     payload = {
         "tenant": tenant,
         "username": username,
         "password": password,
         "device_name": device_name or platform.node() or "device",
-        "machine_id": machine_id(),
+        "machine_id": current_machine_id,
+        "machine_id_aliases": machine_id_aliases(current_machine_id),
     }
     response = _request_json(
         "POST",

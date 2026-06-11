@@ -3,7 +3,7 @@
 Public API entry points live in :mod:`snapz.api`.
 """
 
-__version__ = "2.3.6"
+__version__ = "2.3.7"
 
 from snapz.api import (
     add_local_excludes,

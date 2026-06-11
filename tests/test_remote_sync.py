@@ -67,6 +67,7 @@ def test_login_sends_stable_machine_id(config, monkeypatch):
         }
 
     monkeypatch.setattr(remote, "machine_id", lambda: "machine-hash")
+    monkeypatch.setattr(remote, "machine_id_aliases", lambda current=None: [])
     monkeypatch.setattr(remote, "_request_json", fake_request_json)
 
     auth = remote.login(
@@ -81,6 +82,29 @@ def test_login_sends_stable_machine_id(config, monkeypatch):
     assert auth.device_id == "dev_1"
     assert seen["path"] == "/api/auth/login"
     assert seen["payload"]["machine_id"] == "machine-hash"
+    assert seen["payload"]["machine_id_aliases"] == []
+
+
+def test_machine_id_uses_stable_parts_without_hostname(monkeypatch):
+    values = {
+        "/etc/machine-id": "machine",
+        "/var/lib/dbus/machine-id": "",
+        "/sys/class/dmi/id/product_uuid": "product",
+        "/sys/class/dmi/id/product_serial": "serial",
+        "/sys/class/dmi/id/board_serial": "To be filled by O.E.M.",
+        "/sys/class/dmi/id/chassis_serial": "",
+    }
+
+    def fake_read(path):
+        return values.get(str(path), "")
+
+    monkeypatch.setattr(remote, "_read_machine_id_file", fake_read)
+    monkeypatch.setattr(remote.platform, "node", lambda: "old-host")
+    first = remote.machine_id()
+    monkeypatch.setattr(remote.platform, "node", lambda: "new-host")
+
+    assert remote.machine_id() == first
+    assert remote.machine_id_aliases(first) == [remote._machine_id_hash("machine")]
 
 
 def test_logout_unregisters_remote_device_once(config, monkeypatch):

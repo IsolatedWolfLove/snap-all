@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 from snapz import api, cas, remote
+from snapz import __version__
 from snapz.config import RuntimeConfig
 from snapz_server import db
 from snapz_server.app import make_server
@@ -144,6 +145,22 @@ def test_admin_api_requires_enabled_admin_token(tmp_path):
         server.server_close()
 
     assert "admin API disabled" in response["error"]
+
+
+def test_admin_overview_and_ui_show_version(tmp_path):
+    server, url = _start_server(tmp_path / "server")
+    try:
+        overview = _json(url, "/api/admin/overview")
+        admin_html = _text(url, "/admin")
+        dashboard = _text(url, "/")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert overview["version"] == __version__
+    assert overview["server_version"].startswith("snapz-server/")
+    assert "Version unknown" in admin_html
+    assert f"<td>{__version__}</td>" in dashboard
 
 
 def test_security_headers_and_cors_defaults(tmp_path):

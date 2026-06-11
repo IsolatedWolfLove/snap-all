@@ -204,3 +204,77 @@ def test_admin_user_and_device_helpers(tmp_path):
 
     assert db.delete_user(root, user["id"]) is True
     assert db.list_admin_devices(root, user_id=user["id"]) == []
+
+
+def test_login_merges_duplicate_machine_devices(tmp_path):
+    root = tmp_path / "server"
+    db.create_user(root, "acme", "alice", "secret")
+    ctx_old, token_old = db.login_device(root, "acme", "alice", "secret", "laptop")
+    ctx_duplicate, token_duplicate = db.login_device(
+        root,
+        "acme",
+        "alice",
+        "secret",
+        "laptop-again",
+        machine_id="machine-1",
+    )
+    source = {"key": "local-key", "abspath": "/work/project"}
+    source_id = db.source_id_for(source)
+    db.upsert_source(
+        root,
+        ctx_duplicate,
+        source_id,
+        source,
+        snapshot_count=1,
+        bundle_bytes=10,
+    )
+
+    ctx, token = db.login_device(
+        root,
+        "acme",
+        "alice",
+        "secret",
+        "laptop",
+        machine_id="machine-1",
+    )
+
+    assert ctx.device_id == ctx_duplicate.device_id
+    devices = db.list_admin_devices(root)
+    assert [row["id"] for row in devices] == [ctx.device_id]
+    assert devices[0]["machine_id"] == "machine-1"
+    source_row = db.list_admin_sources(root)[0]
+    assert source_row["pushed_by_device"] == ctx.device_id
+    assert db.authenticate_token(root, token).device_id == ctx.device_id
+    assert db.authenticate_token(root, token_duplicate).device_id == ctx.device_id
+    assert db.authenticate_token(root, token_old).device_id == ctx.device_id
+
+
+def test_login_matches_previous_machine_id_alias(tmp_path):
+    root = tmp_path / "server"
+    db.create_user(root, "acme", "alice", "secret")
+    ctx_old, token_old = db.login_device(
+        root,
+        "acme",
+        "alice",
+        "secret",
+        "laptop",
+        machine_id="old-machine",
+    )
+
+    ctx_new, token_new = db.login_device(
+        root,
+        "acme",
+        "alice",
+        "secret",
+        "laptop-renamed",
+        machine_id="new-machine",
+        machine_id_aliases=["old-machine"],
+    )
+
+    assert ctx_new.device_id == ctx_old.device_id
+    devices = db.list_admin_devices(root)
+    assert len(devices) == 1
+    assert devices[0]["machine_id"] == "new-machine"
+    assert devices[0]["name"] == "laptop-renamed"
+    assert db.authenticate_token(root, token_old).device_id == ctx_new.device_id
+    assert db.authenticate_token(root, token_new).device_id == ctx_new.device_id
