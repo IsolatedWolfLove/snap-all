@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from snapz import api, remote
+from snapz import _api_core
 from snapz import cas
 from snapz.config import RuntimeConfig
 from snapz_server import db
@@ -567,6 +568,11 @@ def test_remote_only_push_failure_preserves_uploaded_source_blobs(tmp_path, monk
     db.create_user(server_root, "tenant-a", "alice", "secret")
     server, url = _start_server(server_root)
     try:
+        monkeypatch.setattr(
+            _api_core,
+            "_start_remote_only_push",
+            lambda *_args, **_kwargs: True,
+        )
         local = RuntimeConfig(root=tmp_path / "client", remote_only=True)
         first = tmp_path / "first"
         first.mkdir()
