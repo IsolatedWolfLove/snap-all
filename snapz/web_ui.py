@@ -50,47 +50,77 @@ CLIENT_WEB_HTML = r"""<!doctype html>
   <title>snapz Client</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f3f6fb;
-      --panel: #fff;
-      --ink: #111827;
-      --muted: #64748b;
-      --subtle: #94a3b8;
-      --line: #e5e7eb;
-      --line-strong: #cbd5e1;
-      --primary: #1677ff;
-      --primary-strong: #0958d9;
+      color-scheme: dark;
+      --bg: #101114;
+      --panel: #17191f;
+      --panel-subtle: #1d2027;
+      --ink: #f4f5f7;
+      --muted: #a0a7b4;
+      --subtle: #737b89;
+      --line: #2a2f3a;
+      --line-strong: #3b4250;
+      --primary: #3b82f6;
+      --primary-strong: #2563eb;
       --violet: #8b5cf6;
       --emerald: #10b981;
       --amber: #f59e0b;
-      --danger: #a8071a;
-      --success: #237804;
-      --warn: #ad6800;
-      --shadow: 0 10px 30px rgba(15, 23, 42, .05);
+      --danger: #f87171;
+      --danger-line: rgba(248, 113, 113, .35);
+      --danger-bg: rgba(248, 113, 113, .12);
+      --success: #34d399;
+      --success-line: rgba(52, 211, 153, .35);
+      --success-bg: rgba(52, 211, 153, .12);
+      --warn: #fbbf24;
+      --warn-line: rgba(251, 191, 36, .35);
+      --warn-bg: rgba(251, 191, 36, .12);
+      --info-bg: rgba(59, 130, 246, .12);
+      --info-line: rgba(59, 130, 246, .35);
+      --shadow: 0 12px 30px rgba(0, 0, 0, .18);
     }
     * { box-sizing: border-box; }
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--bg);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--line-strong);
+      border-radius: 99px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--subtle);
+    }
+
     body {
       margin: 0;
       background: var(--bg);
       color: var(--ink);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       letter-spacing: 0;
+      min-height: 100vh;
     }
-    button, input, textarea {
+    button, input, select, textarea {
       font: inherit;
+      outline: none;
     }
     button {
       min-height: 2.35rem;
       border: 1px solid var(--line);
       border-radius: 6px;
-      padding: 0 .8rem;
-      background: #fff;
+      padding: 0 .85rem;
+      background: var(--panel-subtle);
       color: var(--ink);
       font-weight: 600;
       cursor: pointer;
       white-space: nowrap;
+      transition: background-color .15s ease, border-color .15s ease, color .15s ease;
     }
-    button:hover { border-color: #aab4c3; }
+    button:hover {
+      border-color: var(--line-strong);
+      background: #242832;
+    }
     button:disabled {
       cursor: not-allowed;
       opacity: .55;
@@ -100,29 +130,47 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       background: var(--primary);
       color: #fff;
     }
-    button.primary:hover { background: var(--primary-strong); }
-    button.danger {
-      border-color: #ffccc7;
-      color: var(--danger);
+    button.primary:hover {
+      background: var(--primary-strong);
     }
-    input, textarea {
+    button.danger {
+      border-color: var(--danger-line);
+      color: var(--danger);
+      background: var(--danger-bg);
+    }
+    button.danger:hover {
+      background: var(--danger);
+      border-color: var(--danger);
+      color: #111827;
+    }
+    input, select, textarea {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 6px;
-      background: #fff;
+      background: #12151c;
       color: var(--ink);
+      transition: background-color .15s ease, border-color .15s ease;
     }
-    input {
+    input, select {
       height: 2.35rem;
-      padding: 0 .7rem;
+      padding: 0 .75rem;
+    }
+    select {
+      width: auto;
+      min-width: 7rem;
     }
     textarea {
       min-height: 4.5rem;
       resize: vertical;
-      padding: .65rem .7rem;
+      padding: .65rem .75rem;
+    }
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--primary);
+      background: #151a23;
     }
     input::placeholder, textarea::placeholder { color: var(--subtle); }
     h1, h2, h3, p { margin: 0; }
+
     header {
       position: sticky;
       top: 0;
@@ -133,22 +181,23 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       gap: 1rem;
       padding: 1rem 2rem;
       border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, .92);
-      backdrop-filter: blur(10px);
+      background: #111318;
     }
     .brand h1 {
-      font-size: 1.25rem;
-      line-height: 1.3;
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: 0;
     }
     .brand p {
       margin-top: .2rem;
       color: var(--muted);
-      font-size: .85rem;
+      font-size: .8rem;
+      font-weight: 500;
     }
     main {
       width: min(1320px, 100%);
       margin: 0 auto;
-      padding: 1.5rem 2rem 2rem;
+      padding: 2rem 2rem 3rem;
     }
     .toolbar {
       display: flex;
@@ -159,157 +208,193 @@ CLIENT_WEB_HTML = r"""<!doctype html>
     .nav {
       display: flex;
       flex-wrap: wrap;
-      gap: .35rem;
+      gap: .4rem;
+      background: var(--panel-subtle);
+      padding: 4px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
     }
     .nav button {
-      min-height: 2rem;
-      border-color: transparent;
+      min-height: 2.1rem;
+      border: none;
+      border-radius: 6px;
       background: transparent;
       color: var(--muted);
+      padding: 0 1rem;
+      font-size: .88rem;
+    }
+    .nav button:hover {
+      color: var(--ink);
+      background: #242832;
     }
     .nav button.active {
-      border-color: #bfdbfe;
-      background: #eff6ff;
-      color: var(--primary);
+      background: #2a303b;
+      color: #fff;
     }
-    .panel, .stat {
+    .header-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .75rem;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    .panel {
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--panel);
       box-shadow: var(--shadow);
+      overflow: hidden;
     }
     .hero {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 1.25rem;
       align-items: center;
-      margin-bottom: 1rem;
-      padding: 1.25rem 1.5rem;
-      border-color: #bae6fd;
-      background: #eef8ff;
+      margin-bottom: 1.5rem;
+      padding: 1.5rem;
+      border-color: var(--info-line);
+      background: #151b28;
+      box-shadow: var(--shadow);
     }
     .eyebrow {
-      color: var(--primary);
+      color: var(--primary-strong);
       font-size: .75rem;
       font-weight: 700;
       text-transform: uppercase;
+      letter-spacing: 0;
     }
     .hero h2 {
       margin-top: .25rem;
-      font-size: 1.5rem;
-      line-height: 1.3;
+      font-size: 1.75rem;
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: 0;
     }
     .hero p {
       margin-top: .3rem;
       color: var(--muted);
-      font-size: .88rem;
+      font-size: .92rem;
       line-height: 1.5;
     }
     .field {
       display: grid;
-      gap: .35rem;
+      gap: .4rem;
       color: var(--muted);
       font-size: .82rem;
       font-weight: 600;
+      letter-spacing: 0;
     }
     .path-bar {
       display: grid;
       grid-template-columns: minmax(220px, 1fr) auto;
       gap: .75rem;
       align-items: end;
-      margin-bottom: 1rem;
-      padding: 1rem;
+      margin-bottom: 1.5rem;
+      padding: 1.25rem;
     }
     .notice {
-      min-height: 2.35rem;
+      min-height: 2.5rem;
       display: flex;
       align-items: center;
-      margin-bottom: 1rem;
-      padding: .6rem .8rem;
+      margin-bottom: 1.5rem;
+      padding: .75rem 1.1rem;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: #fff;
+      background: var(--panel);
       color: var(--muted);
+      font-size: .88rem;
     }
     .notice.error {
-      border-color: #ffccc7;
-      background: #fff1f0;
+      border-color: var(--danger-line);
+      background: var(--danger-bg);
       color: var(--danger);
     }
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 1rem;
-      margin-bottom: 1rem;
+      margin-bottom: 1.5rem;
     }
     .stat {
-      min-height: 6.75rem;
-      padding: 1.1rem;
-      border-top-width: 3px;
+      min-height: 7rem;
+      padding: 1.25rem;
+      border-top-width: 4px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
     }
-    .stat.sky { border-top-color: #38bdf8; }
+    .stat.sky { border-top-color: var(--primary); }
     .stat.violet { border-top-color: var(--violet); }
     .stat.emerald { border-top-color: var(--emerald); }
     .stat.amber { border-top-color: var(--amber); }
+
     .stat-label {
       color: var(--muted);
       font-size: .82rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0;
     }
     .stat-value {
       display: block;
       margin-top: .35rem;
-      font-size: 1.75rem;
+      font-size: 1.85rem;
       font-weight: 700;
       line-height: 1.15;
+      letter-spacing: 0;
+      color: #fff;
     }
     .stat-hint {
       margin-top: .35rem;
       color: var(--subtle);
       font-size: .75rem;
+      font-weight: 500;
     }
     .grid {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(340px, .44fr);
-      gap: 1rem;
+      grid-template-columns: minmax(0, 1fr) minmax(350px, .44fr);
+      gap: 1.5rem;
       align-items: start;
     }
     .stack {
       display: grid;
-      gap: 1rem;
+      gap: 1.5rem;
     }
     .panel-head {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
       gap: 1rem;
-      padding: 1.1rem;
+      padding: 1.25rem;
+      border-bottom: 1px solid var(--line);
     }
     .panel-title {
       display: grid;
-      gap: .15rem;
+      gap: .2rem;
       min-width: 0;
     }
     .panel-title h2,
     .panel-title h3 {
-      font-size: 1rem;
-      line-height: 1.4;
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: 0;
     }
     .panel-title p {
       color: var(--muted);
-      font-size: .75rem;
-      line-height: 1.5;
+      font-size: .78rem;
+      line-height: 1.4;
     }
     .panel-body {
-      padding: 0 1.1rem 1.1rem;
+      padding: 1.25rem;
     }
     .form-grid {
       display: grid;
-      gap: .75rem;
+      gap: 1rem;
     }
     .form-row {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: .75rem;
+      gap: 1rem;
     }
     .table-wrap { overflow-x: auto; }
     table {
@@ -317,31 +402,42 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       min-width: 880px;
       border-collapse: collapse;
       table-layout: fixed;
-      border: 1px solid #f0f0f0;
-      border-radius: 6px;
-      overflow: hidden;
-      background: #fff;
+      background: transparent;
     }
     th, td {
-      padding: .6rem .75rem;
+      padding: .85rem 1rem;
       border-bottom: 1px solid var(--line);
       text-align: left;
       vertical-align: middle;
       overflow-wrap: anywhere;
     }
     th {
-      background: #fafafa;
+      background: var(--panel-subtle);
       color: var(--muted);
-      font-size: .78rem;
+      font-size: .8rem;
       font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0;
     }
     tr:last-child td { border-bottom: 0; }
-    tr.selected td { background: #e6f4ff; }
-    .cell-title { font-weight: 600; }
+    tr {
+      transition: background-color 0.2s ease;
+    }
+    tr:hover td {
+      background: #1b1f28;
+    }
+    tr.selected td {
+      background: var(--info-bg);
+      border-bottom-color: rgba(59, 130, 246, 0.2);
+    }
+    .cell-title {
+      font-weight: 600;
+      color: #fff;
+    }
     .cell-subtitle {
-      margin-top: .12rem;
-      color: var(--subtle);
-      font-size: .72rem;
+      margin-top: .2rem;
+      color: var(--muted);
+      font-size: .75rem;
     }
     .actions {
       display: flex;
@@ -349,75 +445,82 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       gap: .4rem;
     }
     .actions button {
-      min-height: 2rem;
-      padding: 0 .65rem;
+      min-height: 1.85rem;
+      padding: 0 .75rem;
       font-size: .78rem;
+      border-radius: 8px;
     }
     .badge {
       display: inline-flex;
       align-items: center;
-      min-height: 1.35rem;
+      min-height: 1.45rem;
       border: 1px solid var(--line-strong);
-      border-radius: 4px;
-      padding: 0 .55rem;
-      background: #f8fafc;
+      border-radius: 6px;
+      padding: 0 .7rem;
+      background: var(--panel-subtle);
       color: var(--muted);
       font-size: .75rem;
       font-weight: 600;
     }
     .badge.ok {
-      border-color: #52c41a;
-      background: #f6ffed;
+      border-color: var(--success-line);
+      background: var(--success-bg);
       color: var(--success);
     }
     .badge.warn {
-      border-color: #faad14;
-      background: #fffbe6;
+      border-color: var(--warn-line);
+      background: var(--warn-bg);
       color: var(--warn);
     }
     .badge.bad {
-      border-color: #ff4d4f;
-      background: #fff1f0;
+      border-color: var(--danger-line);
+      background: var(--danger-bg);
       color: var(--danger);
     }
     .empty {
-      padding: 2rem 1rem;
+      padding: 3rem 1rem;
       text-align: center;
       color: var(--muted);
+      font-size: .9rem;
     }
     .view { display: none; }
     .view.active { display: block; }
+
     .storage-bars {
       display: grid;
-      gap: .75rem;
+      gap: 1rem;
     }
     .sync-metrics {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: .75rem;
-      margin-top: .8rem;
+      margin-top: 1rem;
     }
     .sync-metric {
-      padding: .7rem;
+      padding: .85rem;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #f8fafc;
+      border-radius: 8px;
+      background: var(--panel-subtle);
     }
     .sync-metric span {
       display: block;
       color: var(--muted);
       font-size: .72rem;
-      font-weight: 600;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0;
     }
     .sync-metric strong {
       display: block;
-      margin-top: .25rem;
-      font-size: .95rem;
+      margin-top: .3rem;
+      font-size: 1rem;
+      font-weight: 700;
       line-height: 1.3;
+      color: #fff;
     }
     .sync-progress {
       display: grid;
-      gap: .4rem;
+      gap: .5rem;
     }
     .sync-progress-head {
       display: flex;
@@ -429,28 +532,30 @@ CLIENT_WEB_HTML = r"""<!doctype html>
     }
     .storage-row {
       display: grid;
-      gap: .35rem;
+      gap: .4rem;
     }
     .bar {
-      height: .6rem;
+      height: .5rem;
       overflow: hidden;
-      border-radius: 999px;
-      background: #eef2f7;
+      border-radius: 6px;
+      background: #242832;
+      border: 1px solid var(--line);
     }
     .bar span {
       display: block;
       height: 100%;
       border-radius: inherit;
-      background: linear-gradient(90deg, #1677ff, #10b981);
+      background: var(--primary);
     }
     .hidden { display: none !important; }
+
     @media (max-width: 980px) {
       header {
         align-items: flex-start;
         flex-direction: column;
         padding: 1rem;
       }
-      main { padding: 1rem; }
+      main { padding: 1.25rem; }
       .hero,
       .path-bar,
       .grid {
@@ -459,7 +564,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 640px) {
-      main { padding: .75rem; }
+      main { padding: 1rem; }
       .stats-grid,
       .form-row {
         grid-template-columns: 1fr;
@@ -481,38 +586,47 @@ CLIENT_WEB_HTML = r"""<!doctype html>
   <header>
     <div class="brand">
       <h1>snapz Client</h1>
-      <p>Local snapshot control panel</p>
+      <p data-i18n="brand.subtitle">Local snapshot control panel</p>
     </div>
-    <nav class="nav" aria-label="Primary">
-      <button class="active" data-view="dashboard" type="button">Dashboard</button>
-      <button data-view="snapshots" type="button">Snapshots</button>
-      <button data-view="sources" type="button">Sources</button>
-      <button data-view="storage" type="button">Storage</button>
-    </nav>
+    <div class="header-actions">
+      <nav class="nav" aria-label="Primary" data-i18n-attr="aria-label:nav.primary">
+        <button class="active" data-i18n="nav.dashboard" data-view="dashboard" type="button">Dashboard</button>
+        <button data-i18n="nav.snapshots" data-view="snapshots" type="button">Snapshots</button>
+        <button data-i18n="nav.sources" data-view="sources" type="button">Sources</button>
+        <button data-i18n="nav.storage" data-view="storage" type="button">Storage</button>
+      </nav>
+      <label class="field" style="gap: .25rem;">
+        <span data-i18n="language.label">Language</span>
+        <select id="languageSelect" aria-label="Language" data-i18n-attr="aria-label:language.label">
+          <option value="en">English</option>
+          <option value="zh">中文</option>
+        </select>
+      </label>
+    </div>
   </header>
 
   <main>
     <section class="panel hero">
       <div>
-        <div class="eyebrow">Local web UI</div>
-        <h2>snapz client workspace</h2>
-        <p>Manage local sources, snapshots, restore points, and storage from the browser.</p>
+        <div class="eyebrow" data-i18n="hero.eyebrow">Local web UI</div>
+        <h2 data-i18n="hero.title">snapz client workspace</h2>
+        <p data-i18n="hero.copy">Manage local sources, snapshots, restore points, and storage from the browser.</p>
       </div>
       <div class="toolbar">
-        <span id="healthBadge" class="badge warn">Checking API</span>
-        <button id="refreshButton" class="primary" type="button">Refresh</button>
+        <span id="healthBadge" class="badge warn" data-i18n="status.checkingApi">Checking API</span>
+        <button id="refreshButton" class="primary" data-i18n="action.refresh" type="button">Refresh</button>
       </div>
     </section>
 
     <section class="panel path-bar">
       <label class="field">
-        Active source path
-        <input id="pathInput" autocomplete="off" placeholder="/path/to/project">
+        <span data-i18n="field.activeSourcePath">Active source path</span>
+        <input id="pathInput" autocomplete="off" data-i18n-attr="placeholder:placeholder.path" placeholder="/path/to/project">
       </label>
-      <button id="loadPathButton" class="primary" type="button">Load source</button>
+      <button id="loadPathButton" class="primary" data-i18n="action.loadSource" type="button">Load source</button>
     </section>
 
-    <div id="notice" class="notice">Ready.</div>
+    <div id="notice" class="notice" data-i18n="notice.ready">Ready.</div>
 
     <section id="dashboard" class="view active">
       <section class="stats-grid" id="statsGrid"></section>
@@ -521,10 +635,10 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         <section class="panel">
           <div class="panel-head">
             <div class="panel-title">
-              <h2>Recent snapshots</h2>
-              <p>Latest restore points for the active source.</p>
+              <h2 data-i18n="section.recentSnapshots">Recent snapshots</h2>
+              <p data-i18n="section.recentSnapshots.copy">Latest restore points for the active source.</p>
             </div>
-            <button data-view-target="snapshots" type="button">View all</button>
+            <button data-i18n="action.viewAll" data-view-target="snapshots" type="button">View all</button>
           </div>
           <div id="recentSnapshots"></div>
         </section>
@@ -533,29 +647,29 @@ CLIENT_WEB_HTML = r"""<!doctype html>
           <section class="panel">
             <div class="panel-head">
               <div class="panel-title">
-                <h2>Create snapshot</h2>
-                <p>Capture the current state of a local directory.</p>
+                <h2 data-i18n="section.createSnapshot">Create snapshot</h2>
+                <p data-i18n="section.createSnapshot.copy">Capture the current state of a local directory.</p>
               </div>
             </div>
             <div class="panel-body">
               <form id="createSnapshotForm" class="form-grid">
                 <label class="field">
-                  Path
-                  <input name="path" placeholder="/path/to/project" required>
+                  <span data-i18n="field.path">Path</span>
+                  <input name="path" data-i18n-attr="placeholder:placeholder.path" placeholder="/path/to/project" required>
                 </label>
                 <label class="field">
-                  Name
-                  <input name="name" placeholder="auto generated if empty">
+                  <span data-i18n="field.name">Name</span>
+                  <input name="name" data-i18n-attr="placeholder:placeholder.snapshotName" placeholder="auto generated if empty">
                 </label>
                 <label class="field">
-                  Note
-                  <textarea name="note" placeholder="Optional context"></textarea>
+                  <span data-i18n="field.note">Note</span>
+                  <textarea name="note" data-i18n-attr="placeholder:placeholder.note" placeholder="Optional context"></textarea>
                 </label>
                 <div class="toolbar">
-                  <button class="primary" type="submit">Create snapshot</button>
+                  <button class="primary" data-i18n="action.createSnapshot" type="submit">Create snapshot</button>
                   <label class="toolbar" style="color: var(--muted); font-size: .82rem;">
                     <input name="include_large" type="checkbox" style="width: 1rem; height: 1rem;">
-                    Include large files
+                    <span data-i18n="field.includeLarge">Include large files</span>
                   </label>
                 </div>
               </form>
@@ -565,10 +679,10 @@ CLIENT_WEB_HTML = r"""<!doctype html>
           <section class="panel">
             <div class="panel-head">
               <div class="panel-title">
-                <h2>Remote push</h2>
-                <p>Upload local snapshots to the configured snapz-server.</p>
+                <h2 data-i18n="section.remotePush">Remote push</h2>
+                <p data-i18n="section.remotePush.copy">Upload local snapshots to the configured snapz-server.</p>
               </div>
-              <button id="pushRemoteButton" class="primary" type="button">Push now</button>
+              <button id="pushRemoteButton" class="primary" data-i18n="action.pushNow" type="button">Push now</button>
             </div>
             <div id="remoteSyncPanel" class="panel-body"></div>
           </section>
@@ -579,15 +693,15 @@ CLIENT_WEB_HTML = r"""<!doctype html>
     <section id="snapshots" class="view">
       <section class="panel">
         <div class="panel-head">
-          <div class="panel-title">
-            <h2>Snapshots</h2>
-            <p>Create, inspect, restore, protect, rename, or delete local snapshots.</p>
-          </div>
-          <div class="toolbar">
-            <input id="snapshotFilter" placeholder="Filter name, note, or tag" style="width: min(320px, 100%);">
+            <div class="panel-title">
+              <h2 data-i18n="section.snapshots">Snapshots</h2>
+              <p data-i18n="section.snapshots.copy">Create, inspect, restore, protect, rename, or delete local snapshots.</p>
+            </div>
+            <div class="toolbar">
+            <input id="snapshotFilter" data-i18n-attr="placeholder:placeholder.snapshotFilter" placeholder="Filter name, note, or tag" style="width: min(320px, 100%);">
             <label class="toolbar" style="color: var(--muted); font-size: .82rem;">
               <input id="showAutoInput" type="checkbox" style="width: 1rem; height: 1rem;">
-              Show auto snapshots
+              <span data-i18n="field.showAuto">Show auto snapshots</span>
             </label>
           </div>
         </div>
@@ -600,8 +714,8 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         <section class="panel">
           <div class="panel-head">
             <div class="panel-title">
-              <h2>Sources</h2>
-              <p>Directories with snapshots in the local snapz store.</p>
+              <h2 data-i18n="section.sources">Sources</h2>
+              <p data-i18n="section.sources.copy">Directories with snapshots in the local snapz store.</p>
             </div>
           </div>
           <div id="sourcesTable"></div>
@@ -610,17 +724,17 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         <section class="panel">
           <div class="panel-head">
             <div class="panel-title">
-              <h2>Initialize source</h2>
-              <p>Add a stable source marker for move detection.</p>
+              <h2 data-i18n="section.initSource">Initialize source</h2>
+              <p data-i18n="section.initSource.copy">Add a stable source marker for move detection.</p>
             </div>
           </div>
           <div class="panel-body">
             <form id="initSourceForm" class="form-grid">
               <label class="field">
-                Path
-                <input name="path" placeholder="/path/to/project" required>
+                <span data-i18n="field.path">Path</span>
+                <input name="path" data-i18n-attr="placeholder:placeholder.path" placeholder="/path/to/project" required>
               </label>
-              <button class="primary" type="submit">Initialize</button>
+              <button class="primary" data-i18n="action.initialize" type="submit">Initialize</button>
             </form>
           </div>
         </section>
@@ -632,8 +746,8 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         <section class="panel">
           <div class="panel-head">
             <div class="panel-title">
-              <h2>Storage breakdown</h2>
-              <p>On-disk usage grouped by source.</p>
+              <h2 data-i18n="section.storageBreakdown">Storage breakdown</h2>
+              <p data-i18n="section.storageBreakdown.copy">On-disk usage grouped by source.</p>
             </div>
           </div>
           <div id="storagePanel" class="panel-body"></div>
@@ -642,13 +756,13 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         <section class="panel">
           <div class="panel-head">
             <div class="panel-title">
-              <h2>Maintenance</h2>
-              <p>Preview local garbage collection for the active source.</p>
+              <h2 data-i18n="section.maintenance">Maintenance</h2>
+              <p data-i18n="section.maintenance.copy">Preview local garbage collection for the active source.</p>
             </div>
           </div>
           <div class="panel-body stack">
-            <button id="previewGcButton" type="button">Preview GC</button>
-            <button id="runGcButton" class="danger" type="button">Run GC</button>
+            <button id="previewGcButton" data-i18n="action.previewGc" type="button">Preview GC</button>
+            <button id="runGcButton" class="danger" data-i18n="action.runGc" type="button">Run GC</button>
           </div>
         </section>
       </section>
@@ -656,6 +770,220 @@ CLIENT_WEB_HTML = r"""<!doctype html>
   </main>
 
   <script>
+    const LANG_STORAGE_KEY = 'snapzClientWebLang';
+    const I18N = {
+      en: {
+        'action.createSnapshot': 'Create snapshot',
+        'action.delete': 'Delete',
+        'action.details': 'Details',
+        'action.initialize': 'Initialize',
+        'action.loadSource': 'Load source',
+        'action.open': 'Open',
+        'action.previewGc': 'Preview GC',
+        'action.protect': 'Protect',
+        'action.pushNow': 'Push now',
+        'action.refresh': 'Refresh',
+        'action.rename': 'Rename',
+        'action.restore': 'Restore',
+        'action.runGc': 'Run GC',
+        'action.unprotect': 'Unprotect',
+        'action.viewAll': 'View all',
+        'brand.subtitle': 'Local snapshot control panel',
+        'field.activeSourcePath': 'Active source path',
+        'field.includeLarge': 'Include large files',
+        'field.name': 'Name',
+        'field.note': 'Note',
+        'field.path': 'Path',
+        'field.showAuto': 'Show auto snapshots',
+        'hero.copy': 'Manage local sources, snapshots, restore points, and storage from the browser.',
+        'hero.eyebrow': 'Local web UI',
+        'hero.title': 'snapz client workspace',
+        'label.created': 'Created',
+        'label.compression': 'Compression',
+        'label.dedupRatio': 'Dedup ratio',
+        'label.eta': 'ETA',
+        'label.files': 'Files',
+        'label.lastSync': 'Last sync',
+        'label.lastUsed': 'Last used',
+        'label.logicalToUnique': 'Logical to unique bytes',
+        'label.notLoggedIn': 'Not logged in',
+        'label.onDisk': 'On disk',
+        'label.protected': 'Protected',
+        'label.ready': 'Ready',
+        'label.remote': 'Remote',
+        'label.size': 'Size',
+        'label.snapshot': 'Snapshot',
+        'label.snapshots': 'Snapshots',
+        'label.source': 'Source',
+        'label.sources': 'Sources',
+        'label.speed': 'Speed',
+        'label.status': 'Status',
+        'label.storage': 'Storage',
+        'label.storageUsed': 'Storage used',
+        'label.totalSnapshots': 'Total snapshots',
+        'label.transferred': 'Transferred',
+        'language.label': 'Language',
+        'nav.dashboard': 'Dashboard',
+        'nav.primary': 'Primary',
+        'nav.snapshots': 'Snapshots',
+        'nav.sources': 'Sources',
+        'nav.storage': 'Storage',
+        'notice.gcComplete': 'GC complete.',
+        'notice.loaded': 'Loaded current snapz state.',
+        'notice.noSnapshots': 'No snapshots found.',
+        'notice.noSources': 'No sources found.',
+        'notice.noStorage': 'No storage data yet.',
+        'notice.ready': 'Ready.',
+        'notice.remotePushRequested': 'Remote push requested.',
+        'notice.runLogin': 'Run snapz login first.',
+        'notice.snapshotCreated': 'Snapshot created: {name}',
+        'notice.snapshotDeleted': 'Snapshot deleted.',
+        'notice.snapshotProtected': 'Snapshot protected.',
+        'notice.snapshotRenamed': 'Snapshot renamed.',
+        'notice.snapshotRestored': 'Restored {name}.',
+        'notice.snapshotUnprotected': 'Snapshot unprotected.',
+        'notice.sourceInitialized': 'Source initialized.',
+        'placeholder.note': 'Optional context',
+        'placeholder.path': '/path/to/project',
+        'placeholder.snapshotFilter': 'Filter name, note, or tag',
+        'placeholder.snapshotName': 'auto generated if empty',
+        'prompt.deleteSnapshot': 'Delete snapshot {name}?',
+        'prompt.gc': 'Run garbage collection for {path}?',
+        'prompt.renameSnapshot': 'New snapshot name',
+        'prompt.restore': 'Restore {name} over {path}?',
+        'remote.localBlobs': 'local blobs retained',
+        'remote.remoteOnly': 'remote_only enabled',
+        'section.createSnapshot': 'Create snapshot',
+        'section.createSnapshot.copy': 'Capture the current state of a local directory.',
+        'section.initSource': 'Initialize source',
+        'section.initSource.copy': 'Add a stable source marker for move detection.',
+        'section.maintenance': 'Maintenance',
+        'section.maintenance.copy': 'Preview local garbage collection for the active source.',
+        'section.recentSnapshots': 'Recent snapshots',
+        'section.recentSnapshots.copy': 'Latest restore points for the active source.',
+        'section.remotePush': 'Remote push',
+        'section.remotePush.copy': 'Upload local snapshots to the configured snapz-server.',
+        'section.snapshots': 'Snapshots',
+        'section.snapshots.copy': 'Create, inspect, restore, protect, rename, or delete local snapshots.',
+        'section.sources': 'Sources',
+        'section.sources.copy': 'Directories with snapshots in the local snapz store.',
+        'section.storageBreakdown': 'Storage breakdown',
+        'section.storageBreakdown.copy': 'On-disk usage grouped by source.',
+        'status.checkingApi': 'Checking API',
+        'stat.acrossSources': 'Across local sources',
+        'stat.trackedDirs': 'Tracked directories',
+        'table.actions': 'Actions',
+      },
+      zh: {
+        'action.createSnapshot': '创建快照',
+        'action.delete': '删除',
+        'action.details': '详情',
+        'action.initialize': '初始化',
+        'action.loadSource': '加载源目录',
+        'action.open': '打开',
+        'action.previewGc': '预览清理',
+        'action.protect': '保护',
+        'action.pushNow': '立即推送',
+        'action.refresh': '刷新',
+        'action.rename': '重命名',
+        'action.restore': '恢复',
+        'action.runGc': '执行清理',
+        'action.unprotect': '取消保护',
+        'action.viewAll': '查看全部',
+        'brand.subtitle': '本地快照控制台',
+        'field.activeSourcePath': '当前源目录路径',
+        'field.includeLarge': '包含大文件',
+        'field.name': '名称',
+        'field.note': '备注',
+        'field.path': '路径',
+        'field.showAuto': '显示自动快照',
+        'hero.copy': '在浏览器中管理本地源目录、快照、恢复点和存储。',
+        'hero.eyebrow': '本地 Web 界面',
+        'hero.title': 'snapz 客户端工作台',
+        'label.created': '创建时间',
+        'label.compression': '压缩',
+        'label.dedupRatio': '去重率',
+        'label.eta': '预计剩余',
+        'label.files': '文件数',
+        'label.lastSync': '上次同步',
+        'label.lastUsed': '上次使用',
+        'label.logicalToUnique': '逻辑大小 / 唯一数据',
+        'label.notLoggedIn': '未登录',
+        'label.onDisk': '磁盘占用',
+        'label.protected': '已保护',
+        'label.ready': '就绪',
+        'label.remote': '远端',
+        'label.size': '大小',
+        'label.snapshot': '快照',
+        'label.snapshots': '快照',
+        'label.source': '源目录',
+        'label.sources': '源目录',
+        'label.speed': '速度',
+        'label.status': '状态',
+        'label.storage': '存储',
+        'label.storageUsed': '已用存储',
+        'label.totalSnapshots': '快照总数',
+        'label.transferred': '已传输',
+        'language.label': '语言',
+        'nav.dashboard': '概览',
+        'nav.primary': '主导航',
+        'nav.snapshots': '快照',
+        'nav.sources': '源目录',
+        'nav.storage': '存储',
+        'notice.gcComplete': '清理完成。',
+        'notice.loaded': '已加载当前 snapz 状态。',
+        'notice.noSnapshots': '没有找到快照。',
+        'notice.noSources': '没有找到源目录。',
+        'notice.noStorage': '暂无存储数据。',
+        'notice.ready': '就绪。',
+        'notice.remotePushRequested': '已请求远端推送。',
+        'notice.runLogin': '请先运行 snapz login。',
+        'notice.snapshotCreated': '已创建快照：{name}',
+        'notice.snapshotDeleted': '快照已删除。',
+        'notice.snapshotProtected': '快照已保护。',
+        'notice.snapshotRenamed': '快照已重命名。',
+        'notice.snapshotRestored': '已恢复 {name}。',
+        'notice.snapshotUnprotected': '快照已取消保护。',
+        'notice.sourceInitialized': '源目录已初始化。',
+        'placeholder.note': '可选说明',
+        'placeholder.path': '/path/to/project',
+        'placeholder.snapshotFilter': '按名称、备注或标签过滤',
+        'placeholder.snapshotName': '留空则自动生成',
+        'prompt.deleteSnapshot': '删除快照 {name}？',
+        'prompt.gc': '对 {path} 执行垃圾清理？',
+        'prompt.renameSnapshot': '新的快照名称',
+        'prompt.restore': '将 {name} 恢复到 {path}？',
+        'remote.localBlobs': '保留本地数据块',
+        'remote.remoteOnly': '已启用 remote_only',
+        'section.createSnapshot': '创建快照',
+        'section.createSnapshot.copy': '捕获本地目录的当前状态。',
+        'section.initSource': '初始化源目录',
+        'section.initSource.copy': '添加稳定的源标记，用于目录移动检测。',
+        'section.maintenance': '维护',
+        'section.maintenance.copy': '预览当前源目录的本地垃圾清理。',
+        'section.recentSnapshots': '最近快照',
+        'section.recentSnapshots.copy': '当前源目录最近的恢复点。',
+        'section.remotePush': '远端推送',
+        'section.remotePush.copy': '将本地快照上传到已配置的 snapz-server。',
+        'section.snapshots': '快照',
+        'section.snapshots.copy': '创建、查看、恢复、保护、重命名或删除本地快照。',
+        'section.sources': '源目录',
+        'section.sources.copy': '本地 snapz 存储中包含快照的目录。',
+        'section.storageBreakdown': '存储明细',
+        'section.storageBreakdown.copy': '按源目录查看磁盘占用。',
+        'status.checkingApi': '正在检查 API',
+        'stat.acrossSources': '所有本地源目录',
+        'stat.trackedDirs': '已跟踪目录',
+        'table.actions': '操作',
+      },
+    };
+
+    function preferredLanguage() {
+      const saved = localStorage.getItem(LANG_STORAGE_KEY);
+      if (saved === 'en' || saved === 'zh') return saved;
+      return navigator.language && navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+    }
+
     const state = {
       health: null,
       overview: {},
@@ -666,10 +994,38 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       path: new URLSearchParams(location.search).get('path') || '.',
       filter: '',
       showAuto: false,
+      lang: preferredLanguage(),
     };
 
     const el = (id) => document.getElementById(id);
     const qs = (selector) => document.querySelector(selector);
+
+    function t(key, params = {}) {
+      const template = (I18N[state.lang] && I18N[state.lang][key]) || I18N.en[key] || key;
+      return template.replace(/\{(\w+)\}/g, (_match, name) => String(params[name] ?? ''));
+    }
+
+    function applyLanguage() {
+      document.documentElement.lang = state.lang === 'zh' ? 'zh-CN' : 'en';
+      el('languageSelect').value = state.lang;
+      document.querySelectorAll('[data-i18n]').forEach((node) => {
+        node.textContent = t(node.dataset.i18n);
+      });
+      document.querySelectorAll('[data-i18n-attr]').forEach((node) => {
+        node.dataset.i18nAttr.split(';').forEach((pair) => {
+          const [attr, key] = pair.split(':');
+          if (attr && key) node.setAttribute(attr, t(key));
+        });
+      });
+    }
+
+    function setLanguage(lang) {
+      state.lang = lang === 'zh' ? 'zh' : 'en';
+      localStorage.setItem(LANG_STORAGE_KEY, state.lang);
+      applyLanguage();
+      renderAll();
+      showNotice(t('notice.ready'));
+    }
 
     function showNotice(message, isError = false) {
       const node = el('notice');
@@ -755,7 +1111,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       const badge = el('healthBadge');
       if (!state.health) {
         badge.className = 'badge warn';
-        badge.textContent = 'Checking API';
+        badge.textContent = t('status.checkingApi');
         return;
       }
       badge.className = 'badge ok';
@@ -765,10 +1121,10 @@ CLIENT_WEB_HTML = r"""<!doctype html>
     function renderStats() {
       const overview = state.overview || {};
       const items = [
-        ['Total snapshots', overview.total_snapshots || 0, 'Across local sources', 'sky'],
-        ['Sources', overview.total_sources || 0, 'Tracked directories', 'violet'],
-        ['Storage used', overview.total_storage || '0 B', 'On disk', 'emerald'],
-        ['Dedup ratio', `${overview.dedup_ratio || 1}x`, 'Logical to unique bytes', 'amber'],
+        [t('label.totalSnapshots'), overview.total_snapshots || 0, t('stat.acrossSources'), 'sky'],
+        [t('label.sources'), overview.total_sources || 0, t('stat.trackedDirs'), 'violet'],
+        [t('label.storageUsed'), overview.total_storage || '0 B', t('label.onDisk'), 'emerald'],
+        [t('label.dedupRatio'), `${overview.dedup_ratio || 1}x`, t('label.logicalToUnique'), 'amber'],
       ];
       el('statsGrid').innerHTML = items.map(([label, value, hint, tone]) => `
         <article class="stat ${tone}">
@@ -795,7 +1151,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
     function snapshotRows(snapshots, limit = null) {
       const rows = limit ? snapshots.slice(0, limit) : snapshots;
       if (rows.length === 0) {
-        return '<div class="empty">No snapshots found.</div>';
+        return `<div class="empty">${t('notice.noSnapshots')}</div>`;
       }
       return `
         <div class="panel-body">
@@ -803,12 +1159,12 @@ CLIENT_WEB_HTML = r"""<!doctype html>
             <table>
               <thead>
                 <tr>
-                  <th style="width: 22%;">Snapshot</th>
-                  <th style="width: 20%;">Created</th>
-                  <th style="width: 14%;">Size</th>
-                  <th style="width: 12%;">Files</th>
-                  <th style="width: 12%;">Status</th>
-                  <th style="width: 20%;">Actions</th>
+                  <th style="width: 22%;">${t('label.snapshot')}</th>
+                  <th style="width: 20%;">${t('label.created')}</th>
+                  <th style="width: 14%;">${t('label.size')}</th>
+                  <th style="width: 12%;">${t('label.files')}</th>
+                  <th style="width: 12%;">${t('label.status')}</th>
+                  <th style="width: 20%;">${t('table.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -823,18 +1179,18 @@ CLIENT_WEB_HTML = r"""<!doctype html>
                     <td>${Number(snapshot.file_count || 0).toLocaleString()}</td>
                     <td>
                       <span class="badge ${snapshot.protected ? 'warn' : 'ok'}">
-                        ${snapshot.protected ? 'Protected' : 'Ready'}
+                        ${snapshot.protected ? t('label.protected') : t('label.ready')}
                       </span>
                     </td>
                     <td>
                       <div class="actions">
-                        <button data-action="details" data-name="${escapeHtml(snapshot.name)}" type="button">Details</button>
-                        <button data-action="restore" data-name="${escapeHtml(snapshot.name)}" type="button">Restore</button>
-                        <button data-action="rename" data-name="${escapeHtml(snapshot.name)}" type="button">Rename</button>
+                        <button data-action="details" data-name="${escapeHtml(snapshot.name)}" type="button">${t('action.details')}</button>
+                        <button data-action="restore" data-name="${escapeHtml(snapshot.name)}" type="button">${t('action.restore')}</button>
+                        <button data-action="rename" data-name="${escapeHtml(snapshot.name)}" type="button">${t('action.rename')}</button>
                         <button data-action="${snapshot.protected ? 'unprotect' : 'protect'}" data-name="${escapeHtml(snapshot.name)}" type="button">
-                          ${snapshot.protected ? 'Unprotect' : 'Protect'}
+                          ${snapshot.protected ? t('action.unprotect') : t('action.protect')}
                         </button>
-                        <button class="danger" data-action="delete" data-name="${escapeHtml(snapshot.name)}" type="button">Delete</button>
+                        <button class="danger" data-action="delete" data-name="${escapeHtml(snapshot.name)}" type="button">${t('action.delete')}</button>
                       </div>
                     </td>
                   </tr>
@@ -854,7 +1210,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
 
     function renderSources() {
       if (state.sources.length === 0) {
-        el('sourcesTable').innerHTML = '<div class="empty">No sources found.</div>';
+        el('sourcesTable').innerHTML = `<div class="empty">${t('notice.noSources')}</div>`;
         return;
       }
       const sync = state.remoteStatus || {};
@@ -864,12 +1220,12 @@ CLIENT_WEB_HTML = r"""<!doctype html>
             <table>
               <thead>
                 <tr>
-                  <th style="width: 30%;">Source</th>
-                  <th style="width: 14%;">Snapshots</th>
-                  <th style="width: 18%;">Last used</th>
-                  <th style="width: 14%;">Storage</th>
-                  <th style="width: 12%;">Remote</th>
-                  <th style="width: 14%;">Actions</th>
+                  <th style="width: 30%;">${t('label.source')}</th>
+                  <th style="width: 14%;">${t('label.snapshots')}</th>
+                  <th style="width: 18%;">${t('label.lastUsed')}</th>
+                  <th style="width: 14%;">${t('label.storage')}</th>
+                  <th style="width: 12%;">${t('label.remote')}</th>
+                  <th style="width: 14%;">${t('table.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -882,7 +1238,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
                         <div class="cell-title">${escapeHtml(source.name || source.abspath)}</div>
                         <div class="cell-subtitle">${escapeHtml(source.abspath)}</div>
                       </td>
-                      <td><span class="badge">${source.snapshot_count} snapshot(s)</span></td>
+                      <td><span class="badge">${source.snapshot_count} ${t('label.snapshots').toLowerCase()}</span></td>
                       <td>${formatDate(source.last_used)}</td>
                       <td>${formatBytes(source.on_disk_bytes || 0)}</td>
                       <td>
@@ -892,7 +1248,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
                         ` : '<span class="badge">-</span>'}
                       </td>
                       <td>
-                        <button data-action="select-source" data-path="${escapeHtml(source.abspath)}" type="button">Open</button>
+                        <button data-action="select-source" data-path="${escapeHtml(source.abspath)}" type="button">${t('action.open')}</button>
                       </td>
                     </tr>
                   `;
@@ -922,9 +1278,9 @@ CLIENT_WEB_HTML = r"""<!doctype html>
       el('remoteSyncPanel').innerHTML = `
         <div class="toolbar" style="justify-content: space-between; margin-bottom: .75rem;">
           <span class="badge ${badgeClass}">
-            ${configured ? escapeHtml(sync.status || 'idle') : 'Not logged in'}
+            ${configured ? escapeHtml(sync.status || 'idle') : t('label.notLoggedIn')}
           </span>
-          <span class="cell-subtitle">${sync.remote_only ? 'remote_only enabled' : 'local blobs retained'}</span>
+          <span class="cell-subtitle">${sync.remote_only ? t('remote.remoteOnly') : t('remote.localBlobs')}</span>
         </div>
         <div class="sync-progress">
           <div class="sync-progress-head">
@@ -935,24 +1291,24 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         </div>
         <div class="sync-metrics">
           <div class="sync-metric">
-            <span>Speed</span>
+            <span>${t('label.speed')}</span>
             <strong>${formatSpeed(sync.speed_bps)}</strong>
           </div>
           <div class="sync-metric">
-            <span>ETA</span>
+            <span>${t('label.eta')}</span>
             <strong>${formatEta(sync.eta_seconds)}</strong>
           </div>
           <div class="sync-metric">
-            <span>Transferred</span>
+            <span>${t('label.transferred')}</span>
             <strong>${formatBytes(sync.bytes_sent)} / ${formatBytes(sync.bytes_total)}</strong>
           </div>
           <div class="sync-metric">
-            <span>Last sync</span>
+            <span>${t('label.lastSync')}</span>
             <strong>${formatDate(sync.last_sync_at)}</strong>
           </div>
         </div>
         <div class="cell-subtitle" style="margin-top: .75rem;">
-          ${escapeHtml(sync.message || (configured ? 'Ready.' : 'Run snapz login first.'))}
+          ${escapeHtml(sync.message || (configured ? t('notice.ready') : t('notice.runLogin')))}
         </div>
       `;
     }
@@ -960,7 +1316,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
     function renderStorage() {
       const total = Math.max(1, Number(state.overview.total_storage_bytes || 0));
       if (state.stats.length === 0) {
-        el('storagePanel').innerHTML = '<div class="empty">No storage data yet.</div>';
+        el('storagePanel').innerHTML = `<div class="empty">${t('notice.noStorage')}</div>`;
         return;
       }
       el('storagePanel').innerHTML = `
@@ -971,7 +1327,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
               <div class="storage-row">
                 <div class="toolbar" style="justify-content: space-between;">
                   <strong>${escapeHtml(entry.name || entry.abspath)}</strong>
-                  <span class="cell-subtitle">${formatBytes(entry.on_disk_bytes)} / ${entry.snapshot_count} snapshot(s)</span>
+                  <span class="cell-subtitle">${formatBytes(entry.on_disk_bytes)} / ${entry.snapshot_count} ${t('label.snapshots').toLowerCase()}</span>
                 </div>
                 <div class="bar"><span style="width: ${Math.min(100, pct)}%;"></span></div>
               </div>
@@ -1015,7 +1371,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         state.stats = stats.stats || [];
         state.remoteStatus = remoteStatus.status || {};
         renderAll();
-        showNotice('Loaded current snapz state.');
+        showNotice(t('notice.loaded'));
       } catch (error) {
         showNotice(error.message, true);
       }
@@ -1037,7 +1393,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         const result = await api('/api/remote/push', { method: 'POST' });
         state.remoteStatus = result.status || {};
         renderRemoteSync();
-        showNotice(result.message || 'Remote push requested.');
+        showNotice(result.message || t('notice.remotePushRequested'));
         pollRemoteStatus();
       } catch (error) {
         showNotice(error.message, true);
@@ -1074,7 +1430,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
         state.path = result.snapshot.source;
         event.currentTarget.reset();
         await loadAll();
-        showNotice(`Snapshot created: ${result.snapshot.name}`);
+        showNotice(t('notice.snapshotCreated', { name: result.snapshot.name }));
       } catch (error) {
         showNotice(error.message, true);
       }
@@ -1088,44 +1444,44 @@ CLIENT_WEB_HTML = r"""<!doctype html>
           const data = await api(`/api/snapshots/${encodeURIComponent(name)}?path=${path}`);
           const snapshot = data.snapshot;
           alert([
-            `Name: ${snapshot.name}`,
-            `Source: ${snapshot.source}`,
-            `Created: ${formatDate(snapshot.created)}`,
-            `Size: ${formatBytes(snapshot.size_bytes)}`,
-            `Files: ${Number(snapshot.file_count || 0).toLocaleString()}`,
-            `Compression: ${snapshot.compression}`,
-            `Note: ${snapshot.note || '-'}`,
+            `${t('field.name')}: ${snapshot.name}`,
+            `${t('label.source')}: ${snapshot.source}`,
+            `${t('label.created')}: ${formatDate(snapshot.created)}`,
+            `${t('label.size')}: ${formatBytes(snapshot.size_bytes)}`,
+            `${t('label.files')}: ${Number(snapshot.file_count || 0).toLocaleString()}`,
+            `${t('label.compression')}: ${snapshot.compression}`,
+            `${t('field.note')}: ${snapshot.note || '-'}`,
           ].join('\n'));
         } else if (button.dataset.action === 'restore') {
-          if (!confirm(`Restore ${name} over ${state.path}?`)) return;
+          if (!confirm(t('prompt.restore', { name, path: state.path }))) return;
           const data = await api(`/api/snapshots/${encodeURIComponent(name)}/restore?path=${path}`, {
             method: 'POST',
             body: JSON.stringify({ auto_save: true, clean: false }),
           });
           await loadAll();
-          showNotice(data.message || `Restored ${name}.`);
+          showNotice(data.message || t('notice.snapshotRestored', { name }));
         } else if (button.dataset.action === 'rename') {
-          const next = prompt('New snapshot name', name);
+          const next = prompt(t('prompt.renameSnapshot'), name);
           if (!next || next.trim() === name) return;
           await api(`/api/snapshots/${encodeURIComponent(name)}/rename?path=${path}`, {
             method: 'POST',
             body: JSON.stringify({ new_name: next.trim() }),
           });
           await loadAll();
-          showNotice('Snapshot renamed.');
+          showNotice(t('notice.snapshotRenamed'));
         } else if (button.dataset.action === 'protect' || button.dataset.action === 'unprotect') {
           await api(`/api/snapshots/${encodeURIComponent(name)}/${button.dataset.action}?path=${path}`, {
             method: 'POST',
           });
           await loadAll();
-          showNotice(button.dataset.action === 'protect' ? 'Snapshot protected.' : 'Snapshot unprotected.');
+          showNotice(button.dataset.action === 'protect' ? t('notice.snapshotProtected') : t('notice.snapshotUnprotected'));
         } else if (button.dataset.action === 'delete') {
-          if (!confirm(`Delete snapshot ${name}?`)) return;
+          if (!confirm(t('prompt.deleteSnapshot', { name }))) return;
           await api(`/api/snapshots/${encodeURIComponent(name)}?path=${path}`, {
             method: 'DELETE',
           });
           await loadAll();
-          showNotice('Snapshot deleted.');
+          showNotice(t('notice.snapshotDeleted'));
         }
       } catch (error) {
         showNotice(error.message, true);
@@ -1141,7 +1497,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
           body: JSON.stringify({ path: form.get('path') }),
         });
         await loadAll();
-        showNotice(data.message || 'Source initialized.');
+        showNotice(data.message || t('notice.sourceInitialized'));
       } catch (error) {
         showNotice(error.message, true);
       }
@@ -1154,7 +1510,7 @@ CLIENT_WEB_HTML = r"""<!doctype html>
           body: JSON.stringify({ path: state.path, dry_run: dryRun }),
         });
         await loadAll();
-        showNotice(data.message || 'GC complete.');
+        showNotice(data.message || t('notice.gcComplete'));
       } catch (error) {
         showNotice(error.message, true);
       }
@@ -1199,12 +1555,17 @@ CLIENT_WEB_HTML = r"""<!doctype html>
     });
     el('previewGcButton').addEventListener('click', () => runGc(true));
     el('runGcButton').addEventListener('click', () => {
-      if (confirm(`Run garbage collection for ${state.path}?`)) {
+      if (confirm(t('prompt.gc', { path: state.path }))) {
         runGc(false);
       }
     });
 
+    el('languageSelect').addEventListener('change', (event) => {
+      setLanguage(event.target.value);
+    });
+
     state.path = el('pathInput').value = state.path;
+    applyLanguage();
     loadAll().then(() => {
       if (state.remoteStatus.running || state.remoteStatus.status === 'running') {
         pollRemoteStatus();

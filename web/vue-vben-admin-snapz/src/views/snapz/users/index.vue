@@ -10,7 +10,7 @@ import type {
   SnapzAdminUser,
 } from '#/api/snapz-admin';
 
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 
 import { Page } from '@vben/common-ui';
 
@@ -22,6 +22,7 @@ import {
   Input,
   message,
   Modal,
+  Progress,
   Row,
   Space,
   Switch,
@@ -49,6 +50,238 @@ import {
   updateSnapzSource,
   updateSnapzUser,
 } from '#/api/snapz-admin';
+
+import {
+  formatBytes,
+  formatDate,
+  formatEta,
+  formatSpeed,
+} from '#/utils/format';
+
+type SnapzLang = 'en' | 'zh';
+
+const LANG_STORAGE_KEY = 'snapz-admin-lang';
+const I18N = {
+  en: {
+    actionAddUser: 'Add user',
+    actionDelete: 'Delete',
+    actionDetails: 'Details',
+    actionDevices: 'Devices',
+    actionDisable: 'Disable',
+    actionEnable: 'Enable',
+    actionForgetToken: 'Forget token',
+    actionHide: 'Hide',
+    actionNext: 'Next',
+    actionPassword: 'Password',
+    actionPrev: 'Prev',
+    actionRefresh: 'Refresh',
+    actionRename: 'Rename',
+    actionRevoke: 'Revoke',
+    actionRevokeActive: 'Revoke active',
+    active: 'Active',
+    adminApiActive: 'Admin API active',
+    adminConsole: 'Admin console',
+    adminToken: 'Admin token',
+    connected: 'Connected',
+    connect: 'Connect',
+    connectSuccess: 'Connected to snapz-server',
+    content: 'Content',
+    createUser: 'Create user',
+    createUserCopy: 'Add an account to a tenant.',
+    created: 'Created',
+    compression: 'Compression',
+    disabled: 'Disabled',
+    enabled: 'Enabled',
+    image: 'Image',
+    language: 'Language',
+    last: 'Last',
+    lastSeen: 'Last seen',
+    eta: 'ETA',
+    heroTitle: 'snapz-server admin',
+    loginCopy: 'Connect with your snapz-server admin token.',
+    loginTitle: 'Connect to snapz-server',
+    pageDescription: 'Manage snapz-server tenants, users, and sync devices.',
+    password: 'Password',
+    path: 'Path',
+    placeholderSourceFilter: 'Filter tenant, image, path, or id',
+    placeholderUserFilter: 'Filter tenant or username',
+    pushedBy: 'Pushed by',
+    pushedImages: 'Pushed images',
+    pushedImagesCopy: 'Manage source bundles uploaded by snapz push.',
+    remoteOnly: 'remote_only',
+    requiredToken: 'Admin token is required',
+    revoked: 'Revoked',
+    selectUser: 'Select a user',
+    selectUserCopy: 'Select a user to inspect registered devices.',
+    snapshot: 'Snapshot',
+    snapshotCount: '{count} snapshot(s)',
+    snapshots: 'Snapshots',
+    sources: 'Sources',
+    snapshotsIn: 'Snapshots in {name}',
+    status: 'Status',
+    sync: 'Sync',
+    tableActions: 'Actions',
+    tenant: 'Tenant',
+    note: 'Note',
+    username: 'Username',
+    users: 'Users',
+    workspaceGroups: 'Workspace groups',
+    loginAccounts: 'Login accounts',
+    registeredClients: 'Registered clients',
+    stored: '{size} stored',
+    activeCount: '{active}/{total} active',
+    fileCount: '{count} file(s)',
+    memoryChecked: 'memory checked:',
+    required: 'required',
+    limit: 'limit',
+    totalPage: '{total} total · page {page}/{pages}',
+    deletePushedImage: 'Delete pushed image',
+    deletePushedImageCopy: 'Delete {tenant}/{name}? This removes the uploaded bundle from the server.',
+    deleteSnapshot: 'Delete snapshot',
+    deleteSnapshotCopy: 'Delete {tenant}/{image}/{name}? This rewrites the uploaded bundle.',
+    deleteUser: 'Delete user',
+    deleteUserCopy: 'Delete {tenant}/{username}? Registered devices are removed too.',
+    deviceRevoked: 'Device revoked',
+    imageDeleted: 'Image deleted',
+    imageRenamed: 'Image renamed',
+    newImageName: 'New image name',
+    newSnapshotName: 'New snapshot name',
+    newUsername: 'New username',
+    passwordReset: 'Password reset',
+    resetPasswordFor: 'New password for {tenant}/{username}',
+    revokeActiveDevices: 'Revoke active devices',
+    revokeActiveDevicesCopy: 'Revoke all active devices for {tenant}/{username}?',
+    revokeDevice: 'Revoke device',
+    revokeDeviceCopy: 'Revoke {name} for {tenant}/{username}?',
+    revokedDevices: 'Revoked {count} device(s)',
+    snapshotDeleted: 'Snapshot deleted',
+    snapshotRenamed: 'Snapshot renamed',
+    toggleUserCopy: '{action} {tenant}/{username}?',
+    userCreated: 'User created',
+    userDeleted: 'User deleted',
+    usernameUpdated: 'Username updated',
+  },
+  zh: {
+    actionAddUser: '添加用户',
+    actionDelete: '删除',
+    actionDetails: '详情',
+    actionDevices: '设备',
+    actionDisable: '禁用',
+    actionEnable: '启用',
+    actionForgetToken: '忘记令牌',
+    actionHide: '隐藏',
+    actionNext: '下一页',
+    actionPassword: '密码',
+    actionPrev: '上一页',
+    actionRefresh: '刷新',
+    actionRename: '重命名',
+    actionRevoke: '吊销',
+    actionRevokeActive: '吊销活跃设备',
+    active: '活跃',
+    adminApiActive: '管理 API 已启用',
+    adminConsole: '管理控制台',
+    adminToken: '管理令牌',
+    connected: '已连接',
+    connect: '连接',
+    connectSuccess: '已连接到 snapz-server',
+    content: '内容',
+    createUser: '创建用户',
+    createUserCopy: '向租户添加账号。',
+    created: '创建时间',
+    compression: '压缩',
+    disabled: '已禁用',
+    enabled: '已启用',
+    image: '镜像',
+    language: '语言',
+    last: '上次',
+    lastSeen: '上次在线',
+    eta: '预计剩余',
+    heroTitle: 'snapz-server 管理台',
+    loginCopy: '使用 snapz-server 管理令牌连接。',
+    loginTitle: '连接到 snapz-server',
+    pageDescription: '管理 snapz-server 租户、用户和同步设备。',
+    password: '密码',
+    path: '路径',
+    placeholderSourceFilter: '按租户、镜像、路径或 ID 过滤',
+    placeholderUserFilter: '按租户或用户名过滤',
+    pushedBy: '推送者',
+    pushedImages: '已推送镜像',
+    pushedImagesCopy: '管理通过 snapz push 上传的源 bundle。',
+    remoteOnly: '仅远端',
+    requiredToken: '需要管理令牌',
+    revoked: '已吊销',
+    selectUser: '选择用户',
+    selectUserCopy: '选择用户以查看已注册设备。',
+    snapshot: '快照',
+    snapshotCount: '{count} 个快照',
+    snapshots: '快照',
+    sources: '源',
+    snapshotsIn: '{name} 中的快照',
+    status: '状态',
+    sync: '同步',
+    tableActions: '操作',
+    tenant: '租户',
+    note: '备注',
+    username: '用户名',
+    users: '用户',
+    workspaceGroups: '工作区分组',
+    loginAccounts: '登录账号',
+    registeredClients: '已注册客户端',
+    stored: '已存储 {size}',
+    activeCount: '{active}/{total} 活跃',
+    fileCount: '{count} 个文件',
+    memoryChecked: '内存检查：',
+    required: '需要',
+    limit: '限制',
+    totalPage: '共 {total} 个 · 第 {page}/{pages} 页',
+    deletePushedImage: '删除已推送镜像',
+    deletePushedImageCopy: '删除 {tenant}/{name}？这会从服务端移除上传的 bundle。',
+    deleteSnapshot: '删除快照',
+    deleteSnapshotCopy: '删除 {tenant}/{image}/{name}？这会重写上传的 bundle。',
+    deleteUser: '删除用户',
+    deleteUserCopy: '删除 {tenant}/{username}？已注册设备也会被移除。',
+    deviceRevoked: '设备已吊销',
+    imageDeleted: '镜像已删除',
+    imageRenamed: '镜像已重命名',
+    newImageName: '新的镜像名称',
+    newSnapshotName: '新的快照名称',
+    newUsername: '新的用户名',
+    passwordReset: '密码已重置',
+    resetPasswordFor: '{tenant}/{username} 的新密码',
+    revokeActiveDevices: '吊销活跃设备',
+    revokeActiveDevicesCopy: '吊销 {tenant}/{username} 的所有活跃设备？',
+    revokeDevice: '吊销设备',
+    revokeDeviceCopy: '吊销 {tenant}/{username} 的设备 {name}？',
+    revokedDevices: '已吊销 {count} 个设备',
+    snapshotDeleted: '快照已删除',
+    snapshotRenamed: '快照已重命名',
+    toggleUserCopy: '{action} {tenant}/{username}？',
+    userCreated: '用户已创建',
+    userDeleted: '用户已删除',
+    usernameUpdated: '用户名已更新',
+  },
+} satisfies Record<SnapzLang, Record<string, string>>;
+
+function getInitialLang(): SnapzLang {
+  const saved = localStorage.getItem(LANG_STORAGE_KEY);
+  if (saved === 'en' || saved === 'zh') {
+    return saved;
+  }
+  return navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+}
+
+const lang = ref<SnapzLang>(getInitialLang());
+
+function t(key: keyof typeof I18N.en, params: Record<string, string | number> = {}) {
+  return I18N[lang.value][key].replace(/\{(\w+)\}/g, (_, name) =>
+    String(params[name] ?? ''),
+  );
+}
+
+function setLang(next: SnapzLang) {
+  lang.value = next;
+  localStorage.setItem(LANG_STORAGE_KEY, next);
+}
 
 const loading = ref(false);
 const connected = ref(false);
@@ -81,45 +314,49 @@ const createForm = reactive({
   username: '',
 });
 
-const userColumns: TableColumnsType = [
-  { dataIndex: 'username', key: 'user', title: 'User', width: 230 },
-  { dataIndex: 'tenant', key: 'tenant', title: 'Tenant', width: 160 },
-  { dataIndex: 'disabled', key: 'status', title: 'Status', width: 120 },
-  { key: 'devices', title: 'Devices', width: 170 },
-  { key: 'actions', title: 'Actions', width: 340 },
-];
+const userColumns = computed<TableColumnsType>(() => [
+  { dataIndex: 'username', key: 'user', title: t('username'), width: 230 },
+  { dataIndex: 'tenant', key: 'tenant', title: t('tenant'), width: 160 },
+  { dataIndex: 'disabled', key: 'status', title: t('status'), width: 120 },
+  { key: 'devices', title: t('actionDevices'), width: 170 },
+  { key: 'actions', title: t('tableActions'), width: 340 },
+]);
 
-const deviceColumns: TableColumnsType = [
-  { dataIndex: 'name', key: 'device', title: 'Device', width: 260 },
-  { dataIndex: 'revoked', key: 'status', title: 'Status', width: 120 },
-  { dataIndex: 'last_seen_at', key: 'last_seen_at', title: 'Last seen' },
-  { key: 'actions', title: 'Actions', width: 120 },
-];
+const deviceColumns = computed<TableColumnsType>(() => [
+  { dataIndex: 'name', key: 'device', title: t('actionDevices'), width: 260 },
+  { dataIndex: 'revoked', key: 'status', title: t('status'), width: 120 },
+  { dataIndex: 'last_seen_at', key: 'last_seen_at', title: t('lastSeen'), width: 180 },
+  { key: 'actions', title: t('tableActions'), width: 120 },
+]);
 
-const sourceColumns: TableColumnsType = [
-  { dataIndex: 'display_name', key: 'image', title: 'Image', width: 260 },
-  { dataIndex: 'tenant', key: 'tenant', title: 'Tenant', width: 160 },
-  { dataIndex: 'path_hint', key: 'path', title: 'Path' },
-  { key: 'snapshots', title: 'Snapshots', width: 150 },
-  { key: 'sync', title: 'Sync', width: 260 },
-  { dataIndex: 'updated_at', key: 'updated_at', title: 'Pushed by', width: 180 },
-  { key: 'actions', title: 'Actions', width: 230 },
-];
+const sourceColumns = computed<TableColumnsType>(() => [
+  { dataIndex: 'display_name', key: 'image', title: t('image'), width: 260 },
+  { dataIndex: 'tenant', key: 'tenant', title: t('tenant'), width: 160 },
+  { dataIndex: 'path_hint', key: 'path', title: t('path') },
+  { key: 'snapshots', title: t('snapshots'), width: 150 },
+  { key: 'sync', title: t('sync'), width: 260 },
+  { dataIndex: 'updated_at', key: 'updated_at', title: t('pushedBy'), width: 180 },
+  { key: 'actions', title: t('tableActions'), width: 230 },
+]);
 
-const snapshotColumns: TableColumnsType = [
-  { dataIndex: 'name', key: 'snapshot', title: 'Snapshot', width: 220 },
-  { dataIndex: 'created', key: 'created', title: 'Created', width: 180 },
-  { key: 'content', title: 'Content', width: 150 },
-  { dataIndex: 'compression', key: 'compression', title: 'Compression', width: 140 },
-  { dataIndex: 'note', key: 'note', title: 'Note' },
-  { key: 'actions', title: 'Actions', width: 160 },
-];
+const snapshotColumns = computed<TableColumnsType>(() => [
+  { dataIndex: 'name', key: 'snapshot', title: t('snapshot'), width: 220 },
+  { dataIndex: 'created', key: 'created', title: t('created'), width: 180 },
+  { key: 'content', title: t('content'), width: 150 },
+  { dataIndex: 'compression', key: 'compression', title: t('compression'), width: 140 },
+  { dataIndex: 'note', key: 'note', title: t('note') },
+  { key: 'actions', title: t('tableActions'), width: 160 },
+]);
 
 const statItems = computed(() => [
-  { hint: 'Workspace groups', label: 'Tenants', value: stats.value.tenants },
-  { hint: 'Login accounts', label: 'Users', value: stats.value.users },
-  { hint: 'Registered clients', label: 'Devices', value: stats.value.devices },
-  { hint: `${formatBytes(stats.value.bundle_bytes)} stored`, label: 'Sources', value: stats.value.sources },
+  { hint: t('workspaceGroups'), label: t('tenant'), value: stats.value.tenants },
+  { hint: t('loginAccounts'), label: t('users'), value: stats.value.users },
+  { hint: t('registeredClients'), label: t('actionDevices'), value: stats.value.devices },
+  {
+    hint: t('stored', { size: formatBytes(stats.value.bundle_bytes) }),
+    label: t('sources'),
+    value: stats.value.sources,
+  },
 ]);
 
 const filteredUsers = computed(() => {
@@ -180,14 +417,14 @@ function userRowClassName(user: SnapzAdminUser) {
 async function connect() {
   const token = tokenInput.value.trim();
   if (!token) {
-    message.warning('Admin token is required');
+    message.warning(t('requiredToken'));
     return;
   }
   setSnapzAdminToken(token);
   try {
     await loadAll();
     connected.value = true;
-    message.success('Connected to snapz-server');
+    message.success(t('connectSuccess'));
   } catch (error) {
     clearSnapzAdminToken();
     connected.value = false;
@@ -195,8 +432,10 @@ async function connect() {
   }
 }
 
-async function loadAll() {
-  loading.value = true;
+async function loadAll(showLoading = true) {
+  if (showLoading) {
+    loading.value = true;
+  }
   try {
     const [overview, userList, sourceList] = await Promise.all([
       getSnapzAdminOverview(),
@@ -224,7 +463,23 @@ async function loadAll() {
       devices.value = [];
     }
   } finally {
-    loading.value = false;
+    if (showLoading) {
+      loading.value = false;
+    }
+  }
+}
+
+let refreshingInBackground = false;
+
+async function refreshInBackground() {
+  if (refreshingInBackground) {
+    return;
+  }
+  refreshingInBackground = true;
+  try {
+    await loadAll(false);
+  } finally {
+    refreshingInBackground = false;
   }
 }
 
@@ -252,7 +507,7 @@ async function createUser() {
     username: '',
   });
   await loadAll();
-  message.success('User created');
+  message.success(t('userCreated'));
 }
 
 function confirmAction(title: string, content: string) {
@@ -267,17 +522,17 @@ function confirmAction(title: string, content: string) {
 }
 
 async function renameUser(user: SnapzAdminUser) {
-  const username = window.prompt('New username', user.username);
+  const username = window.prompt(t('newUsername'), user.username);
   if (!username || username.trim() === user.username) {
     return;
   }
   await updateSnapzUser(user.id, { username: username.trim() });
   await loadAll();
-  message.success('Username updated');
+  message.success(t('usernameUpdated'));
 }
 
 async function renameSource(source: SnapzAdminSource) {
-  const displayName = window.prompt('New image name', source.display_name);
+  const displayName = window.prompt(t('newImageName'), source.display_name);
   if (!displayName || displayName.trim() === source.display_name) {
     return;
   }
@@ -285,21 +540,26 @@ async function renameSource(source: SnapzAdminSource) {
     display_name: displayName.trim(),
   });
   await loadAll();
-  message.success('Image renamed');
+  message.success(t('imageRenamed'));
 }
 
 async function removeSource(source: SnapzAdminSource) {
   const allowed = await confirmAction(
-    'Delete pushed image',
-    `Delete ${source.tenant}/${source.display_name}? This removes the uploaded bundle from the server.`,
+    t('deletePushedImage'),
+    t('deletePushedImageCopy', {
+      name: source.display_name,
+      tenant: source.tenant,
+    }),
   );
   if (!allowed) {
     return;
   }
   await deleteSnapzSource(source.tenant_id, source.id);
   await loadAll();
-  message.success('Image deleted');
+  message.success(t('imageDeleted'));
 }
+
+const snapshotPanelRef = ref<HTMLElement | null>(null);
 
 async function loadSourceSnapshots(
   source: SnapzAdminSource,
@@ -322,6 +582,12 @@ async function loadSourceSnapshots(
     snapshotPage.value = result.page;
     snapshotPerPage.value = result.per_page;
     snapshotMemory.value = result.memory;
+
+    if (showLoading) {
+      setTimeout(() => {
+        snapshotPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 100);
+    }
   } finally {
     if (showLoading) {
       loading.value = false;
@@ -341,7 +607,7 @@ async function renameSourceSnapshot(snapshot: SnapzAdminSourceSnapshot) {
   if (!selectedSource.value) {
     return;
   }
-  const name = window.prompt('New snapshot name', snapshot.name);
+  const name = window.prompt(t('newSnapshotName'), snapshot.name);
   if (!name || name.trim() === snapshot.name) {
     return;
   }
@@ -352,7 +618,7 @@ async function renameSourceSnapshot(snapshot: SnapzAdminSourceSnapshot) {
     name.trim(),
   );
   await loadAll();
-  message.success('Snapshot renamed');
+  message.success(t('snapshotRenamed'));
 }
 
 async function removeSourceSnapshot(snapshot: SnapzAdminSourceSnapshot) {
@@ -361,21 +627,30 @@ async function removeSourceSnapshot(snapshot: SnapzAdminSourceSnapshot) {
   }
   const source = selectedSource.value;
   const allowed = await confirmAction(
-    'Delete snapshot',
-    `Delete ${source.tenant}/${source.display_name}/${snapshot.name}? This rewrites the uploaded bundle.`,
+    t('deleteSnapshot'),
+    t('deleteSnapshotCopy', {
+      image: source.display_name,
+      name: snapshot.name,
+      tenant: source.tenant,
+    }),
   );
   if (!allowed) {
     return;
   }
   await deleteSnapzSourceSnapshot(source.tenant_id, source.id, snapshot.name);
   await loadAll();
-  message.success('Snapshot deleted');
+  message.success(t('snapshotDeleted'));
 }
 
 async function toggleUser(user: SnapzAdminUser, disabled: boolean) {
+  const action = disabled ? t('actionDisable') : t('actionEnable');
   const allowed = await confirmAction(
-    disabled ? 'Disable user' : 'Enable user',
-    `${disabled ? 'Disable' : 'Enable'} ${user.tenant}/${user.username}?`,
+    action,
+    t('toggleUserCopy', {
+      action,
+      tenant: user.tenant,
+      username: user.username,
+    }),
   );
   if (!allowed) {
     return;
@@ -385,18 +660,24 @@ async function toggleUser(user: SnapzAdminUser, disabled: boolean) {
 }
 
 async function resetPassword(user: SnapzAdminUser) {
-  const password = window.prompt(`New password for ${user.tenant}/${user.username}`);
+  const password = window.prompt(t('resetPasswordFor', {
+    tenant: user.tenant,
+    username: user.username,
+  }));
   if (!password) {
     return;
   }
   await resetSnapzUserPassword(user.id, password);
-  message.success('Password reset');
+  message.success(t('passwordReset'));
 }
 
 async function removeUser(user: SnapzAdminUser) {
   const allowed = await confirmAction(
-    'Delete user',
-    `Delete ${user.tenant}/${user.username}? Registered devices are removed too.`,
+    t('deleteUser'),
+    t('deleteUserCopy', {
+      tenant: user.tenant,
+      username: user.username,
+    }),
   );
   if (!allowed) {
     return;
@@ -404,20 +685,24 @@ async function removeUser(user: SnapzAdminUser) {
   await deleteSnapzUser(user.id);
   selectedUserId.value = '';
   await loadAll();
-  message.success('User deleted');
+  message.success(t('userDeleted'));
 }
 
 async function revokeDevice(device: SnapzAdminDevice) {
   const allowed = await confirmAction(
-    'Revoke device',
-    `Revoke ${device.name} for ${device.tenant}/${device.username}?`,
+    t('revokeDevice'),
+    t('revokeDeviceCopy', {
+      name: device.name,
+      tenant: device.tenant,
+      username: device.username,
+    }),
   );
   if (!allowed) {
     return;
   }
   await revokeSnapzDevice(device.id);
   await loadAll();
-  message.success('Device revoked');
+  message.success(t('deviceRevoked'));
 }
 
 async function revokeActiveDevices() {
@@ -426,15 +711,18 @@ async function revokeActiveDevices() {
   }
   const user = selectedUser.value;
   const allowed = await confirmAction(
-    'Revoke active devices',
-    `Revoke all active devices for ${user.tenant}/${user.username}?`,
+    t('revokeActiveDevices'),
+    t('revokeActiveDevicesCopy', {
+      tenant: user.tenant,
+      username: user.username,
+    }),
   );
   if (!allowed) {
     return;
   }
   const result = await revokeSnapzUserDevices(user.id);
   await loadAll();
-  message.success(`Revoked ${result.revoked} device(s)`);
+  message.success(t('revokedDevices', { count: result.revoked }));
 }
 
 function forgetToken() {
@@ -446,57 +734,34 @@ function forgetToken() {
   hideSourceSnapshots();
 }
 
-function formatDate(value?: string) {
-  if (!value) {
-    return '-';
-  }
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) {
-    return value;
-  }
-  return new Date(parsed).toLocaleString();
-}
+const anySyncRunning = computed(() =>
+  sources.value.some((s) => s.sync_status?.status === 'running'),
+);
 
-function formatBytes(value: number) {
-  if (!Number.isFinite(value) || value <= 0) {
-    return '0 B';
-  }
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let scaled = value;
-  let unit = 0;
-  while (scaled >= 1024 && unit < units.length - 1) {
-    scaled /= 1024;
-    unit += 1;
-  }
-  const precision = scaled >= 10 || unit === 0 ? 0 : 1;
-  return `${scaled.toFixed(precision)} ${units[unit]}`;
-}
+let refreshTimer: any = null;
 
-function formatSpeed(value?: number) {
-  return `${formatBytes(Number(value || 0))}/s`;
-}
+watch(
+  anySyncRunning,
+  (running) => {
+    if (running) {
+      if (!refreshTimer) {
+        refreshTimer = setInterval(() => {
+          refreshInBackground();
+        }, 3000);
+      }
+    } else if (refreshTimer) {
+      clearInterval(refreshTimer);
+      refreshTimer = null;
+    }
+  },
+  { immediate: true },
+);
 
-function formatEta(value?: number | null) {
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds < 0) {
-    return '-';
+onUnmounted(() => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
   }
-  if (seconds < 1) {
-    return '<1s';
-  }
-  const whole = Math.round(seconds);
-  const minutes = Math.floor(whole / 60);
-  const secs = whole % 60;
-  if (minutes <= 0) {
-    return `${secs}s`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const remMinutes = minutes % 60;
-  if (hours <= 0) {
-    return `${minutes}m ${secs}s`;
-  }
-  return `${hours}h ${remMinutes}m`;
-}
+});
 
 onMounted(() => {
   if (tokenInput.value) {
@@ -508,7 +773,7 @@ onMounted(() => {
 <template>
   <Page
     auto-content-height
-    description="Manage snapz-server tenants, users, and sync devices."
+    :description="t('pageDescription')"
     title="snapz-server"
   >
     <div class="snapz-admin">
@@ -516,19 +781,37 @@ onMounted(() => {
         <Card :bordered="false" class="snapz-login-card">
           <Space direction="vertical" class="w-full" size="large">
             <div>
-              <div class="snapz-eyebrow">Admin console</div>
-              <h2 class="snapz-login-title">Connect to snapz-server</h2>
+              <div class="snapz-eyebrow">{{ t('adminConsole') }}</div>
+              <h2 class="snapz-login-title">{{ t('loginTitle') }}</h2>
+              <p class="snapz-login-copy">{{ t('loginCopy') }}</p>
             </div>
             <Input.Password
               v-model:value="tokenInput"
               autocomplete="current-password"
-              placeholder="Admin token"
+              :placeholder="t('adminToken')"
               size="large"
               @press-enter="connect"
             />
             <Button block size="large" type="primary" @click="connect">
-              Connect
+              {{ t('connect') }}
             </Button>
+            <Space align="center">
+              <span class="text-xs text-gray-500">{{ t('language') }}</span>
+              <Button
+                size="small"
+                :type="lang === 'en' ? 'primary' : 'default'"
+                @click="setLang('en')"
+              >
+                English
+              </Button>
+              <Button
+                size="small"
+                :type="lang === 'zh' ? 'primary' : 'default'"
+                @click="setLang('zh')"
+              >
+                中文
+              </Button>
+            </Space>
           </Space>
         </Card>
       </div>
@@ -537,15 +820,29 @@ onMounted(() => {
         <Card :bordered="false" class="snapz-hero">
           <div class="snapz-hero-content">
             <div>
-              <div class="snapz-eyebrow">Connected</div>
-              <h2 class="snapz-hero-title">snapz-server admin</h2>
+              <div class="snapz-eyebrow">{{ t('connected') }}</div>
+              <h2 class="snapz-hero-title">{{ t('heroTitle') }}</h2>
             </div>
             <Space wrap>
-              <Tag color="success">Admin API active</Tag>
-              <Button type="primary" :loading="loading" @click="loadAll">
-                Refresh
+              <Tag color="success">{{ t('adminApiActive') }}</Tag>
+              <Button type="primary" :loading="loading" @click="loadAll()">
+                {{ t('actionRefresh') }}
               </Button>
-              <Button @click="forgetToken"> Forget token </Button>
+              <Button @click="forgetToken">{{ t('actionForgetToken') }}</Button>
+              <Button
+                size="small"
+                :type="lang === 'en' ? 'primary' : 'default'"
+                @click="setLang('en')"
+              >
+                English
+              </Button>
+              <Button
+                size="small"
+                :type="lang === 'zh' ? 'primary' : 'default'"
+                @click="setLang('zh')"
+              >
+                中文
+              </Button>
             </Space>
           </div>
         </Card>
@@ -563,9 +860,9 @@ onMounted(() => {
         <Card :bordered="false" class="snapz-section-card">
           <template #title>
             <div class="snapz-card-title">
-              <div class="snapz-card-heading">Pushed images</div>
+              <div class="snapz-card-heading">{{ t('pushedImages') }}</div>
               <div class="snapz-card-subtitle">
-                Manage source bundles uploaded by snapz push.
+                {{ t('pushedImagesCopy') }}
               </div>
             </div>
           </template>
@@ -574,7 +871,7 @@ onMounted(() => {
               v-model:value="sourceFilterText"
               allow-clear
               class="snapz-search"
-              placeholder="Filter tenant, image, path, or id"
+              :placeholder="t('placeholderSourceFilter')"
             />
           </template>
           <Table
@@ -599,13 +896,13 @@ onMounted(() => {
                 </div>
               </template>
               <template v-else-if="column.key === 'snapshots'">
-                <Tag>{{ record.snapshot_count }} snapshot(s)</Tag>
+                <Tag>{{ t('snapshotCount', { count: record.snapshot_count }) }}</Tag>
                 <div class="text-xs text-gray-500">
                   {{ formatBytes(record.bundle_bytes) }}
                 </div>
               </template>
               <template v-else-if="column.key === 'sync'">
-                <div>
+                <div class="flex items-center gap-2">
                   <Tag
                     :color="
                       record.sync_status?.status === 'failed'
@@ -613,34 +910,43 @@ onMounted(() => {
                         : record.sync_status?.status === 'completed'
                           ? 'success'
                           : record.sync_status?.status === 'running'
-                            ? 'warning'
+                            ? 'processing'
                             : 'default'
                     "
                   >
                     {{ record.sync_status?.status || 'idle' }}
                   </Tag>
                   <Tag v-if="record.sync_status?.remote_only" color="warning">
-                    remote_only
+                    {{ t('remoteOnly') }}
                   </Tag>
                 </div>
-                <div class="snapz-sync-bar">
-                  <div
-                    class="snapz-sync-bar-fill"
-                    :style="{
-                      width: `${Math.max(
-                        0,
-                        Math.min(100, Number(record.sync_status?.progress_percent || 0)),
-                      )}%`,
+                <div class="mt-2">
+                  <Progress
+                    :percent="Number(record.sync_status?.progress_percent || 0)"
+                    :show-info="false"
+                    :size="[180, 6]"
+                    :status="
+                      record.sync_status?.status === 'failed'
+                        ? 'exception'
+                        : record.sync_status?.status === 'completed'
+                          ? 'success'
+                          : 'active'
+                    "
+                    :stroke-color="{
+                      '0%': '#1677ff',
+                      '100%': '#10b981',
                     }"
                   />
                 </div>
-                <div class="text-xs text-gray-500">
-                  {{ Number(record.sync_status?.progress_percent || 0).toFixed(0) }}%
-                  · {{ formatSpeed(record.sync_status?.speed_bps) }}
-                  · ETA {{ formatEta(record.sync_status?.eta_seconds) }}
+                <div class="mt-1 flex justify-between text-[11px] text-gray-500">
+                  <span>
+                    {{ Number(record.sync_status?.progress_percent || 0).toFixed(0) }}% ·
+                    {{ formatSpeed(record.sync_status?.speed_bps) }}
+                  </span>
+                  <span>{{ t('eta') }} {{ formatEta(record.sync_status?.eta_seconds) }}</span>
                 </div>
-                <div class="text-xs text-gray-500">
-                  Last {{ formatDate(record.last_sync_at || record.sync_status?.last_sync_at) }}
+                <div class="mt-0.5 text-[11px] text-gray-400">
+                  {{ t('last') }}: {{ formatDate(record.last_sync_at || record.sync_status?.last_sync_at) }}
                 </div>
               </template>
               <template v-else-if="column.key === 'updated_at'">
@@ -652,13 +958,13 @@ onMounted(() => {
               <template v-else-if="column.key === 'actions'">
                 <Space wrap>
                   <Button size="small" @click="loadSourceSnapshots(record)">
-                    Details
+                    {{ t('actionDetails') }}
                   </Button>
                   <Button size="small" @click="renameSource(record)">
-                    Rename
+                    {{ t('actionRename') }}
                   </Button>
                   <Button danger size="small" @click="removeSource(record)">
-                    Delete
+                    {{ t('actionDelete') }}
                   </Button>
                 </Space>
               </template>
@@ -666,17 +972,20 @@ onMounted(() => {
           </Table>
           <div
             v-if="selectedSource"
+            ref="snapshotPanelRef"
             class="snapz-snapshot-panel"
           >
             <div class="snapz-panel-header">
               <div>
-                <div class="snapz-card-heading">Snapshots in {{ selectedSource.display_name }}</div>
+                <div class="snapz-card-heading">
+                  {{ t('snapshotsIn', { name: selectedSource.display_name }) }}
+                </div>
                 <div class="snapz-card-subtitle">
-                  {{ snapshotTotal }} total · page {{ snapshotPage }}/{{ snapshotTotalPages }}
+                  {{ t('totalPage', { total: snapshotTotal, page: snapshotPage, pages: snapshotTotalPages }) }}
                   <template v-if="snapshotMemory">
-                    · memory checked:
-                    {{ formatBytes(snapshotMemory.required_bytes) }} required /
-                    {{ formatBytes(snapshotMemory.limit_bytes) }} limit
+                    · {{ t('memoryChecked') }}
+                    {{ formatBytes(snapshotMemory.required_bytes) }} {{ t('required') }} /
+                    {{ formatBytes(snapshotMemory.limit_bytes) }} {{ t('limit') }}
                   </template>
                 </div>
               </div>
@@ -686,17 +995,17 @@ onMounted(() => {
                   size="small"
                   @click="loadSourceSnapshots(selectedSource, snapshotPage - 1)"
                 >
-                  Prev
+                  {{ t('actionPrev') }}
                 </Button>
                 <Button
                   :disabled="snapshotPage >= snapshotTotalPages"
                   size="small"
                   @click="loadSourceSnapshots(selectedSource, snapshotPage + 1)"
                 >
-                  Next
+                  {{ t('actionNext') }}
                 </Button>
                 <Button size="small" @click="hideSourceSnapshots">
-                  Hide
+                  {{ t('actionHide') }}
                 </Button>
               </Space>
             </div>
@@ -718,7 +1027,7 @@ onMounted(() => {
                   {{ formatDate(record.created) }}
                 </template>
                 <template v-else-if="column.key === 'content'">
-                  <Tag>{{ record.file_count }} file(s)</Tag>
+                  <Tag>{{ t('fileCount', { count: record.file_count }) }}</Tag>
                   <div class="text-xs text-gray-500">
                     {{ formatBytes(record.total_bytes_in || record.size_bytes) }}
                   </div>
@@ -729,10 +1038,10 @@ onMounted(() => {
                 <template v-else-if="column.key === 'actions'">
                   <Space wrap>
                     <Button size="small" @click="renameSourceSnapshot(record)">
-                      Rename
+                      {{ t('actionRename') }}
                     </Button>
                     <Button danger size="small" @click="removeSourceSnapshot(record)">
-                      Delete
+                      {{ t('actionDelete') }}
                     </Button>
                   </Space>
                 </template>
@@ -745,9 +1054,9 @@ onMounted(() => {
         <Card :bordered="false" class="snapz-section-card">
           <template #title>
             <div class="snapz-card-title">
-              <div class="snapz-card-heading">Users</div>
+              <div class="snapz-card-heading">{{ t('users') }}</div>
               <div class="snapz-card-subtitle">
-                Select a user to inspect registered devices.
+                {{ t('selectUserCopy') }}
               </div>
             </div>
           </template>
@@ -756,7 +1065,7 @@ onMounted(() => {
               v-model:value="filterText"
               allow-clear
               class="snapz-search snapz-search-sm"
-              placeholder="Filter tenant or username"
+              :placeholder="t('placeholderUserFilter')"
             />
           </template>
           <Table
@@ -776,11 +1085,13 @@ onMounted(() => {
               </template>
               <template v-else-if="column.key === 'status'">
                 <Tag :color="record.disabled ? 'error' : 'success'">
-                  {{ record.disabled ? 'Disabled' : 'Enabled' }}
+                  {{ record.disabled ? t('disabled') : t('enabled') }}
                 </Tag>
               </template>
               <template v-else-if="column.key === 'devices'">
-                <Tag>{{ record.active_device_count }}/{{ record.device_count }} active</Tag>
+                <Tag>
+                  {{ t('activeCount', { active: record.active_device_count, total: record.device_count }) }}
+                </Tag>
                 <div class="text-xs text-gray-500">
                   {{ formatDate(record.last_seen_at) }}
                 </div>
@@ -788,22 +1099,22 @@ onMounted(() => {
               <template v-else-if="column.key === 'actions'">
                 <Space wrap>
                   <Button size="small" @click="selectUser(record.id)">
-                    Devices
+                    {{ t('actionDevices') }}
                   </Button>
                   <Button size="small" @click="renameUser(record)">
-                    Rename
+                    {{ t('actionRename') }}
                   </Button>
                   <Button
                     size="small"
                     @click="toggleUser(record, !record.disabled)"
                   >
-                    {{ record.disabled ? 'Enable' : 'Disable' }}
+                    {{ record.disabled ? t('actionEnable') : t('actionDisable') }}
                   </Button>
                   <Button size="small" @click="resetPassword(record)">
-                    Password
+                    {{ t('actionPassword') }}
                   </Button>
                   <Button danger size="small" @click="removeUser(record)">
-                    Delete
+                    {{ t('actionDelete') }}
                   </Button>
                 </Space>
               </template>
@@ -815,34 +1126,36 @@ onMounted(() => {
           <Card :bordered="false" class="snapz-section-card">
             <template #title>
               <div class="snapz-card-title">
-                <div class="snapz-card-heading">Create user</div>
+                <div class="snapz-card-heading">{{ t('createUser') }}</div>
                 <div class="snapz-card-subtitle">
-                  Add an account to a tenant.
+                  {{ t('createUserCopy') }}
                 </div>
               </div>
             </template>
             <Form layout="vertical" :model="createForm" @finish="createUser">
               <Row :gutter="12">
                 <Col :md="12" :xs="24">
-                  <Form.Item label="Tenant" name="tenant" required>
+                  <Form.Item :label="t('tenant')" name="tenant" required>
                     <Input v-model:value="createForm.tenant" placeholder="acme" />
                   </Form.Item>
                 </Col>
                 <Col :md="12" :xs="24">
-                  <Form.Item label="Username" name="username" required>
+                  <Form.Item :label="t('username')" name="username" required>
                     <Input v-model:value="createForm.username" placeholder="alice" />
                   </Form.Item>
                 </Col>
               </Row>
-              <Form.Item label="Password" name="password" required>
+              <Form.Item :label="t('password')" name="password" required>
                 <Input.Password v-model:value="createForm.password" />
               </Form.Item>
               <div class="snapz-form-footer">
-                <Form.Item label="Disabled" name="disabled">
+                <Form.Item :label="t('disabled')" name="disabled">
                   <Switch v-model:checked="createForm.disabled" />
                 </Form.Item>
                 <Form.Item>
-                  <Button type="primary" html-type="submit"> Add user </Button>
+                  <Button type="primary" html-type="submit">
+                    {{ t('actionAddUser') }}
+                  </Button>
                 </Form.Item>
               </div>
             </Form>
@@ -851,12 +1164,12 @@ onMounted(() => {
           <Card :bordered="false" class="snapz-section-card">
             <template #title>
               <div class="snapz-card-title">
-                <div class="snapz-card-heading">Devices</div>
+                <div class="snapz-card-heading">{{ t('actionDevices') }}</div>
                 <div class="snapz-card-subtitle">
                   <template v-if="selectedUser">
                     {{ selectedUser.tenant }}/{{ selectedUser.username }}
                   </template>
-                  <template v-else>Select a user</template>
+                  <template v-else>{{ t('selectUser') }}</template>
                 </div>
               </div>
             </template>
@@ -867,7 +1180,7 @@ onMounted(() => {
                 size="small"
                 @click="revokeActiveDevices"
               >
-                Revoke active
+                {{ t('actionRevokeActive') }}
               </Button>
             </template>
             <Table
@@ -886,13 +1199,13 @@ onMounted(() => {
                 </template>
                 <template v-else-if="column.key === 'status'">
                   <Tag :color="record.revoked ? 'warning' : 'success'">
-                    {{ record.revoked ? 'Revoked' : 'Active' }}
+                    {{ record.revoked ? t('revoked') : t('active') }}
                   </Tag>
                 </template>
                 <template v-else-if="column.key === 'last_seen_at'">
                   <div>{{ formatDate(record.last_seen_at) }}</div>
                   <div class="text-xs text-gray-500">
-                    Created {{ formatDate(record.created_at) }}
+                    {{ t('created') }} {{ formatDate(record.created_at) }}
                   </div>
                 </template>
                 <template v-else-if="column.key === 'actions'">
@@ -902,7 +1215,7 @@ onMounted(() => {
                     size="small"
                     @click="revokeDevice(record)"
                   >
-                    Revoke
+                    {{ t('actionRevoke') }}
                   </Button>
                 </template>
               </template>
@@ -1046,20 +1359,6 @@ onMounted(() => {
   gap: 16px;
   align-items: flex-end;
   justify-content: space-between;
-}
-
-.snapz-sync-bar {
-  height: 6px;
-  margin: 6px 0;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #eef2f7;
-}
-
-.snapz-sync-bar-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #1677ff, #10b981);
 }
 
 :deep(.snapz-table-row-selected > td) {
