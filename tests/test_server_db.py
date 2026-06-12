@@ -18,6 +18,26 @@ def test_auth_tokens_and_revoke_device(tmp_path):
     assert db.authenticate_token(root, token) is None
 
 
+def test_expired_auth_token_is_revoked(tmp_path):
+    root = tmp_path / "server"
+    db.create_user(root, "acme", "alice", "secret")
+    ctx, token = db.login_device(root, "acme", "alice", "secret", "laptop")
+
+    with db.connect(root) as con:
+        con.execute(
+            "UPDATE device_tokens SET created_at = ? WHERE device_id = ?",
+            ("2000-01-01T00:00:00", ctx.device_id),
+        )
+
+    assert db.authenticate_token(root, token) is None
+    with db.connect(root) as con:
+        row = con.execute(
+            "SELECT revoked_at FROM device_tokens WHERE device_id = ?",
+            (ctx.device_id,),
+        ).fetchone()
+    assert row["revoked_at"]
+
+
 def test_sources_are_tenant_scoped(tmp_path):
     root = tmp_path / "server"
     db.create_user(root, "tenant-a", "alice", "secret")

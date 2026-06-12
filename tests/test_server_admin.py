@@ -206,6 +206,34 @@ def test_cors_allows_explicit_origin_only(tmp_path):
     assert "Access-Control-Allow-Origin" not in denied
 
 
+def test_login_rate_limits_repeated_failures(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "acme", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        payload = {
+            "tenant": "acme",
+            "username": "alice",
+            "password": "wrong",
+            "device_name": "laptop",
+        }
+        for _ in range(5):
+            _json(url, "/api/auth/login", method="POST", payload=payload, token=None, expect=401)
+        limited = _json(
+            url,
+            "/api/auth/login",
+            method="POST",
+            payload=payload,
+            token=None,
+            expect=429,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert "too many failed login attempts" in limited["error"]
+
+
 def test_admin_api_manages_users_and_devices(tmp_path):
     server, url = _start_server(tmp_path / "server")
     try:

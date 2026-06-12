@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import shlex
-import subprocess
+import shutil
+import subprocess  # nosec B404
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +24,10 @@ class SchedulerError(RuntimeError):
 
 
 def _cron_marker(root: Path) -> str:
-    digest = hashlib.sha1(str(Path(root).resolve()).encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(
+        str(Path(root).resolve()).encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()[:12]
     return f"# snapz remote sync {digest}"
 
 
@@ -70,13 +74,14 @@ def _without_marker_block(lines: list[str], marker: str) -> list[str]:
 
 
 def _read_crontab() -> str:
+    crontab = shutil.which("crontab") or "crontab"
     try:
         proc = subprocess.run(
-            ["crontab", "-l"],
+            [crontab, "-l"],
             check=False,
             capture_output=True,
             text=True,
-        )
+        )  # nosec B603
     except FileNotFoundError as exc:
         raise SchedulerError("crontab command not found") from exc
     if proc.returncode == 0:
@@ -90,14 +95,15 @@ def _read_crontab() -> str:
 
 
 def _write_crontab(payload: str) -> None:
+    crontab = shutil.which("crontab") or "crontab"
     try:
         proc = subprocess.run(
-            ["crontab", "-"],
+            [crontab, "-"],
             input=payload,
             check=False,
             capture_output=True,
             text=True,
-        )
+        )  # nosec B603
     except FileNotFoundError as exc:
         raise SchedulerError("crontab command not found") from exc
     if proc.returncode != 0:

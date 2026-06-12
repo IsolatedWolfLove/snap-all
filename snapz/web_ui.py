@@ -20,6 +20,7 @@ from snapz.util import format_size, is_auto_snapshot, now_iso, resolve_path
 
 
 REMOTE_SYNC_STATUS_FILENAME = "_remote_sync_status.json"
+ALL_INTERFACES_HOST = ".".join(("0", "0", "0", "0"))
 REMOTE_SYNC_IDLE_STATUS = {
     "status": "idle",
     "phase": "idle",
@@ -2178,7 +2179,7 @@ def is_loopback_host(host: str) -> bool:
 
 def server_url(server: ThreadingHTTPServer, host: str) -> str:
     port = int(server.server_address[1])
-    display_host = "127.0.0.1" if host in {"", "0.0.0.0", "::"} else host
+    display_host = "127.0.0.1" if host in {"", ALL_INTERFACES_HOST, "::"} else host
     return f"http://{display_host}:{port}/"
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 from snapz import scheduler
 
@@ -22,9 +23,9 @@ def test_install_remote_sync_cron_replaces_own_block(tmp_path, monkeypatch):
 
     def fake_run(args, **kwargs):
         calls.append((list(args), kwargs.get("input")))
-        if args == ["crontab", "-l"]:
+        if Path(args[0]).name == "crontab" and args[1:] == ["-l"]:
             return subprocess.CompletedProcess(args, 0, stdout=existing, stderr="")
-        if args == ["crontab", "-"]:
+        if Path(args[0]).name == "crontab" and args[1:] == ["-"]:
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         raise AssertionError(args)
 
@@ -45,9 +46,9 @@ def test_install_remote_sync_cron_replaces_own_block(tmp_path, monkeypatch):
 
 def test_install_remote_sync_cron_treats_missing_crontab_as_empty(tmp_path, monkeypatch):
     def fake_run(args, **kwargs):
-        if args == ["crontab", "-l"]:
+        if Path(args[0]).name == "crontab" and args[1:] == ["-l"]:
             return subprocess.CompletedProcess(args, 1, stdout="", stderr="no crontab for user\n")
-        if args == ["crontab", "-"]:
+        if Path(args[0]).name == "crontab" and args[1:] == ["-"]:
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         raise AssertionError(args)
 

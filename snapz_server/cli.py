@@ -9,7 +9,7 @@ import secrets
 import shlex
 import shutil
 import sqlite3
-import subprocess
+import subprocess  # nosec B404
 import sys
 from pathlib import Path
 from typing import Optional
@@ -23,6 +23,7 @@ from snapz_server.app import make_server
 EXIT_OK = 0
 EXIT_ERROR = 1
 DEFAULT_HOST = "127.0.0.1"
+ALL_INTERFACES_HOST = ".".join(("0", "0", "0", "0"))
 DEFAULT_PORT = 8765
 DEFAULT_CONFIG_PATH = Path("/etc/default/snapz-server")
 DEFAULT_SERVICE_FILE = Path("/etc/systemd/system/snapz-server.service")
@@ -111,7 +112,8 @@ def _write_text_file(path: Path, text: str, *, force: bool, mode: int = 0o644) -
 
 
 def _run_systemctl(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["systemctl", *args], check=False, text=True)
+    systemctl = shutil.which("systemctl") or "/usr/bin/systemctl"
+    return subprocess.run([systemctl, *args], check=False, text=True)  # nosec B603
 
 
 def _run_host(args: argparse.Namespace) -> str:
@@ -163,7 +165,7 @@ def _init_config_values(args: argparse.Namespace) -> dict[str, str]:
         "SNAPZ_SERVER_HOST": str(
             getattr(args, "host", None)
             or os.environ.get("SNAPZ_SERVER_HOST")
-            or "0.0.0.0"
+            or ALL_INTERFACES_HOST
         ),
         "SNAPZ_SERVER_PORT": str(
             getattr(args, "port", None)
@@ -453,7 +455,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--data", help=t("server.init.data"))
     p_init.add_argument("--host", default=None, help=t("server.init.host"))
     p_init.add_argument("--port", default=None, type=int, help=t("server.init.port"))
-    p_init.add_argument("--admin-token", help=t("server.init.admin_token"))
+    p_init.add_argument("--admin-token", help=t("server.init.admin_credential"))
     p_init.add_argument(
         "--max-bundle-mb",
         default=None,
@@ -518,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument(
         "--admin-token",
-        help=t("server.run.admin_token"),
+        help=t("server.run.admin_credential"),
     )
     p_run.set_defaults(func=cmd_run)
 

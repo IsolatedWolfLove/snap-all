@@ -186,7 +186,7 @@ def _platform_machine_id_values() -> list[tuple[str, str]]:
 
 def _run_text(command: list[str]) -> str:
     try:
-        import subprocess
+        import subprocess  # nosec B404
 
         result = subprocess.run(
             command,
@@ -195,7 +195,7 @@ def _run_text(command: list[str]) -> str:
             stderr=subprocess.DEVNULL,
             text=True,
             timeout=2,
-        )
+        )  # nosec B603
     except Exception:
         return ""
     return result.stdout if result.returncode == 0 else ""
@@ -908,7 +908,8 @@ def source_id_for(source: dict[str, Any]) -> str:
     marker = str(source.get("source_marker", "") or "")
     key = str(source.get("key", "") or source.get("origin_store_key", "") or "")
     raw = f"marker:{marker}" if marker else f"key:{key}"
-    return "src_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+    digest = hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
+    return "src_" + digest[:24]
 
 
 def read_bundle_meta(bundle: Path) -> dict[str, Any]:

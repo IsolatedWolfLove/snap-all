@@ -11,6 +11,7 @@ import sqlite3
 import tarfile
 import tempfile
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -72,6 +73,8 @@ from snapz_server.server_config import (
 MAX_JSON_BYTES = 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
 DEVICE_SWEEP_INTERVAL_SECONDS = db.DEVICE_OFFLINE_AFTER_HOURS * 60 * 60
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 5 * 60
+LOGIN_RATE_LIMIT_MAX_FAILURES = 5
 
 
 class SnapzHTTPServer(ThreadingHTTPServer):
@@ -84,6 +87,8 @@ class SnapzHTTPServer(ThreadingHTTPServer):
     tls_certfile: str
     tls_keyfile: str
     tls_client_ca: str
+    login_failures: dict[str, tuple[int, float]]
+    login_failures_lock: threading.Lock
     _device_sweeper_stop: threading.Event
     _device_sweeper_thread: threading.Thread | None
 
@@ -133,6 +138,8 @@ def make_server(
         tls_client_ca,
         env_name="SNAPZ_SERVER_TLS_CLIENT_CA",
     )
+    server.login_failures = {}
+    server.login_failures_lock = threading.Lock()
     _enable_tls(server)
     _start_device_sweeper(
         server,
@@ -172,8 +179,9 @@ def _device_sweeper_loop(
     while not stop.wait(interval_seconds):
         try:
             db.mark_stale_devices_offline(server.data_dir)
-        except Exception:
-            pass
+        except (OSError, sqlite3.Error):
+            # Opportunistic cleanup must not stop the request server.
+            continue
 
 
 class SnapzHandler(BaseHTTPRequestHandler):
@@ -380,6 +388,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _handle_login(self) -> None:
+        rate_key = ""
         try:
             payload = self._read_json()
             tenant = str(payload.get("tenant") or "").strip()
@@ -394,6 +403,13 @@ class SnapzHandler(BaseHTTPRequestHandler):
             ]
             if not tenant or not username or not password:
                 raise ValueError("tenant, username and password are required")
+            rate_key = self._login_rate_key(tenant, username)
+            if self._login_rate_limited(rate_key):
+                self._send_json(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    {"error": "too many failed login attempts; try again later"},
+                )
+                return
             ctx, token = db.login_device(
                 self.data_dir,
                 tenant,
@@ -403,7 +419,9 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 machine_id,
                 machine_id_aliases,
             )
+            self._clear_login_failures(rate_key)
         except PermissionError as exc:
+            self._record_login_failure(rate_key)
             self._send_json(HTTPStatus.UNAUTHORIZED, {"error": str(exc)})
             return
         except ValueError as exc:
@@ -420,6 +438,43 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 "user": _ctx_dict(ctx),
             },
         )
+
+    def _login_rate_key(self, tenant: str, username: str) -> str:
+        client_ip = self.client_address[0] if self.client_address else ""
+        return "\0".join((client_ip, tenant.strip().lower(), username.strip().lower()))
+
+    def _login_rate_limited(self, key: str) -> bool:
+        if not key:
+            return False
+        now = time.monotonic()
+        lock = self.server.login_failures_lock  # type: ignore[attr-defined]
+        failures = self.server.login_failures  # type: ignore[attr-defined]
+        with lock:
+            count, first_seen = failures.get(key, (0, now))
+            if now - first_seen > LOGIN_RATE_LIMIT_WINDOW_SECONDS:
+                failures.pop(key, None)
+                return False
+            return count >= LOGIN_RATE_LIMIT_MAX_FAILURES
+
+    def _record_login_failure(self, key: str) -> None:
+        if not key:
+            return
+        now = time.monotonic()
+        lock = self.server.login_failures_lock  # type: ignore[attr-defined]
+        failures = self.server.login_failures  # type: ignore[attr-defined]
+        with lock:
+            count, first_seen = failures.get(key, (0, now))
+            if now - first_seen > LOGIN_RATE_LIMIT_WINDOW_SECONDS:
+                count, first_seen = 0, now
+            failures[key] = (count + 1, first_seen)
+
+    def _clear_login_failures(self, key: str) -> None:
+        if not key:
+            return
+        lock = self.server.login_failures_lock  # type: ignore[attr-defined]
+        failures = self.server.login_failures  # type: ignore[attr-defined]
+        with lock:
+            failures.pop(key, None)
 
     def _handle_logout(self) -> None:
         ctx = self._require_auth()

@@ -135,7 +135,10 @@ def write_source_marker(path: Path, *, force: bool = False) -> tuple[str, bool]:
 def identity_key(abspath: Path, source_id: str) -> str:
     """Disambiguate generations when the same absolute path is recreated."""
 
-    suffix = hashlib.sha1(source_id.encode("utf-8")).hexdigest()[:8]
+    suffix = hashlib.sha1(
+        source_id.encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()[:8]
     return f"{compute_key(abspath)}--{suffix}"
 
 

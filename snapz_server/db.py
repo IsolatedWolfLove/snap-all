@@ -17,6 +17,7 @@ from snapz.util import now_iso
 DEFAULT_DATA_DIR = Path("~/.snapz-server").expanduser()
 PBKDF2_ROUNDS = 210_000
 DEVICE_OFFLINE_AFTER_HOURS = 24
+TOKEN_TTL_DAYS = 90
 
 
 @dataclass
@@ -438,31 +439,26 @@ def _canonical_machine_device(
 ) -> Optional[sqlite3.Row]:
     if not match_machine_ids:
         match_machine_ids = [machine_id]
-    placeholders = ", ".join("?" for _ in match_machine_ids)
-    rows = list(
+    match_machine_id_set = set(match_machine_ids)
+    candidates = list(
         con.execute(
-            f"""
+            """
             SELECT * FROM devices
             WHERE tenant_id = ? AND user_id = ?
-              AND (
-                machine_id IN ({placeholders})
-                OR (machine_id = '' AND name = ?)
-              )
-            ORDER BY
-              CASE WHEN machine_id = ? THEN 0 ELSE 1 END,
-              CASE WHEN revoked_at = '' THEN 0 ELSE 1 END,
-              datetime(last_seen_at) DESC,
-              datetime(created_at) DESC
             """,
-            (
-                tenant_id,
-                user_id,
-                *match_machine_ids,
-                device_name,
-                machine_id,
-            ),
+            (tenant_id, user_id),
         )
     )
+    rows = [
+        row
+        for row in candidates
+        if row["machine_id"] in match_machine_id_set
+        or (row["machine_id"] == "" and row["name"] == device_name)
+    ]
+    rows.sort(key=lambda row: row["created_at"], reverse=True)
+    rows.sort(key=lambda row: row["last_seen_at"], reverse=True)
+    rows.sort(key=lambda row: 0 if row["revoked_at"] == "" else 1)
+    rows.sort(key=lambda row: 0 if row["machine_id"] == machine_id else 1)
     if not rows:
         return None
     canonical = rows[0]
@@ -555,7 +551,8 @@ def authenticate_token(data_dir: str | Path, token: str) -> Optional[AuthContext
             SELECT
               t.id AS tenant_id, t.name AS tenant_name,
               u.id AS user_id, u.username AS username,
-              d.id AS device_id, d.name AS device_name, d.machine_id AS machine_id
+              d.id AS device_id, d.name AS device_name, d.machine_id AS machine_id,
+              tok.created_at AS token_created_at
             FROM device_tokens tok
             JOIN devices d ON d.id = tok.device_id
             JOIN users u ON u.id = d.user_id
@@ -570,6 +567,16 @@ def authenticate_token(data_dir: str | Path, token: str) -> Optional[AuthContext
         if row is None:
             return None
         ts = now_iso()
+        if _is_token_expired(row["token_created_at"], now=ts):
+            con.execute(
+                """
+                UPDATE device_tokens
+                SET revoked_at = ?
+                WHERE token_hash = ? AND revoked_at = ''
+                """,
+                (ts, token_hash),
+            )
+            return None
         con.execute(
             "UPDATE devices SET last_seen_at = ?, offline_at = '' WHERE id = ?",
             (ts, row["device_id"]),
@@ -587,6 +594,22 @@ def authenticate_token(data_dir: str | Path, token: str) -> Optional[AuthContext
             device_name=row["device_name"],
             machine_id=row["machine_id"],
         )
+
+
+def _is_token_expired(
+    created_at: str,
+    *,
+    now: str | None = None,
+    ttl_days: int = TOKEN_TTL_DAYS,
+) -> bool:
+    if ttl_days <= 0:
+        return False
+    try:
+        created = datetime.fromisoformat(created_at)
+        current = datetime.fromisoformat(now or now_iso())
+    except (TypeError, ValueError):
+        return True
+    return created <= current - timedelta(days=ttl_days)
 
 
 def revoke_device(data_dir: str | Path, device_id: str) -> bool:
@@ -1004,15 +1027,35 @@ def list_admin_devices(
     user_id: str | None = None,
 ) -> list[sqlite3.Row]:
     init_db(data_dir)
-    where = ""
-    params: tuple[str, ...] = ()
-    if user_id:
-        where = "WHERE d.user_id = ?"
-        params = (user_id,)
     with connect(data_dir) as con:
+        if user_id:
+            return list(
+                con.execute(
+                    """
+                    SELECT
+                      d.id AS id,
+                      d.tenant_id AS tenant_id,
+                      t.name AS tenant,
+                      d.user_id AS user_id,
+                      u.username AS username,
+                      d.name AS name,
+                      d.machine_id AS machine_id,
+                      d.created_at AS created_at,
+                      d.last_seen_at AS last_seen_at,
+                      d.offline_at AS offline_at,
+                      d.revoked_at AS revoked_at
+                    FROM devices d
+                    JOIN tenants t ON t.id = d.tenant_id
+                    JOIN users u ON u.id = d.user_id
+                    WHERE d.user_id = ?
+                    ORDER BY d.last_seen_at DESC, d.created_at DESC
+                    """,
+                    (user_id,),
+                )
+            )
         return list(
             con.execute(
-                f"""
+                """
                 SELECT
                   d.id AS id,
                   d.tenant_id AS tenant_id,
@@ -1028,10 +1071,8 @@ def list_admin_devices(
                 FROM devices d
                 JOIN tenants t ON t.id = d.tenant_id
                 JOIN users u ON u.id = d.user_id
-                {where}
                 ORDER BY d.last_seen_at DESC, d.created_at DESC
-                """,
-                params,
+                """
             )
         )
 
@@ -1073,7 +1114,8 @@ def source_id_for(source: dict) -> str:
     marker = str(source.get("source_marker", "") or "")
     key = str(source.get("key", "") or source.get("origin_store_key", "") or "")
     raw = f"marker:{marker}" if marker else f"key:{key}"
-    return "src_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+    digest = hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
+    return "src_" + digest[:24]
 
 
 def _source_display_name(source_id: str, path_hint: str, origin_store_key: str) -> str:

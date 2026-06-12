@@ -163,7 +163,8 @@ def _unregister_remote_device(config: RuntimeConfig) -> bool:
     try:
         unregistered = remote.unregister_device(config=config)
     except Exception:
-        pass
+        # Local uninstall/logout should continue even if the remote is gone.
+        unregistered = False
     try:
         remote.config_path(config).unlink(missing_ok=True)
     except OSError:

@@ -75,7 +75,7 @@ def cmd_login(args: argparse.Namespace, config: RuntimeConfig) -> int:
         try:
             password = getpass.getpass("Password: ")
         except EOFError:
-            password = ""
+            password = None
     if not password:
         _print_error("password is required")
         return EXIT_ERROR
@@ -168,4 +168,3 @@ def cmd_adopt(args: argparse.Namespace, config: RuntimeConfig) -> int:
     )
     print(_kv("snapshots", st.numeric(str(len(entry.snapshots)))))
     return EXIT_OK
-

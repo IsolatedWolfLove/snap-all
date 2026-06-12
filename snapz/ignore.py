@@ -99,7 +99,7 @@ def _compile_spec(lines: Iterable[str]) -> tuple[Any, ...]:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
                 pat = GitWildMatchPattern(raw)
-        except Exception:
+        except Exception:  # nosec B112
             continue
         if getattr(pat, "include", None) is not None:
             patterns.append(pat)

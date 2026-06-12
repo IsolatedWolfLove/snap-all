@@ -6,12 +6,13 @@ import argparse
 import json
 import os
 import re
-import subprocess
+import subprocess  # nosec B404
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from snapz import preferences
 from snapz import style as st
@@ -103,6 +104,8 @@ def version_is_newer(latest: str, current: str) -> bool:
 def _request_json(url: str, *, timeout: float) -> Any:
     from urllib.request import Request, urlopen
 
+    if urlsplit(url).scheme not in {"http", "https"}:
+        raise ValueError("update check URL must use http or https")
     request = Request(
         url,
         headers={
@@ -110,7 +113,7 @@ def _request_json(url: str, *, timeout: float) -> Any:
             "User-Agent": "snapz-update-check",
         },
     )
-    with urlopen(request, timeout=timeout) as response:
+    with urlopen(request, timeout=timeout) as response:  # nosec B310
         return json.loads(response.read().decode("utf-8"))
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import hashlib
-import subprocess
+import subprocess  # nosec B404
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -67,7 +67,7 @@ def _start_remote_only_push(config: RuntimeConfig) -> bool:
     if os.name != "nt":
         kwargs["start_new_session"] = True
     try:
-        subprocess.Popen(_background_push_command(), **kwargs)
+        subprocess.Popen(_background_push_command(), **kwargs)  # nosec B603
     except Exception:
         return False
     return True

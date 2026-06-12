@@ -113,7 +113,7 @@ _EN: dict[str, str] = {
     "server.init.data": "server data directory (default: /srv/snapz)",
     "server.init.host": "listen host (default: 0.0.0.0)",
     "server.init.port": "listen port (default: 8765)",
-    "server.init.admin_token": "admin API bearer token (default: generated)",
+    "server.init.admin_credential": "admin API bearer token (default: generated)",
     "server.init.service_file": "systemd service path",
     "server.init.server_bin": "snapz-server executable path for systemd",
     "server.init.force": "overwrite existing config/service",
@@ -133,7 +133,7 @@ _EN: dict[str, str] = {
     "server.run.tls_client_ca": (
         "PEM CA bundle that enables mTLS and requires client certificates"
     ),
-    "server.run.admin_token": (
+    "server.run.admin_credential": (
         "enable /admin and /api/admin with this bearer token "
         "(or set SNAPZ_SERVER_ADMIN_TOKEN)"
     ),
@@ -434,12 +434,12 @@ _EN: dict[str, str] = {
         "shell completion requires argcomplete. Install with "
         "`pip install snapz-cli[completion]` or `pip install argcomplete`."
     ),
-    "completion.unsupported_shell": "unsupported shell: {shell}",
+    "completion.unsupported_shell": "unsupported shell: {shell_name}",
     "completion.detect_failed": (
         "could not detect bash or zsh. Pass `--shell bash` or `--shell zsh`."
     ),
     "completion.installed": (
-        "installed snapz {shell} completion in {path}. Restart the shell or "
+        "installed snapz {shell_name} completion in {path}. Restart the shell or "
         "source that file."
     ),
     "completion.already_installed": (
@@ -740,7 +740,7 @@ _ZH: dict[str, str] = {
     "server.init.data": "服务端数据目录（默认: /srv/snapz）",
     "server.init.host": "监听地址（默认: 0.0.0.0）",
     "server.init.port": "监听端口（默认: 8765）",
-    "server.init.admin_token": "管理 API bearer token（默认: 自动生成）",
+    "server.init.admin_credential": "管理 API bearer token（默认: 自动生成）",
     "server.init.service_file": "systemd service 路径",
     "server.init.server_bin": "写入 systemd 的 snapz-server 可执行文件路径",
     "server.init.force": "覆盖已存在的配置/service",
@@ -758,7 +758,7 @@ _ZH: dict[str, str] = {
         "（默认: 10240 或 SNAPZ_SERVER_MAX_BUNDLE_MB）"
     ),
     "server.run.tls_client_ca": "启用 mTLS 并要求客户端证书的 PEM CA bundle",
-    "server.run.admin_token": (
+    "server.run.admin_credential": (
         "用该 bearer token 启用 /admin 和 /api/admin"
         "（或设置 SNAPZ_SERVER_ADMIN_TOKEN）"
     ),
@@ -1028,12 +1028,12 @@ _ZH: dict[str, str] = {
         "shell 补全需要 argcomplete。请运行 "
         "`pip install snapz-cli[completion]` 或 `pip install argcomplete`。"
     ),
-    "completion.unsupported_shell": "不支持的 shell: {shell}",
+    "completion.unsupported_shell": "不支持的 shell: {shell_name}",
     "completion.detect_failed": (
         "无法判断当前是 bash 还是 zsh。请传 `--shell bash` 或 `--shell zsh`。"
     ),
     "completion.installed": (
-        "已把 snapz {shell} 补全安装到 {path}。重启 shell 或 source 该文件后生效。"
+        "已把 snapz {shell_name} 补全安装到 {path}。重启 shell 或 source 该文件后生效。"
     ),
     "completion.already_installed": "{path} 中看起来已经安装过 snapz 补全",
     "completion.unknown_action": "未知的 completion 操作: {action}",

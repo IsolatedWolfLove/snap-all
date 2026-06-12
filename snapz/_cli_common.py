@@ -7,7 +7,7 @@ import getpass
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404
 import sys
 import tarfile
 import time
@@ -125,7 +125,7 @@ def _format_data_size(num_bytes: int) -> str:
     return f"{format_size(num_bytes)} ({num_bytes / (1024 ** 3):.2f} GB)"
 
 def _run_pip(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return subprocess.run(  # nosec B603
         [sys.executable, "-m", "pip", *args],
         check=False,
         text=True,

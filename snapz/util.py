@@ -24,12 +24,15 @@ def resolve_path(arg: str | Path) -> Path:
 def compute_key(abspath: Path) -> str:
     """Return the on-disk key for a target directory.
 
-    Format: ``<sha1[:12]>-<basename>``. Basename is sanitised so the
+    Format: ``<digest[:12]>-<basename>``. Basename is sanitised so the
     folder is always a valid filename across filesystems.
     """
 
     abspath = Path(abspath)
-    digest = hashlib.sha1(str(abspath).encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(
+        str(abspath).encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()[:12]
     base = abspath.name or "root"
     safe_base = re.sub(r"[^A-Za-z0-9._-]", "_", base)[:48]
     if not safe_base:

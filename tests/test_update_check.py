@@ -21,6 +21,11 @@ def test_version_compare_handles_v_tags():
     assert update_check.version_is_newer("v2.0.9", "2.1.1") is False
 
 
+def test_update_check_rejects_non_http_urls():
+    with pytest.raises(ValueError, match="http or https"):
+        update_check._request_json("file:///tmp/release.json", timeout=0.1)
+
+
 def test_run_check_records_available_update(snap_root):
     def fake_fetch():
         return update_check.LatestVersion(
