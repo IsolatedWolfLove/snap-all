@@ -443,6 +443,10 @@ snapz pull all
 
 `push` 现在是增量上传：远端已有的 blob 不会重复传。同名 snapshot 被 overwrite 后，也会检测 manifest/meta 变化并更新远端。
 
+增量 `push` 只向 server 新增或替换 snapshot，不会把“本地已经没有的
+snapshot”解释成远端删除。也就是说，本地 `snapz rm` 后再 `snapz push all`
+不会静默删除云端副本；云端删除以后必须是单独、显式、带确认的操作。
+
 `pull` 默认优先只拉索引，不下载完整内容包。本地能看到远端 snapshot，但内容会在需要时再下载。
 
 ## 定时任务行为
@@ -492,6 +496,9 @@ snapz archive list
 ```bash
 snapz alist
 ```
+
+`snapz alist` 里显示的远端归档索引是只读入口：可以恢复，也可以用
+`snapz adopt` 绑定到本地目录，但普通本地删除不会删除 server 上的副本。
 
 ## 按需下载内容
 

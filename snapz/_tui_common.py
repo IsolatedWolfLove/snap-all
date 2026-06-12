@@ -27,6 +27,7 @@ class DeferredRestore:
 
     abspath: Path
     snapshot_name: str
+    archive_key: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,7 @@ class _Row:
     columns: list[str]
     snapshot: SnapshotMeta
     abspath: Path  # source dir the snapshot belongs to
+    archive_key: str = ""
 
 
 @dataclass
@@ -145,6 +147,7 @@ def _build_alist_rows(entries: list[DirEntry]) -> list[_Row]:
     for entry in entries:
         abspath = Path(entry.meta.abspath) if entry.meta.abspath else Path()
         dir_label = abspath.name or entry.key
+        archive_key = entry.key if entry.archived else ""
         for snapz in entry.snapshots:
             rows.append(
                 _Row(
@@ -157,6 +160,7 @@ def _build_alist_rows(entries: list[DirEntry]) -> list[_Row]:
                     ],
                     snapshot=snapz,
                     abspath=abspath,
+                    archive_key=archive_key,
                 )
             )
     return rows
@@ -640,6 +644,9 @@ def _run_loop(
             _details_popup(stdscr, rows[cursor].snapshot, attrs=attrs)
         elif ch in (ord("d"),):
             row = rows[cursor]
+            if row.archive_key:
+                status = "remote archive rows are read-only"
+                continue
             if _confirm_popup(
                 stdscr,
                 f"Delete '{row.snapshot.name}' "
@@ -656,6 +663,9 @@ def _run_loop(
                     status = f"delete failed: {exc}"
         elif ch in (ord("n"),):
             row = rows[cursor]
+            if row.archive_key:
+                status = "remote archive rows are read-only"
+                continue
             new_name = _prompt_input(
                 stdscr,
                 f"rename '{row.snapshot.name}' to:",
@@ -676,5 +686,6 @@ def _run_loop(
             return DeferredRestore(
                 abspath=row.abspath,
                 snapshot_name=row.snapshot.name,
+                archive_key=row.archive_key,
             )
         # else: ignore unknown key

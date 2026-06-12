@@ -96,6 +96,11 @@ def test_build_alist_rows_flattens_per_dir(tmp_path, config):
 
 
 def test_deferred_restore_sentinel_holds_path_and_name():
-    sentinel = tui.DeferredRestore(abspath=Path("/x"), snapshot_name="v1")
+    sentinel = tui.DeferredRestore(
+        abspath=Path("/x"),
+        snapshot_name="v1",
+        archive_key="remote-src_1",
+    )
     assert sentinel.abspath == Path("/x")
+    assert sentinel.archive_key == "remote-src_1"
     assert sentinel.snapshot_name == "v1"

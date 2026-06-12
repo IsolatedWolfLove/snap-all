@@ -634,9 +634,10 @@ def list_snapshots(
 def list_all(
     *,
     config: Optional[RuntimeConfig] = None,
+    include_archived: bool = False,
 ) -> list[DirEntry]:
     config = config or default_config()
-    return Store(config).list_all()
+    return Store(config).list_all(include_archived=include_archived)
 
 
 def list_archives(

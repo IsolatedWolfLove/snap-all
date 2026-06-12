@@ -8,6 +8,7 @@ from typing import Optional
 
 from snapz import api
 from snapz.config import RuntimeConfig
+from snapz._list_common import alist_entries
 from snapz.store import DirEntry
 from snapz.util import format_size, is_auto_snapshot
 from snapz._tui_common import (
@@ -91,7 +92,7 @@ def run_alist_view(
         )
 
     def refresh() -> list[_Row]:
-        entries = api.list_all(config=config)
+        entries = alist_entries(config)
         if not show_auto:
             entries = [
                 DirEntry(
@@ -117,9 +118,13 @@ def run_alist_view(
         return title, summary
 
     def delete_fn(row: _Row) -> None:
+        if row.archive_key:
+            raise ValueError("remote archive rows are read-only")
         api.delete(row.abspath, row.snapshot.name, config=config)
 
     def rename_fn(row: _Row, new: str) -> None:
+        if row.archive_key:
+            raise ValueError("remote archive rows are read-only")
         api.rename(row.abspath, row.snapshot.name, new, config=config)
 
     return curses.wrapper(

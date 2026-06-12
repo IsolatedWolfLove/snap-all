@@ -156,8 +156,13 @@ Pulled remote sources are stored as archived sources until bound locally:
 
 ```bash
 snapz archive list
+snapz alist
 snapz adopt remote-src_xxx /path/to/project
 ```
+
+Remote archives shown by `snapz alist` are read-only index entries. They can be
+restored or adopted locally, but normal local deletion does not delete them from
+the server.
 
 ## 7. Enable Remote-Only
 
@@ -184,6 +189,11 @@ confirms uploaded blobs on the server, local content blobs that can be fetched
 again are evicted.
 
 If upload fails, snapz preserves local blobs that are not safely remote yet.
+
+Normal incremental pushes only add or replace snapshots on the server. A local
+`snapz rm` removes the local snapshot entry, but a later `snapz push all` will
+not silently delete the server copy; remote deletion must be a separate explicit
+operation with confirmation.
 
 ## 9. Restore Or Cat Missing Content
 

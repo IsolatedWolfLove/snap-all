@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from snapz._cli_common import *
+from snapz._list_common import alist_entries
+
+
 def _print_snapshot_table(
     snaps: Iterable[SnapshotMeta], *, show_auto: bool = False,
 ) -> None:
@@ -203,7 +206,7 @@ def cmd_list(args: argparse.Namespace, config: RuntimeConfig) -> int:
 
 def cmd_alist(args: argparse.Namespace, config: RuntimeConfig) -> int:
     show_auto = bool(getattr(args, "all", False))
-    entries = api.list_all(config=config)
+    entries = alist_entries(config)
 
     if _wants_json(args):
         # Filter at the per-dir level so the JSON consumer sees the same
@@ -236,6 +239,32 @@ def cmd_alist(args: argparse.Namespace, config: RuntimeConfig) -> int:
     deferred = tui.run_alist_view(config, show_auto=show_auto)
     if deferred is None:
         return EXIT_OK
+    if deferred.archive_key:
+        dst = tui.prompt_text(
+            "restore archived snapshot to:",
+            initial=str(deferred.abspath),
+        )
+        if not dst:
+            print(st.muted(t("picker.cancelled")))
+            return EXIT_USER_ABORT
+        try:
+            outcome = api.restore_archive(
+                deferred.archive_key,
+                deferred.snapshot_name,
+                dst,
+                config=config,
+                overwrite=False,
+            )
+        except (FileNotFoundError, NotADirectoryError, FileExistsError, ValueError) as exc:
+            _print_error(str(exc))
+            return EXIT_ERROR
+        print(
+            f"{st.ok_mark()} restored archived {st.name(outcome.snapshot.name)} "
+            f"{st.arrow()} {st.path(str(outcome.destination))}"
+        )
+        print(_kv("source", st.muted(str(deferred.abspath))))
+        print(_kv("extracted", st.numeric(str(outcome.extracted_count))))
+        return EXIT_OK
     return _restore_with_confirmation(
         deferred.abspath,
         deferred.snapshot_name,
@@ -244,4 +273,3 @@ def cmd_alist(args: argparse.Namespace, config: RuntimeConfig) -> int:
         clean=False,
         assume_yes=False,
     )
-

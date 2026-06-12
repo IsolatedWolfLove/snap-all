@@ -154,11 +154,6 @@ def merge_delta_bundle(target: Path, delta: Path) -> dict[str, Any]:
         incoming_meta = _read_bundle_meta(incoming)
         existing_rows = _snapshot_rows(existing_meta)
         incoming_rows = _snapshot_rows(incoming_meta)
-        declared_snapshot_names = {
-            str(name)
-            for name in incoming_meta.get("snapshot_names") or []
-            if str(name)
-        }
         incoming_by_name = {
             str(row.get("name") or ""): row
             for row in incoming_rows
@@ -169,8 +164,6 @@ def merge_delta_bundle(target: Path, delta: Path) -> dict[str, Any]:
             name = str(row.get("name") or "")
             if name in incoming_by_name:
                 merged_rows.append(dict(incoming_by_name[name]))
-            elif declared_snapshot_names and name not in declared_snapshot_names:
-                continue
             else:
                 merged_rows.append(dict(row))
             seen_names.add(name)

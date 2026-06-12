@@ -15,9 +15,11 @@ import pytest
 from snapz import api, remote
 from snapz import _api_core
 from snapz import cas
+from snapz._list_common import alist_entries
 from snapz.config import RuntimeConfig
 from snapz_server import db
 from snapz_server.app import make_server
+from snapz_server.bundles import bundle_index
 
 
 def _start_server(data_dir: Path):
@@ -383,12 +385,159 @@ def test_remote_index_pull_and_on_demand_object_hydration(tmp_path):
         archives = api.list_archives(config=local_b)
         assert len(archives) == 1
         assert [snap.name for snap in archives[0].snapshots] == ["v1"]
+        rows = alist_entries(local_b)
+        assert [(entry.key, [snap.name for snap in entry.snapshots]) for entry in rows] == [
+            (archives[0].key, ["v1"]),
+        ]
         assert not list(cas.global_objects_root(local_b.root).glob("*/*"))
 
         restored = tmp_path / "restored"
         api.restore_archive(archives[0].key, "v1", restored, config=local_b)
         assert (restored / "README.md").read_text(encoding="utf-8") == "v1\n"
         assert list(cas.global_objects_root(local_b.root).glob("*/*"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_local_rm_does_not_delete_remote_snapshot(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        local = RuntimeConfig(root=tmp_path / "client")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("v1\n", encoding="utf-8")
+        api.save(project, "v1", config=local)
+
+        auth = remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop",
+            config=local,
+        )
+        pushed = remote.push_all(config=local)
+        assert pushed.ok
+        source_id = pushed.items[0].source_id
+
+        assert api.delete(project, "v1", config=local) is True
+        assert api.list_snapshots(project, config=local) == []
+
+        ctx = db.authenticate_token(server_root, auth.token)
+        assert ctx is not None
+        row = db.get_source(server_root, ctx, source_id)
+        assert row is not None
+        index = bundle_index(db.bundle_path(server_root, row["tenant_id"], source_id))
+        assert [item["meta"]["name"] for item in index["snapshots"]] == ["v1"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_push_after_local_rm_preserves_remote_snapshot(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        local = RuntimeConfig(root=tmp_path / "client")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("v1\n", encoding="utf-8")
+        api.save(project, "v1", config=local)
+        (project / "README.md").write_text("v2\n", encoding="utf-8")
+        api.save(project, "v2", config=local)
+
+        auth = remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop",
+            config=local,
+        )
+        pushed = remote.push_all(config=local)
+        assert pushed.ok
+        source_id = pushed.items[0].source_id
+
+        assert api.delete(project, "v1", config=local) is True
+        assert remote.push_all(config=local).ok
+
+        ctx = db.authenticate_token(server_root, auth.token)
+        assert ctx is not None
+        row = db.get_source(server_root, ctx, source_id)
+        assert row is not None
+        index = bundle_index(db.bundle_path(server_root, row["tenant_id"], source_id))
+        assert {item["meta"]["name"] for item in index["snapshots"]} == {"v1", "v2"}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_reinstall_offline_snapshots_push_merge_existing_remote_source(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("v1\n", encoding="utf-8")
+
+        local_a = RuntimeConfig(root=tmp_path / "client-before-uninstall")
+        api.save(project, "v1", config=local_a)
+        auth_a = remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop",
+            config=local_a,
+        )
+        first_push = remote.push_all(config=local_a)
+        assert first_push.ok
+        source_id = first_push.items[0].source_id
+
+        local_b = RuntimeConfig(root=tmp_path / "client-after-reinstall")
+        api.save(project, "offline-v1", config=local_b)
+        (project / "README.md").write_text("offline-v2\n", encoding="utf-8")
+        api.save(project, "offline-v2", config=local_b)
+
+        auth_b = remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop",
+            config=local_b,
+        )
+        second_push = remote.push_all(config=local_b)
+        assert second_push.ok
+        assert [item.source_id for item in second_push.items] == [source_id]
+
+        ctx = db.authenticate_token(server_root, auth_b.token)
+        assert ctx is not None
+        assert len(db.list_sources(server_root, ctx)) == 1
+        row = db.get_source(server_root, ctx, source_id)
+        assert row is not None
+        index = bundle_index(db.bundle_path(server_root, row["tenant_id"], source_id))
+        assert {item["meta"]["name"] for item in index["snapshots"]} == {
+            "v1",
+            "offline-v1",
+            "offline-v2",
+        }
+
+        pulled = RuntimeConfig(root=tmp_path / "client-pulled")
+        remote.save_auth(auth_b, pulled)
+        assert remote.pull_all(config=pulled).ok
+        archives = api.list_archives(config=pulled)
+        assert len(archives) == 1
+        assert {snap.name for snap in archives[0].snapshots} == {
+            "v1",
+            "offline-v1",
+            "offline-v2",
+        }
     finally:
         server.shutdown()
         server.server_close()
