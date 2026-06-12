@@ -21,6 +21,8 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
+from snapz.config import DEFAULT_PULL_TRANSFER_MODE, PULL_TRANSFER_MODES
+
 LOCAL_EXCLUDES_FILENAME = "_local_excludes"
 CONFIG_FILENAME = "_config.json"
 SOURCE_CONFIG_FILENAME = "_source_config.json"
@@ -125,6 +127,15 @@ KNOWN_CONFIG_KEYS: dict[str, dict[str, Any]] = {
             "When true, confirmed remote snapshots keep local index files "
             "but evict local content blobs that can be fetched from the server."
         ),
+    },
+    "pull_transfer_mode": {
+        "type": "str",
+        "default": DEFAULT_PULL_TRANSFER_MODE,
+        "help": (
+            "Remote pull transfer mode: ``cold`` (default), ``client-bundle``, "
+            "or ``raw-stream`` when explicitly enabled on the server."
+        ),
+        "choices": tuple(sorted(PULL_TRANSFER_MODES)),
     },
 }
 

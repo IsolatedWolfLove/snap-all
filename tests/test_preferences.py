@@ -62,6 +62,26 @@ def test_default_config_reads_remote_only_env(monkeypatch):
     assert default_config().remote_only is True
 
 
+def test_default_config_reads_pull_transfer_mode_env(monkeypatch):
+    from snapz.config import default_config
+
+    monkeypatch.setenv("SNAPZ_PULL_TRANSFER_MODE", "client-bundle")
+
+    assert default_config().pull_transfer_mode == "client-bundle"
+
+
+def test_config_validates_pull_transfer_mode(snap_root):
+    parsed = preferences.set_config_value(
+        snap_root,
+        "pull_transfer_mode",
+        "client-bundle",
+    )
+    assert parsed == "client-bundle"
+    assert preferences.get_config_value(snap_root, "pull_transfer_mode") == "client-bundle"
+    with pytest.raises(ValueError):
+        preferences.set_config_value(snap_root, "pull_transfer_mode", "invalid")
+
+
 def test_api_save_starts_remote_only_push_in_background(project_dir, config, monkeypatch):
     preferences.set_config_value(config.root, "remote_only", "true")
     calls: list[tuple[list[str], dict[str, object]]] = []

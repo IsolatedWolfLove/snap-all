@@ -142,6 +142,9 @@ def cmd_push(args: argparse.Namespace, config: RuntimeConfig) -> int:
     return EXIT_OK if outcome.ok else EXIT_ERROR
 
 def cmd_pull(args: argparse.Namespace, config: RuntimeConfig) -> int:
+    transfer_mode = getattr(args, "transfer_mode", None)
+    if transfer_mode:
+        config = _config_with(config, pull_transfer_mode=transfer_mode)
     try:
         outcome = remote.pull_all(config=config)
     except (FileNotFoundError, ValueError, remote.RemoteError) as exc:
@@ -152,6 +155,30 @@ def cmd_pull(args: argparse.Namespace, config: RuntimeConfig) -> int:
         return EXIT_OK if outcome.ok else EXIT_ERROR
     _print_sync_outcome("pulled into archive", outcome)
     return EXIT_OK if outcome.ok else EXIT_ERROR
+
+
+def _config_with(config: RuntimeConfig, **changes: object) -> RuntimeConfig:
+    data = {
+        "root": config.root,
+        "large_file_bytes": config.large_file_bytes,
+        "follow_symlinks": config.follow_symlinks,
+        "use_zstd": config.use_zstd,
+        "apply_default_ignores": config.apply_default_ignores,
+        "apply_gitignore": config.apply_gitignore,
+        "apply_snapzignore": config.apply_snapzignore,
+        "use_file_cache": config.use_file_cache,
+        "save_workers": config.save_workers,
+        "zstd_level": config.zstd_level,
+        "gzip_level": config.gzip_level,
+        "chunk_file_bytes": config.chunk_file_bytes,
+        "chunk_min_bytes": config.chunk_min_bytes,
+        "chunk_avg_bytes": config.chunk_avg_bytes,
+        "chunk_max_bytes": config.chunk_max_bytes,
+        "remote_only": config.remote_only,
+        "pull_transfer_mode": config.pull_transfer_mode,
+    }
+    data.update(changes)
+    return RuntimeConfig(**data)
 
 def cmd_adopt(args: argparse.Namespace, config: RuntimeConfig) -> int:
     try:

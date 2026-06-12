@@ -72,6 +72,83 @@ def test_sources_are_tenant_scoped(tmp_path):
     assert sources_b[0]["snapshot_count"] == 2
 
 
+def test_init_db_migrates_compact_schema(tmp_path):
+    root = tmp_path / "server"
+    db.create_user(root, "acme", "alice", "secret")
+
+    with db.connect(root) as con:
+        con.execute("DROP TABLE compact_jobs")
+        con.execute("DROP TABLE cold_sources")
+        for table in ("sources",):
+            columns = {
+                row["name"]
+                for row in con.execute(f"PRAGMA table_info({table})")
+            }
+            assert "compact_status" in columns
+        con.execute("ALTER TABLE sources RENAME TO sources_before_compact")
+        con.executescript(
+            """
+            CREATE TABLE sources (
+                id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                source_marker TEXT NOT NULL DEFAULT '',
+                origin_store_key TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL DEFAULT '',
+                path_hint TEXT NOT NULL DEFAULT '',
+                snapshot_count INTEGER NOT NULL DEFAULT 0,
+                bundle_bytes INTEGER NOT NULL DEFAULT 0,
+                bundle_sha256 TEXT NOT NULL DEFAULT '',
+                pushed_by_device TEXT NOT NULL DEFAULT '',
+                sync_status TEXT NOT NULL DEFAULT '',
+                sync_phase TEXT NOT NULL DEFAULT '',
+                sync_progress_percent REAL NOT NULL DEFAULT 0,
+                sync_bytes_sent INTEGER NOT NULL DEFAULT 0,
+                sync_bytes_total INTEGER NOT NULL DEFAULT 0,
+                sync_speed_bps REAL NOT NULL DEFAULT 0,
+                sync_eta_seconds REAL,
+                sync_started_at TEXT NOT NULL DEFAULT '',
+                sync_updated_at TEXT NOT NULL DEFAULT '',
+                sync_finished_at TEXT NOT NULL DEFAULT '',
+                last_sync_at TEXT NOT NULL DEFAULT '',
+                sync_error TEXT NOT NULL DEFAULT '',
+                sync_remote_only INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, id)
+            );
+            INSERT INTO sources SELECT
+                id, tenant_id, source_marker, origin_store_key, display_name,
+                path_hint, snapshot_count, bundle_bytes, bundle_sha256,
+                pushed_by_device, sync_status, sync_phase,
+                sync_progress_percent, sync_bytes_sent, sync_bytes_total,
+                sync_speed_bps, sync_eta_seconds, sync_started_at,
+                sync_updated_at, sync_finished_at, last_sync_at, sync_error,
+                sync_remote_only, updated_at
+            FROM sources_before_compact;
+            DROP TABLE sources_before_compact;
+            """
+        )
+
+    db.init_db(root)
+
+    with db.connect(root) as con:
+        source_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(sources)")
+        }
+        assert "compact_status" in source_columns
+        assert "compact_revision" in source_columns
+        tables = {
+            row["name"]
+            for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert "compact_jobs" in tables
+        assert "cold_sources" in tables
+        assert "cold_chunks" in tables
+        assert "cold_source_objects" in tables
+
+
 def test_admin_source_helpers_update_name_and_delete_bundle(tmp_path):
     root = tmp_path / "server"
     db.create_user(root, "acme", "alice", "secret")
@@ -110,6 +187,32 @@ def test_admin_source_helpers_update_name_and_delete_bundle(tmp_path):
     assert bundle.exists() is False
     assert db.list_sources(root, ctx) == []
     assert db.delete_admin_source(root, ctx.tenant_id, source_id) is False
+
+
+def test_upsert_source_creates_pending_compact_job(tmp_path):
+    root = tmp_path / "server"
+    db.create_user(root, "acme", "alice", "secret")
+    ctx, _ = db.login_device(root, "acme", "alice", "secret", "laptop")
+
+    source = {"key": "local-key", "abspath": "/work/project"}
+    source_id = db.source_id_for(source)
+    revision = "a" * 64
+    db.upsert_source(
+        root,
+        ctx,
+        source_id,
+        source,
+        snapshot_count=1,
+        bundle_bytes=128,
+        bundle_sha256=revision,
+    )
+
+    source_row = db.get_source(root, ctx, source_id)
+    assert source_row["compact_status"] == "pending"
+    assert source_row["compact_revision"] == revision
+    job = db.get_compact_job(root, ctx.tenant_id, source_id, revision)
+    assert job is not None
+    assert job["status"] == "pending"
 
 
 def test_source_sync_status_tracks_progress_and_last_sync(tmp_path):

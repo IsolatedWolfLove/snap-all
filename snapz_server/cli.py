@@ -19,6 +19,8 @@ from snapz.i18n import install_argparse_i18n, t
 from snapz.util import format_size
 from snapz_server import db
 from snapz_server.app import make_server
+from snapz_server.compact import compact_pending
+from snapz_server.server_config import resolve_compact_config
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -74,7 +76,11 @@ def _parse_env_config(path: Path) -> dict[str, str]:
             if "=" not in token:
                 raise ValueError(f"invalid config {path}:{lineno}: expected KEY=value")
             key, value = token.split("=", 1)
-            if key.startswith("SNAPZ_SERVER_"):
+            if (
+                key.startswith("SNAPZ_SERVER_")
+                or key.startswith("SNAPZ_COMPACT_")
+                or key in {"SNAPZ_PULL_TRANSFER_MODE", "SNAPZ_ENABLE_RAW_STREAM_PULL"}
+            ):
                 values[key] = value
     return values
 
@@ -192,6 +198,42 @@ def _init_config_values(args: argparse.Namespace) -> dict[str, str]:
             getattr(args, "tls_client_ca", None)
             or os.environ.get("SNAPZ_SERVER_TLS_CLIENT_CA", "")
         ),
+        "SNAPZ_SERVER_STORAGE": os.environ.get("SNAPZ_SERVER_STORAGE", "hot-cold"),
+        "SNAPZ_COMPACT_ZSTD_LEVEL": os.environ.get("SNAPZ_COMPACT_ZSTD_LEVEL", "22"),
+        "SNAPZ_COMPACT_MANIFEST_ZSTD_LEVEL": os.environ.get(
+            "SNAPZ_COMPACT_MANIFEST_ZSTD_LEVEL",
+            "22",
+        ),
+        "SNAPZ_COMPACT_CHUNK_FILE_BYTES": os.environ.get(
+            "SNAPZ_COMPACT_CHUNK_FILE_BYTES",
+            "1048576",
+        ),
+        "SNAPZ_COMPACT_CHUNK_MIN_BYTES": os.environ.get(
+            "SNAPZ_COMPACT_CHUNK_MIN_BYTES",
+            "262144",
+        ),
+        "SNAPZ_COMPACT_CHUNK_AVG_BYTES": os.environ.get(
+            "SNAPZ_COMPACT_CHUNK_AVG_BYTES",
+            "1048576",
+        ),
+        "SNAPZ_COMPACT_CHUNK_MAX_BYTES": os.environ.get(
+            "SNAPZ_COMPACT_CHUNK_MAX_BYTES",
+            "4194304",
+        ),
+        "SNAPZ_COMPACT_PACK_TARGET_BYTES": os.environ.get(
+            "SNAPZ_COMPACT_PACK_TARGET_BYTES",
+            "268435456",
+        ),
+        "SNAPZ_COMPACT_KEEP_INCOMING_DAYS": os.environ.get(
+            "SNAPZ_COMPACT_KEEP_INCOMING_DAYS",
+            "1",
+        ),
+        "SNAPZ_COMPACT_SCOPE": os.environ.get("SNAPZ_COMPACT_SCOPE", "tenant"),
+        "SNAPZ_PULL_TRANSFER_MODE": os.environ.get("SNAPZ_PULL_TRANSFER_MODE", "cold"),
+        "SNAPZ_ENABLE_RAW_STREAM_PULL": os.environ.get(
+            "SNAPZ_ENABLE_RAW_STREAM_PULL",
+            "false",
+        ),
     }
 
 
@@ -223,6 +265,18 @@ def _config_text(values: dict[str, str]) -> str:
         "SNAPZ_SERVER_TLS_CERT",
         "SNAPZ_SERVER_TLS_KEY",
         "SNAPZ_SERVER_TLS_CLIENT_CA",
+        "SNAPZ_SERVER_STORAGE",
+        "SNAPZ_COMPACT_ZSTD_LEVEL",
+        "SNAPZ_COMPACT_MANIFEST_ZSTD_LEVEL",
+        "SNAPZ_COMPACT_CHUNK_FILE_BYTES",
+        "SNAPZ_COMPACT_CHUNK_MIN_BYTES",
+        "SNAPZ_COMPACT_CHUNK_AVG_BYTES",
+        "SNAPZ_COMPACT_CHUNK_MAX_BYTES",
+        "SNAPZ_COMPACT_PACK_TARGET_BYTES",
+        "SNAPZ_COMPACT_KEEP_INCOMING_DAYS",
+        "SNAPZ_COMPACT_SCOPE",
+        "SNAPZ_PULL_TRANSFER_MODE",
+        "SNAPZ_ENABLE_RAW_STREAM_PULL",
     ):
         lines.append(f"{key}={_quote_env_value(values.get(key, ''))}")
     return "\n".join(lines) + "\n"
@@ -394,6 +448,42 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"devices: {stats['devices']}")
     print(f"sources: {stats['sources']}")
     print(f"bundles: {format_size(stats['bundle_bytes'])}")
+    print(f"incoming: {format_size(stats['incoming_bytes'])}")
+    print(f"cold: {format_size(stats['cold_bytes'])}")
+    compact_jobs = stats.get("compact_jobs") or {}
+    if compact_jobs:
+        parts = [f"{name}={count}" for name, count in sorted(compact_jobs.items())]
+        print(f"compact jobs: {', '.join(parts)}")
+    else:
+        print("compact jobs: 0")
+    return EXIT_OK
+
+
+def cmd_compact(args: argparse.Namespace) -> int:
+    root = _data_dir(args)
+    db.init_db(root)
+    limit = getattr(args, "limit", None)
+    try:
+        results = compact_pending(
+            root,
+            config=resolve_compact_config(),
+            limit=limit,
+        )
+    except Exception as exc:
+        _print_error(str(exc))
+        return EXIT_ERROR
+    if not results:
+        print("compact jobs: 0")
+        return EXIT_OK
+    for result in results:
+        print(
+            "compacted "
+            f"{result.tenant_id}/{result.source_id} "
+            f"{result.snapshot_count} snapshot(s), "
+            f"{result.object_count} object(s), "
+            f"{result.chunk_count} chunk(s), "
+            f"{format_size(result.cold_physical_bytes)} cold"
+        )
     return EXIT_OK
 
 
@@ -562,6 +652,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor = sub.add_parser("doctor", help=t("server.doctor.help"))
     p_doctor.add_argument("--config", help=t("server.arg.config"))
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_compact = sub.add_parser("compact", help="compact pending cold-storage jobs")
+    p_compact.add_argument("--config", help=t("server.arg.config"))
+    p_compact.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="maximum jobs to compact in this run",
+    )
+    p_compact.set_defaults(func=cmd_compact)
 
     p_update = sub.add_parser("update", help=t("server.update.help"))
     p_update.add_argument("--config", help=t("server.arg.config"))

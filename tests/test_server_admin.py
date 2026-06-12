@@ -381,6 +381,10 @@ def test_admin_api_manages_pushed_sources(tmp_path):
         assert source["display_name"] == "project"
         assert source["snapshot_count"] == 1
         assert len(source["bundle_sha256"]) == 64
+        assert source["compact_status"] == "pending"
+        assert source["compact"]["status"] == "pending"
+        assert source["compact"]["revision"] == source["bundle_sha256"]
+        assert source["supported_pull_modes"] == ["cold", "client-bundle"]
         assert source["pushed_by_username"] == "alice"
         assert source["pushed_by_device_name"] == "laptop"
 
@@ -401,6 +405,17 @@ def test_admin_api_manages_pushed_sources(tmp_path):
         assert _json(url, "/api/sources", token=auth.token)["sources"][0][
             "bundle_sha256"
         ] == source["bundle_sha256"]
+        client_source = _json(url, "/api/sources", token=auth.token)["sources"][0]
+        assert client_source["compact_status"] == "pending"
+        assert client_source["supported_pull_modes"] == ["cold", "client-bundle"]
+        raw_stream = _json(
+            url,
+            f"/api/sources/{source['id']}/index",
+            token=auth.token,
+            headers={"X-Snapz-Pull-Mode": "raw-stream"},
+            expect=400,
+        )
+        assert "raw-stream" in raw_stream["error"]
 
         _json(
             url,

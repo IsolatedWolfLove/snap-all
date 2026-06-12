@@ -32,6 +32,11 @@ from snapz_server.bundles import (
     validate_delta_bundle_file,
     validate_bundle_file,
 )
+from snapz_server.compact import (
+    cold_index,
+    cold_object_blob,
+    write_client_bundle,
+)
 from snapz.api import _open_bundle_tar_reader
 from snapz_server.payloads import (
     decode_meta_header as _decode_meta_header,
@@ -63,8 +68,13 @@ from snapz_server.serializers import (
     row_dict as _row_dict,
 )
 from snapz_server.server_config import (
+    CompactConfig,
     DEFAULT_MAX_BUNDLE_BYTES,
+    PULL_MODE_CLIENT_BUNDLE,
+    PULL_MODE_COLD,
+    PULL_MODE_RAW_STREAM,
     enable_tls as _enable_tls,
+    resolve_compact_config as _resolve_compact_config,
     resolve_cors_origins as _resolve_cors_origins,
     resolve_max_bundle_bytes as _resolve_max_bundle_bytes,
     resolve_tls_path as _resolve_tls_path,
@@ -84,6 +94,7 @@ class SnapzHTTPServer(ThreadingHTTPServer):
     admin_token: str
     cors_origins: tuple[str, ...]
     max_bundle_bytes: int
+    compact_config: CompactConfig
     tls_certfile: str
     tls_keyfile: str
     tls_client_ca: str
@@ -126,6 +137,7 @@ def make_server(
     )
     server.cors_origins = _resolve_cors_origins(cors_origins)
     server.max_bundle_bytes = _resolve_max_bundle_bytes(max_bundle_bytes)
+    server.compact_config = _resolve_compact_config()
     server.tls_certfile = _resolve_tls_path(
         tls_certfile,
         env_name="SNAPZ_SERVER_TLS_CERT",
@@ -191,6 +203,10 @@ class SnapzHandler(BaseHTTPRequestHandler):
     def data_dir(self) -> Path:
         return self.server.data_dir  # type: ignore[attr-defined]
 
+    @property
+    def compact_config(self) -> CompactConfig:
+        return self.server.compact_config  # type: ignore[attr-defined]
+
     def do_GET(self) -> None:  # noqa: N802
         db.mark_stale_devices_offline(self.data_dir)
         parsed = urlparse(self.path)
@@ -229,7 +245,10 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {
                     "sources": [
-                        _admin_source_dict(row)
+                        _admin_source_dict(
+                            row,
+                            supported_pull_modes=self.compact_config.supported_pull_modes,
+                        )
                         for row in db.list_admin_sources(self.data_dir)
                     ],
                 },
@@ -276,7 +295,13 @@ class SnapzHandler(BaseHTTPRequestHandler):
             ctx = self._require_auth()
             if ctx is None:
                 return
-            rows = [_row_dict(row) for row in db.list_sources(self.data_dir, ctx)]
+            rows = [
+                _row_dict(
+                    row,
+                    supported_pull_modes=self.compact_config.supported_pull_modes,
+                )
+                for row in db.list_sources(self.data_dir, ctx)
+            ]
             self._send_json(HTTPStatus.OK, {"sources": rows})
             return
         if path.startswith("/api/sources/") and path.endswith("/index"):
@@ -638,7 +663,15 @@ class SnapzHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
-        self._send_json(HTTPStatus.OK, {"source": _admin_source_dict(row)})
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "source": _admin_source_dict(
+                    row,
+                    supported_pull_modes=self.compact_config.supported_pull_modes,
+                )
+            },
+        )
 
     def _handle_admin_delete_source(self, tenant_id: str, source_id: str) -> None:
         if not self._require_admin():
@@ -674,7 +707,10 @@ class SnapzHandler(BaseHTTPRequestHandler):
         self._send_json(
             HTTPStatus.OK,
             {
-                "source": _admin_source_dict(row),
+                "source": _admin_source_dict(
+                    row,
+                    supported_pull_modes=self.compact_config.supported_pull_modes,
+                ),
                 **result,
             },
         )
@@ -702,6 +738,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 snapshot_count=int(result["snapshot_count"]),
                 bundle_bytes=int(result["bundle_bytes"]),
                 bundle_sha256=str(result.get("bundle_sha256") or ""),
+                storage_mode=self.compact_config.storage,
             )
         except KeyError as exc:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc).strip("'\"")})
@@ -718,7 +755,10 @@ class SnapzHandler(BaseHTTPRequestHandler):
         self._send_json(
             HTTPStatus.OK,
             {
-                "source": _admin_source_dict(updated),
+                "source": _admin_source_dict(
+                    updated,
+                    supported_pull_modes=self.compact_config.supported_pull_modes,
+                ),
                 **result,
             },
         )
@@ -754,6 +794,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 snapshot_count=int(result["snapshot_count"]),
                 bundle_bytes=int(result["bundle_bytes"]),
                 bundle_sha256=str(result.get("bundle_sha256") or ""),
+                storage_mode=self.compact_config.storage,
             )
         except KeyError as exc:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc).strip("'\"")})
@@ -768,7 +809,10 @@ class SnapzHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK,
             {
                 "deleted_source": False,
-                "source": _admin_source_dict(updated),
+                "source": _admin_source_dict(
+                    updated,
+                    supported_pull_modes=self.compact_config.supported_pull_modes,
+                ),
                 **result,
             },
         )
@@ -782,11 +826,33 @@ class SnapzHandler(BaseHTTPRequestHandler):
         if row is None:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "source not found"})
             return None
-        bundle = db.bundle_path(self.data_dir, tenant_id, source_id)
+        bundle = db.readable_bundle_path(self.data_dir, tenant_id, source_id)
         if not bundle.is_file():
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "bundle not found"})
             return None
         return row, bundle
+
+    def _requested_pull_mode(self) -> str | None:
+        mode = str(self.headers.get("X-Snapz-Pull-Mode", "") or "").strip()
+        if not mode:
+            mode = self.compact_config.default_pull_mode
+        compact_config = self.compact_config
+        if mode == PULL_MODE_RAW_STREAM and not compact_config.raw_stream_enabled:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "raw-stream pull mode is disabled on this server"},
+            )
+            return None
+        if mode not in compact_config.supported_pull_modes:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "error": f"unsupported pull mode: {mode}",
+                    "supported_pull_modes": list(compact_config.supported_pull_modes),
+                },
+            )
+            return None
+        return mode
 
     def _handle_get_bundle(self, path: str) -> None:
         ctx = self._require_auth()
@@ -800,7 +866,26 @@ class SnapzHandler(BaseHTTPRequestHandler):
         if row is None:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "source not found"})
             return
-        bundle = db.bundle_path(self.data_dir, ctx.tenant_id, source_id)
+        mode = self._requested_pull_mode()
+        if mode is None:
+            return
+        if mode == PULL_MODE_CLIENT_BUNDLE:
+            with tempfile.TemporaryDirectory(prefix="snapz-cold-bundle-") as tmpdir:
+                generated = Path(tmpdir) / f"{source_id}.snapz"
+                try:
+                    if write_client_bundle(
+                        self.data_dir,
+                        tenant_id=ctx.tenant_id,
+                        source_id=source_id,
+                        destination=generated,
+                        zstd_level=self.compact_config.zstd_level,
+                    ):
+                        self._send_file(generated, content_type="application/octet-stream")
+                        return
+                except (ValueError, OSError, RuntimeError) as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+        bundle = db.readable_bundle_path(self.data_dir, ctx.tenant_id, source_id)
         if not bundle.is_file():
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "bundle not found"})
             return
@@ -818,7 +903,23 @@ class SnapzHandler(BaseHTTPRequestHandler):
         if row is None:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "source not found"})
             return
-        bundle = db.bundle_path(self.data_dir, ctx.tenant_id, source_id)
+        mode = self._requested_pull_mode()
+        if mode is None:
+            return
+        if mode == PULL_MODE_COLD:
+            try:
+                index = cold_index(
+                    self.data_dir,
+                    tenant_id=ctx.tenant_id,
+                    source_id=source_id,
+                )
+            except (ValueError, OSError, RuntimeError) as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            if index is not None:
+                self._send_json(HTTPStatus.OK, index)
+                return
+        bundle = db.readable_bundle_path(self.data_dir, ctx.tenant_id, source_id)
         if not bundle.is_file():
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "bundle not found"})
             return
@@ -840,7 +941,29 @@ class SnapzHandler(BaseHTTPRequestHandler):
         if row is None:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "source not found"})
             return
-        bundle = db.bundle_path(self.data_dir, ctx.tenant_id, source_id)
+        mode = self._requested_pull_mode()
+        if mode is None:
+            return
+        if mode == PULL_MODE_COLD:
+            try:
+                blob = cold_object_blob(
+                    self.data_dir,
+                    tenant_id=ctx.tenant_id,
+                    source_id=source_id,
+                    sha256=sha,
+                    zstd_level=self.compact_config.zstd_level,
+                )
+            except (ValueError, OSError, RuntimeError) as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            if blob is not None:
+                self._send_bytes(
+                    HTTPStatus.OK,
+                    blob,
+                    content_type="application/octet-stream",
+                )
+                return
+        bundle = db.readable_bundle_path(self.data_dir, ctx.tenant_id, source_id)
         if not bundle.is_file():
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "bundle not found"})
             return
@@ -951,6 +1074,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 snapshot_count=snapshot_count,
                 bundle_bytes=received,
                 bundle_sha256=expected_sha256,
+                storage_mode=self.compact_config.storage,
             )
             db.log_event(
                 self.data_dir,
@@ -1047,8 +1171,16 @@ class SnapzHandler(BaseHTTPRequestHandler):
             if digest.hexdigest() != expected_sha256:
                 raise ValueError("bundle sha256 does not match metadata")
             existing_blobs: set[str] = set()
-            if target.is_file():
-                existing_blobs = set(bundle_index(target).get("blobs") or [])
+            existing_target = db.readable_bundle_path(
+                self.data_dir,
+                ctx.tenant_id,
+                source_id,
+            )
+            if existing_target.is_file():
+                existing_blobs = set(bundle_index(existing_target).get("blobs") or [])
+                if existing_target != target:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(existing_target, target)
             validate_delta_bundle_file(Path(tmp_name), existing_blobs=existing_blobs)
             delta_meta = _read_bundle_meta(Path(tmp_name))
             bundle_source = dict(delta_meta.get("source") or {})
@@ -1066,6 +1198,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 snapshot_count=snapshot_count,
                 bundle_bytes=bundle_bytes,
                 bundle_sha256=str(index.get("bundle_sha256") or ""),
+                storage_mode=self.compact_config.storage,
             )
             db.log_event(
                 self.data_dir,
@@ -1202,7 +1335,7 @@ class SnapzHandler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
         self.send_header(
             "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, X-Snapz-Source-Meta",
+            "Authorization, Content-Type, X-Snapz-Source-Meta, X-Snapz-Pull-Mode",
         )
         self.send_header(
             "Access-Control-Allow-Methods",
@@ -1244,6 +1377,8 @@ class SnapzHandler(BaseHTTPRequestHandler):
                 ("devices", str(stats["devices"])),
                 ("sources", str(stats["sources"])),
                 ("bundle storage", format_size(stats["bundle_bytes"])),
+                ("incoming storage", format_size(stats["incoming_bytes"])),
+                ("cold storage", format_size(stats["cold_bytes"])),
             ]
         )
         raw = f"""<!doctype html>

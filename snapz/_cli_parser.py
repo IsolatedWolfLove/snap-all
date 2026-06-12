@@ -25,6 +25,7 @@ from snapz._cli_snapshot import cmd_export, cmd_mv, cmd_protect, cmd_restore, cm
 from snapz._cli_stats_prune import cmd_prune, cmd_stats
 from snapz._cli_web import cmd_web
 from snapz import update_check
+from snapz.config import PULL_TRANSFER_MODES
 from snapz.i18n import install_argparse_i18n
 
 
@@ -333,6 +334,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_pull = sub.add_parser("pull", help=t("pull.help"))
     p_pull.add_argument("scope", choices=["all"], help=t("pull.scope"))
+    p_pull.add_argument(
+        "--transfer-mode",
+        choices=sorted(PULL_TRANSFER_MODES),
+        help=t("pull.transfer_mode"),
+    )
     p_pull.set_defaults(func=cmd_pull)
 
     p_adopt = sub.add_parser(
@@ -927,6 +933,7 @@ def _runtime_config_with(config: RuntimeConfig, **changes: object) -> RuntimeCon
         "chunk_avg_bytes": config.chunk_avg_bytes,
         "chunk_max_bytes": config.chunk_max_bytes,
         "remote_only": config.remote_only,
+        "pull_transfer_mode": config.pull_transfer_mode,
     }
     data.update(changes)
     return RuntimeConfig(**data)

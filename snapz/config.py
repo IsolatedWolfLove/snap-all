@@ -19,6 +19,8 @@ DEFAULT_CHUNK_FILE_BYTES = 0
 DEFAULT_CHUNK_MIN_BYTES = 256 * 1024
 DEFAULT_CHUNK_AVG_BYTES = 1024 * 1024
 DEFAULT_CHUNK_MAX_BYTES = 4 * 1024 * 1024
+DEFAULT_PULL_TRANSFER_MODE = "cold"
+PULL_TRANSFER_MODES = frozenset({"cold", "client-bundle", "raw-stream"})
 REGISTRY_FILENAME = "registry.json"
 DIR_META_FILENAME = "_meta.json"
 ARCHIVE_SUFFIX_ZSTD = ".tar.zst"
@@ -65,6 +67,14 @@ def _default_remote_only() -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
+def _default_pull_transfer_mode() -> str:
+    raw = os.environ.get("SNAPZ_PULL_TRANSFER_MODE", DEFAULT_PULL_TRANSFER_MODE)
+    mode = str(raw or DEFAULT_PULL_TRANSFER_MODE).strip()
+    if mode not in PULL_TRANSFER_MODES:
+        return DEFAULT_PULL_TRANSFER_MODE
+    return mode
+
+
 def storage_root() -> Path:
     """Return the configured storage root, honoring ``SNAPZ_ALL_ROOT``."""
 
@@ -98,6 +108,7 @@ class RuntimeConfig:
     chunk_avg_bytes: int = DEFAULT_CHUNK_AVG_BYTES
     chunk_max_bytes: int = DEFAULT_CHUNK_MAX_BYTES
     remote_only: bool = field(default_factory=_default_remote_only)
+    pull_transfer_mode: str = field(default_factory=_default_pull_transfer_mode)
 
     def with_root(self, root: Path) -> "RuntimeConfig":
         return type(self)(
@@ -117,6 +128,7 @@ class RuntimeConfig:
             chunk_avg_bytes=self.chunk_avg_bytes,
             chunk_max_bytes=self.chunk_max_bytes,
             remote_only=self.remote_only,
+            pull_transfer_mode=self.pull_transfer_mode,
         )
 
 

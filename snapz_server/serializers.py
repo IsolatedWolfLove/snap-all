@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from snapz_server import db
+from snapz_server.server_config import PULL_MODE_CLIENT_BUNDLE, PULL_MODE_COLD
 
 
 def _sync_status_dict(row: Any) -> dict[str, Any]:
@@ -72,8 +73,28 @@ def admin_device_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def admin_source_dict(row: Any) -> dict[str, Any]:
+def _compact_dict(
+    row: Any,
+    supported_pull_modes: tuple[str, ...],
+) -> dict[str, Any]:
+    status = row["compact_status"] or "legacy"
+    return {
+        "status": status,
+        "revision": row["compact_revision"],
+        "updated_at": row["compact_updated_at"],
+        "raw_logical_bytes": int(row["raw_logical_bytes"] or 0),
+        "cold_physical_bytes": int(row["cold_physical_bytes"] or 0),
+        "supported_pull_modes": list(supported_pull_modes),
+    }
+
+
+def admin_source_dict(
+    row: Any,
+    *,
+    supported_pull_modes: tuple[str, ...] = (PULL_MODE_COLD, PULL_MODE_CLIENT_BUNDLE),
+) -> dict[str, Any]:
     sync_status = _sync_status_dict(row)
+    compact_status = _compact_dict(row, supported_pull_modes)
     return {
         "id": row["id"],
         "tenant_id": row["tenant_id"],
@@ -92,11 +113,19 @@ def admin_source_dict(row: Any) -> dict[str, Any]:
         "updated_at": row["updated_at"],
         "last_sync_at": sync_status["last_sync_at"],
         "sync_status": sync_status,
+        "compact_status": compact_status["status"],
+        "compact": compact_status,
+        "supported_pull_modes": compact_status["supported_pull_modes"],
     }
 
 
-def row_dict(row: Any) -> dict[str, Any]:
+def row_dict(
+    row: Any,
+    *,
+    supported_pull_modes: tuple[str, ...] = (PULL_MODE_COLD, PULL_MODE_CLIENT_BUNDLE),
+) -> dict[str, Any]:
     sync_status = _sync_status_dict(row)
+    compact_status = _compact_dict(row, supported_pull_modes)
     return {
         "id": row["id"],
         "tenant_id": row["tenant_id"],
@@ -111,4 +140,7 @@ def row_dict(row: Any) -> dict[str, Any]:
         "updated_at": row["updated_at"],
         "last_sync_at": sync_status["last_sync_at"],
         "sync_status": sync_status,
+        "compact_status": compact_status["status"],
+        "compact": compact_status,
+        "supported_pull_modes": compact_status["supported_pull_modes"],
     }

@@ -4,7 +4,10 @@ const baseURL = (import.meta.env.VITE_SNAPZ_SERVER_URL || '').replace(/\/$/, '')
 
 export interface SnapzAdminStats {
   bundle_bytes: number;
+  cold_bytes: number;
+  compact_jobs: Record<string, number>;
   devices: number;
+  incoming_bytes: number;
   sources: number;
   tenants: number;
   users: number;
@@ -51,11 +54,22 @@ export interface SnapzSyncStatus {
   updated_at: string;
 }
 
+export interface SnapzCompactStatus {
+  cold_physical_bytes: number;
+  raw_logical_bytes: number;
+  revision: string;
+  status: string;
+  supported_pull_modes: string[];
+  updated_at: string;
+}
+
 export interface SnapzAdminSource {
   bundle_bytes: number;
   display_name: string;
   id: string;
   last_sync_at: string;
+  compact: SnapzCompactStatus;
+  compact_status: string;
   origin_store_key: string;
   path_hint: string;
   pushed_by_device: string;
@@ -64,6 +78,7 @@ export interface SnapzAdminSource {
   pushed_by_username: string;
   snapshot_count: number;
   source_marker: string;
+  supported_pull_modes: string[];
   sync_status: SnapzSyncStatus;
   tenant: string;
   tenant_id: string;

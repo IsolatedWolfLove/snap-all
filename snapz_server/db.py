@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import sqlite3
@@ -73,8 +74,100 @@ def _create_sources_table_sql(table_name: str = "sources") -> str:
                 last_sync_at TEXT NOT NULL DEFAULT '',
                 sync_error TEXT NOT NULL DEFAULT '',
                 sync_remote_only INTEGER NOT NULL DEFAULT 0,
+                compact_status TEXT NOT NULL DEFAULT '',
+                compact_revision TEXT NOT NULL DEFAULT '',
+                compact_updated_at TEXT NOT NULL DEFAULT '',
+                raw_logical_bytes INTEGER NOT NULL DEFAULT 0,
+                cold_physical_bytes INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(tenant_id, id)
+            );
+            """
+
+
+def _create_compact_tables_sql() -> str:
+    return """
+            CREATE TABLE IF NOT EXISTS compact_jobs (
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                source_id TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(tenant_id, source_id, revision)
+            );
+            CREATE INDEX IF NOT EXISTS idx_compact_jobs_status
+                ON compact_jobs(status, updated_at);
+            CREATE TABLE IF NOT EXISTS cold_sources (
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                source_id TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                compact_status TEXT NOT NULL,
+                incoming_bundle_sha256 TEXT NOT NULL,
+                cold_manifest_sha256 TEXT NOT NULL DEFAULT '',
+                raw_logical_bytes INTEGER NOT NULL DEFAULT 0,
+                cold_physical_bytes INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, source_id, revision)
+            );
+            CREATE TABLE IF NOT EXISTS cold_snapshots (
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                source_id TEXT NOT NULL,
+                snapshot_name TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                meta_zstd_sha256 TEXT NOT NULL DEFAULT '',
+                manifest_zstd_sha256 TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, source_id, snapshot_name, revision)
+            );
+            CREATE TABLE IF NOT EXISTS cold_objects (
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                raw_sha256 TEXT NOT NULL,
+                raw_size INTEGER NOT NULL,
+                chunk_count INTEGER NOT NULL,
+                chunks_json TEXT NOT NULL,
+                ref_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, raw_sha256)
+            );
+            CREATE TABLE IF NOT EXISTS cold_chunks (
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                chunk_sha256 TEXT NOT NULL,
+                raw_size INTEGER NOT NULL,
+                pack_id TEXT NOT NULL,
+                offset INTEGER NOT NULL,
+                compressed_size INTEGER NOT NULL,
+                zstd_level INTEGER NOT NULL,
+                ref_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, chunk_sha256)
+            );
+            CREATE TABLE IF NOT EXISTS cold_packs (
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                pack_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                compressed_size INTEGER NOT NULL DEFAULT 0,
+                raw_size INTEGER NOT NULL DEFAULT 0,
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                sealed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, pack_id)
+            );
+            CREATE TABLE IF NOT EXISTS cold_source_objects (
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                source_id TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                raw_sha256 TEXT NOT NULL,
+                ref_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(tenant_id, source_id, revision, raw_sha256)
             );
             """
 
@@ -128,6 +221,11 @@ def _migrate_sources_columns(con: sqlite3.Connection) -> None:
         "last_sync_at": "TEXT NOT NULL DEFAULT ''",
         "sync_error": "TEXT NOT NULL DEFAULT ''",
         "sync_remote_only": "INTEGER NOT NULL DEFAULT 0",
+        "compact_status": "TEXT NOT NULL DEFAULT ''",
+        "compact_revision": "TEXT NOT NULL DEFAULT ''",
+        "compact_updated_at": "TEXT NOT NULL DEFAULT ''",
+        "raw_logical_bytes": "INTEGER NOT NULL DEFAULT 0",
+        "cold_physical_bytes": "INTEGER NOT NULL DEFAULT 0",
     }
     for name, definition in migrations.items():
         if name not in existing:
@@ -138,6 +236,9 @@ def init_db(data_dir: str | Path) -> None:
     root = Path(data_dir)
     root.mkdir(parents=True, exist_ok=True)
     (root / "bundles").mkdir(parents=True, exist_ok=True)
+    (root / "incoming").mkdir(parents=True, exist_ok=True)
+    (root / "cold").mkdir(parents=True, exist_ok=True)
+    (root / "hot").mkdir(parents=True, exist_ok=True)
     with connect(root) as con:
         con.executescript(
             """
@@ -186,6 +287,7 @@ def init_db(data_dir: str | Path) -> None:
                 created_at TEXT NOT NULL
             );
             """
+            + _create_compact_tables_sql()
         )
         _migrate_sources_table(con)
         _migrate_devices_columns(con)
@@ -860,6 +962,11 @@ def list_admin_sources(data_dir: str | Path) -> list[sqlite3.Row]:
                   s.last_sync_at AS last_sync_at,
                   s.sync_error AS sync_error,
                   s.sync_remote_only AS sync_remote_only,
+                  s.compact_status AS compact_status,
+                  s.compact_revision AS compact_revision,
+                  s.compact_updated_at AS compact_updated_at,
+                  s.raw_logical_bytes AS raw_logical_bytes,
+                  s.cold_physical_bytes AS cold_physical_bytes,
                   COALESCE(d.name, '') AS pushed_by_device_name,
                   COALESCE(u.id, '') AS pushed_by_user_id,
                   COALESCE(u.username, '') AS pushed_by_username,
@@ -908,6 +1015,11 @@ def get_admin_source(
               s.last_sync_at AS last_sync_at,
               s.sync_error AS sync_error,
               s.sync_remote_only AS sync_remote_only,
+              s.compact_status AS compact_status,
+              s.compact_revision AS compact_revision,
+              s.compact_updated_at AS compact_updated_at,
+              s.raw_logical_bytes AS raw_logical_bytes,
+              s.cold_physical_bytes AS cold_physical_bytes,
               COALESCE(d.name, '') AS pushed_by_device_name,
               COALESCE(u.id, '') AS pushed_by_user_id,
               COALESCE(u.username, '') AS pushed_by_username,
@@ -964,8 +1076,10 @@ def update_admin_source_bundle_stats(
     snapshot_count: int,
     bundle_bytes: int,
     bundle_sha256: str | None = None,
+    storage_mode: str = "hot-cold",
 ) -> sqlite3.Row:
     init_db(data_dir)
+    timestamp = now_iso()
     with connect(data_dir) as con:
         if bundle_sha256 is None:
             cur = con.execute(
@@ -974,24 +1088,49 @@ def update_admin_source_bundle_stats(
                 SET snapshot_count = ?, bundle_bytes = ?, updated_at = ?
                 WHERE tenant_id = ? AND id = ?
                 """,
-                (snapshot_count, bundle_bytes, now_iso(), tenant_id, source_id),
+                (snapshot_count, bundle_bytes, timestamp, tenant_id, source_id),
             )
         else:
+            compact_status = _source_compact_status(
+                storage_mode=storage_mode,
+                bundle_sha256=bundle_sha256,
+            )
             cur = con.execute(
                 """
                 UPDATE sources
-                SET snapshot_count = ?, bundle_bytes = ?, bundle_sha256 = ?, updated_at = ?
+                SET snapshot_count = ?, bundle_bytes = ?, bundle_sha256 = ?,
+                    compact_status = ?, compact_revision = ?,
+                    compact_updated_at = ?, updated_at = ?
                 WHERE tenant_id = ? AND id = ?
                 """,
                 (
                     snapshot_count,
                     bundle_bytes,
                     bundle_sha256,
-                    now_iso(),
+                    compact_status,
+                    bundle_sha256,
+                    timestamp,
+                    timestamp,
                     tenant_id,
                     source_id,
                 ),
             )
+            if storage_mode == "hot-cold" and bundle_sha256:
+                con.execute(
+                    """
+                    INSERT INTO compact_jobs(
+                      tenant_id, source_id, revision, status, error,
+                      created_at, updated_at, finished_at
+                    )
+                    VALUES (?, ?, ?, 'pending', '', ?, ?, '')
+                    ON CONFLICT(tenant_id, source_id, revision) DO UPDATE SET
+                      status = 'pending',
+                      error = '',
+                      updated_at = excluded.updated_at,
+                      finished_at = ''
+                    """,
+                    (tenant_id, source_id, bundle_sha256, timestamp, timestamp),
+                )
         if cur.rowcount == 0:
             raise KeyError(f"source not found: {tenant_id}/{source_id}")
 
@@ -1015,9 +1154,22 @@ def delete_admin_source(
             "DELETE FROM sources WHERE tenant_id = ? AND id = ?",
             (tenant_id, source_id),
         )
+        con.execute(
+            "DELETE FROM compact_jobs WHERE tenant_id = ? AND source_id = ?",
+            (tenant_id, source_id),
+        )
+        con.execute(
+            "DELETE FROM cold_sources WHERE tenant_id = ? AND source_id = ?",
+            (tenant_id, source_id),
+        )
+        con.execute(
+            "DELETE FROM cold_snapshots WHERE tenant_id = ? AND source_id = ?",
+            (tenant_id, source_id),
+        )
     if cur.rowcount <= 0:
         return False
     bundle_path(data_dir, tenant_id, source_id).unlink(missing_ok=True)
+    legacy_bundle_path(data_dir, tenant_id, source_id).unlink(missing_ok=True)
     return True
 
 
@@ -1122,8 +1274,46 @@ def _source_display_name(source_id: str, path_hint: str, origin_store_key: str) 
     return Path(path_hint).name or origin_store_key or source_id
 
 
-def bundle_path(data_dir: str | Path, tenant_id: str, source_id: str) -> Path:
+def incoming_bundle_path(data_dir: str | Path, tenant_id: str, source_id: str) -> Path:
+    return Path(data_dir) / "incoming" / tenant_id / f"{source_id}.snapz"
+
+
+def cold_metadata_path(data_dir: str | Path, tenant_id: str, sha256: str) -> Path:
+    return Path(data_dir) / "cold" / tenant_id / "metadata" / sha256[:2] / f"{sha256}.zst"
+
+
+def cold_pack_path(data_dir: str | Path, tenant_id: str, pack_id: str) -> Path:
+    return Path(data_dir) / "cold" / tenant_id / "packs" / f"{pack_id}.pack"
+
+
+def legacy_bundle_path(data_dir: str | Path, tenant_id: str, source_id: str) -> Path:
     return Path(data_dir) / "bundles" / tenant_id / f"{source_id}.snapz"
+
+
+def bundle_path(data_dir: str | Path, tenant_id: str, source_id: str) -> Path:
+    return incoming_bundle_path(data_dir, tenant_id, source_id)
+
+
+def readable_bundle_path(
+    data_dir: str | Path,
+    tenant_id: str,
+    source_id: str,
+) -> Path:
+    incoming = incoming_bundle_path(data_dir, tenant_id, source_id)
+    if incoming.is_file():
+        return incoming
+    return legacy_bundle_path(data_dir, tenant_id, source_id)
+
+
+def _source_compact_status(
+    *,
+    storage_mode: str,
+    bundle_sha256: str,
+    existing_status: str = "",
+) -> str:
+    if storage_mode != "hot-cold":
+        return existing_status or "legacy"
+    return "pending" if bundle_sha256 else existing_status or "pending"
 
 
 def upsert_source(
@@ -1135,8 +1325,13 @@ def upsert_source(
     snapshot_count: int,
     bundle_bytes: int,
     bundle_sha256: str = "",
+    storage_mode: str = "hot-cold",
 ) -> None:
     timestamp = now_iso()
+    compact_status = _source_compact_status(
+        storage_mode=storage_mode,
+        bundle_sha256=bundle_sha256,
+    )
     path_hint = str(source.get("abspath", "") or "")
     origin_store_key = str(source.get("key", "") or "")
     default_display_name = _source_display_name(
@@ -1169,9 +1364,10 @@ def upsert_source(
               path_hint, snapshot_count, bundle_bytes, bundle_sha256, pushed_by_device,
               sync_status, sync_phase, sync_progress_percent, sync_bytes_sent,
               sync_bytes_total, sync_speed_bps, sync_eta_seconds,
-              sync_updated_at, sync_finished_at, last_sync_at, sync_error, updated_at
+              sync_updated_at, sync_finished_at, last_sync_at, sync_error,
+              compact_status, compact_revision, compact_updated_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tenant_id, id) DO UPDATE SET
               source_marker = excluded.source_marker,
               origin_store_key = excluded.origin_store_key,
@@ -1192,6 +1388,9 @@ def upsert_source(
               sync_finished_at = excluded.sync_finished_at,
               last_sync_at = excluded.last_sync_at,
               sync_error = excluded.sync_error,
+              compact_status = excluded.compact_status,
+              compact_revision = excluded.compact_revision,
+              compact_updated_at = excluded.compact_updated_at,
               updated_at = excluded.updated_at
             """,
             (
@@ -1216,9 +1415,28 @@ def upsert_source(
                 timestamp,
                 timestamp,
                 "",
+                compact_status,
+                bundle_sha256,
+                timestamp,
                 timestamp,
             ),
         )
+        if storage_mode == "hot-cold" and bundle_sha256:
+            con.execute(
+                """
+                INSERT INTO compact_jobs(
+                  tenant_id, source_id, revision, status, error,
+                  created_at, updated_at, finished_at
+                )
+                VALUES (?, ?, ?, 'pending', '', ?, ?, '')
+                ON CONFLICT(tenant_id, source_id, revision) DO UPDATE SET
+                  status = 'pending',
+                  error = '',
+                  updated_at = excluded.updated_at,
+                  finished_at = ''
+                """,
+                (ctx.tenant_id, source_id, bundle_sha256, timestamp, timestamp),
+            )
 
 
 def update_source_sync_status(
@@ -1360,6 +1578,509 @@ def update_source_sync_status(
         )
 
 
+def get_compact_job(
+    data_dir: str | Path,
+    tenant_id: str,
+    source_id: str,
+    revision: str,
+) -> Optional[sqlite3.Row]:
+    init_db(data_dir)
+    with connect(data_dir) as con:
+        return con.execute(
+            """
+            SELECT * FROM compact_jobs
+            WHERE tenant_id = ? AND source_id = ? AND revision = ?
+            """,
+            (tenant_id, source_id, revision),
+        ).fetchone()
+
+
+def list_compact_jobs(
+    data_dir: str | Path,
+    *,
+    status: str | None = None,
+) -> list[sqlite3.Row]:
+    init_db(data_dir)
+    with connect(data_dir) as con:
+        if status is None:
+            return list(
+                con.execute(
+                    """
+                    SELECT * FROM compact_jobs
+                    ORDER BY updated_at DESC, tenant_id ASC, source_id ASC
+                    """
+                )
+            )
+        return list(
+            con.execute(
+                """
+                SELECT * FROM compact_jobs
+                WHERE status = ?
+                ORDER BY updated_at ASC, tenant_id ASC, source_id ASC
+                """,
+                (status,),
+            )
+        )
+
+
+def update_compact_job_status(
+    data_dir: str | Path,
+    tenant_id: str,
+    source_id: str,
+    revision: str,
+    *,
+    status: str,
+    error: str = "",
+    raw_logical_bytes: int | None = None,
+    cold_physical_bytes: int | None = None,
+) -> None:
+    clean_status = status.strip()[:32] or "pending"
+    clean_error = error.strip()[:2000]
+    timestamp = now_iso()
+    finished_at = timestamp if clean_status in {"complete", "failed"} else ""
+    with connect(data_dir) as con:
+        cur = con.execute(
+            """
+            UPDATE compact_jobs
+            SET status = ?, error = ?, updated_at = ?, finished_at = ?
+            WHERE tenant_id = ? AND source_id = ? AND revision = ?
+            """,
+            (
+                clean_status,
+                clean_error,
+                timestamp,
+                finished_at,
+                tenant_id,
+                source_id,
+                revision,
+            ),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(f"compact job not found: {tenant_id}/{source_id}/{revision}")
+        source_status = "complete" if clean_status == "complete" else clean_status
+        updates = [
+            "compact_status = ?",
+            "compact_revision = ?",
+            "compact_updated_at = ?",
+            "updated_at = ?",
+        ]
+        params: list[object] = [source_status, revision, timestamp, timestamp]
+        if raw_logical_bytes is not None:
+            updates.append("raw_logical_bytes = ?")
+            params.append(max(0, int(raw_logical_bytes)))
+        if cold_physical_bytes is not None:
+            updates.append("cold_physical_bytes = ?")
+            params.append(max(0, int(cold_physical_bytes)))
+        params.extend([tenant_id, source_id])
+        con.execute(
+            f"""
+            UPDATE sources
+            SET {", ".join(updates)}
+            WHERE tenant_id = ? AND id = ?
+            """,
+            params,
+        )
+
+
+def get_complete_cold_source(
+    data_dir: str | Path,
+    tenant_id: str,
+    source_id: str,
+) -> Optional[sqlite3.Row]:
+    init_db(data_dir)
+    with connect(data_dir) as con:
+        return con.execute(
+            """
+            SELECT cs.*
+            FROM cold_sources cs
+            JOIN sources s
+              ON s.tenant_id = cs.tenant_id
+             AND s.id = cs.source_id
+             AND s.compact_revision = cs.revision
+            WHERE cs.tenant_id = ?
+              AND cs.source_id = ?
+              AND cs.compact_status = 'complete'
+              AND s.compact_status = 'complete'
+            """,
+            (tenant_id, source_id),
+        ).fetchone()
+
+
+def get_cold_object(
+    data_dir: str | Path,
+    tenant_id: str,
+    raw_sha256: str,
+) -> Optional[sqlite3.Row]:
+    init_db(data_dir)
+    with connect(data_dir) as con:
+        return con.execute(
+            """
+            SELECT * FROM cold_objects
+            WHERE tenant_id = ? AND raw_sha256 = ?
+            """,
+            (tenant_id, raw_sha256),
+        ).fetchone()
+
+
+def get_cold_chunk(
+    data_dir: str | Path,
+    tenant_id: str,
+    chunk_sha256: str,
+) -> Optional[sqlite3.Row]:
+    init_db(data_dir)
+    with connect(data_dir) as con:
+        return con.execute(
+            """
+            SELECT * FROM cold_chunks
+            WHERE tenant_id = ? AND chunk_sha256 = ?
+            """,
+            (tenant_id, chunk_sha256),
+        ).fetchone()
+
+
+def cold_chunk_exists(
+    data_dir: str | Path,
+    tenant_id: str,
+    chunk_sha256: str,
+) -> bool:
+    return get_cold_chunk(data_dir, tenant_id, chunk_sha256) is not None
+
+
+def cold_source_object_exists(
+    data_dir: str | Path,
+    *,
+    tenant_id: str,
+    source_id: str,
+    revision: str,
+    raw_sha256: str,
+) -> bool:
+    init_db(data_dir)
+    with connect(data_dir) as con:
+        row = con.execute(
+            """
+            SELECT 1 FROM cold_source_objects
+            WHERE tenant_id = ?
+              AND source_id = ?
+              AND revision = ?
+              AND raw_sha256 = ?
+            """,
+            (tenant_id, source_id, revision, raw_sha256),
+        ).fetchone()
+    return row is not None
+
+
+def insert_cold_pack(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    pack_id: str,
+    relative_path: str,
+    compressed_size: int,
+    raw_size: int,
+    chunk_count: int,
+) -> None:
+    timestamp = now_iso()
+    con.execute(
+        """
+        INSERT OR REPLACE INTO cold_packs(
+          tenant_id, pack_id, path, compressed_size, raw_size,
+          chunk_count, sealed, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        (
+            tenant_id,
+            pack_id,
+            relative_path,
+            max(0, int(compressed_size)),
+            max(0, int(raw_size)),
+            max(0, int(chunk_count)),
+            timestamp,
+            timestamp,
+        ),
+    )
+
+
+def insert_cold_chunk(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    chunk_sha256: str,
+    raw_size: int,
+    pack_id: str,
+    offset: int,
+    compressed_size: int,
+    zstd_level: int,
+) -> None:
+    timestamp = now_iso()
+    con.execute(
+        """
+        INSERT OR IGNORE INTO cold_chunks(
+          tenant_id, chunk_sha256, raw_size, pack_id, offset,
+          compressed_size, zstd_level, ref_count, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        """,
+        (
+            tenant_id,
+            chunk_sha256,
+            max(0, int(raw_size)),
+            pack_id,
+            max(0, int(offset)),
+            max(0, int(compressed_size)),
+            max(1, int(zstd_level)),
+            timestamp,
+            timestamp,
+        ),
+    )
+
+
+def replace_cold_source(
+    data_dir: str | Path,
+    *,
+    tenant_id: str,
+    source_id: str,
+    revision: str,
+    incoming_bundle_sha256: str,
+    cold_manifest_sha256: str,
+    snapshots: list[dict],
+    objects: dict[str, dict],
+    raw_logical_bytes: int,
+    cold_physical_bytes: int,
+) -> None:
+    init_db(data_dir)
+    timestamp = now_iso()
+    affected_objects = set(objects)
+    affected_chunks: set[str] = set()
+    with connect(data_dir) as con:
+        previous = list(
+            con.execute(
+                """
+                SELECT raw_sha256 FROM cold_source_objects
+                WHERE tenant_id = ? AND source_id = ? AND revision = ?
+                """,
+                (tenant_id, source_id, revision),
+            )
+        )
+        affected_objects.update(str(row["raw_sha256"]) for row in previous)
+        for raw_sha256 in affected_objects:
+            row = con.execute(
+                """
+                SELECT chunks_json FROM cold_objects
+                WHERE tenant_id = ? AND raw_sha256 = ?
+                """,
+                (tenant_id, raw_sha256),
+            ).fetchone()
+            if row is None:
+                continue
+            try:
+                old_chunks = json.loads(row["chunks_json"])
+            except (TypeError, json.JSONDecodeError):
+                old_chunks = []
+            for chunk in old_chunks if isinstance(old_chunks, list) else []:
+                if isinstance(chunk, dict) and chunk.get("sha256"):
+                    affected_chunks.add(str(chunk["sha256"]))
+        con.execute(
+            """
+            DELETE FROM cold_source_objects
+            WHERE tenant_id = ? AND source_id = ? AND revision = ?
+            """,
+            (tenant_id, source_id, revision),
+        )
+        con.execute(
+            """
+            DELETE FROM cold_snapshots
+            WHERE tenant_id = ? AND source_id = ? AND revision = ?
+            """,
+            (tenant_id, source_id, revision),
+        )
+        con.execute(
+            """
+            INSERT INTO cold_sources(
+              tenant_id, source_id, revision, compact_status,
+              incoming_bundle_sha256, cold_manifest_sha256,
+              raw_logical_bytes, cold_physical_bytes, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 'complete', ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tenant_id, source_id, revision) DO UPDATE SET
+              compact_status = 'complete',
+              incoming_bundle_sha256 = excluded.incoming_bundle_sha256,
+              cold_manifest_sha256 = excluded.cold_manifest_sha256,
+              raw_logical_bytes = excluded.raw_logical_bytes,
+              cold_physical_bytes = excluded.cold_physical_bytes,
+              updated_at = excluded.updated_at
+            """,
+            (
+                tenant_id,
+                source_id,
+                revision,
+                incoming_bundle_sha256,
+                cold_manifest_sha256,
+                max(0, int(raw_logical_bytes)),
+                max(0, int(cold_physical_bytes)),
+                timestamp,
+                timestamp,
+            ),
+        )
+        for snap in snapshots:
+            con.execute(
+                """
+                INSERT INTO cold_snapshots(
+                  tenant_id, source_id, snapshot_name, revision,
+                  meta_zstd_sha256, manifest_zstd_sha256, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tenant_id,
+                    source_id,
+                    str(snap.get("snapshot_name") or ""),
+                    revision,
+                    str(snap.get("meta_zstd_sha256") or ""),
+                    str(snap.get("manifest_zstd_sha256") or ""),
+                    timestamp,
+                ),
+            )
+        for raw_sha256, item in objects.items():
+            chunks = list(item.get("chunks") or [])
+            chunks_json = json.dumps(
+                chunks,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            ref_count = max(1, int(item.get("ref_count") or 1))
+            for chunk in chunks:
+                if isinstance(chunk, dict):
+                    chunk_sha = str(chunk.get("sha256") or "")
+                    if chunk_sha:
+                        affected_chunks.add(chunk_sha)
+            con.execute(
+                """
+                INSERT INTO cold_objects(
+                  tenant_id, raw_sha256, raw_size, chunk_count, chunks_json,
+                  ref_count, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(tenant_id, raw_sha256) DO UPDATE SET
+                  raw_size = excluded.raw_size,
+                  chunk_count = excluded.chunk_count,
+                  chunks_json = excluded.chunks_json,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    tenant_id,
+                    raw_sha256,
+                    max(0, int(item.get("raw_size") or 0)),
+                    len(chunks),
+                    chunks_json,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            con.execute(
+                """
+                INSERT INTO cold_source_objects(
+                  tenant_id, source_id, revision, raw_sha256,
+                  ref_count, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tenant_id,
+                    source_id,
+                    revision,
+                    raw_sha256,
+                    ref_count,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        for raw_sha256 in affected_objects:
+            row = con.execute(
+                """
+                SELECT chunks_json FROM cold_objects
+                WHERE tenant_id = ? AND raw_sha256 = ?
+                """,
+                (tenant_id, raw_sha256),
+            ).fetchone()
+            if row is not None:
+                try:
+                    chunks = json.loads(row["chunks_json"])
+                except (TypeError, json.JSONDecodeError):
+                    chunks = []
+                for chunk in chunks if isinstance(chunks, list) else []:
+                    if isinstance(chunk, dict) and chunk.get("sha256"):
+                        affected_chunks.add(str(chunk["sha256"]))
+            ref_row = con.execute(
+                """
+                SELECT COALESCE(SUM(ref_count), 0) AS n
+                FROM cold_source_objects
+                WHERE tenant_id = ? AND raw_sha256 = ?
+                """,
+                (tenant_id, raw_sha256),
+            ).fetchone()
+            con.execute(
+                """
+                UPDATE cold_objects
+                SET ref_count = ?, updated_at = ?
+                WHERE tenant_id = ? AND raw_sha256 = ?
+                """,
+                (
+                    int(ref_row["n"] if ref_row is not None else 0),
+                    timestamp,
+                    tenant_id,
+                    raw_sha256,
+                ),
+            )
+        _refresh_cold_chunk_ref_counts(con, tenant_id, affected_chunks, timestamp)
+
+
+def _refresh_cold_chunk_ref_counts(
+    con: sqlite3.Connection,
+    tenant_id: str,
+    chunk_shas: set[str],
+    timestamp: str,
+) -> None:
+    if not chunk_shas:
+        return
+    object_rows = list(
+        con.execute(
+            """
+            SELECT raw_sha256, chunks_json, ref_count
+            FROM cold_objects
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        )
+    )
+    counts = {sha: 0 for sha in chunk_shas}
+    for row in object_rows:
+        object_refs = int(row["ref_count"] or 0)
+        if object_refs <= 0:
+            continue
+        try:
+            chunks = json.loads(row["chunks_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        seen: set[str] = set()
+        for chunk in chunks if isinstance(chunks, list) else []:
+            if not isinstance(chunk, dict):
+                continue
+            chunk_sha = str(chunk.get("sha256") or "")
+            if chunk_sha in counts and chunk_sha not in seen:
+                counts[chunk_sha] += object_refs
+                seen.add(chunk_sha)
+    for chunk_sha, ref_count in counts.items():
+        con.execute(
+            """
+            UPDATE cold_chunks
+            SET ref_count = ?, updated_at = ?
+            WHERE tenant_id = ? AND chunk_sha256 = ?
+            """,
+            (ref_count, timestamp, tenant_id, chunk_sha),
+        )
+
+
 def list_sources(data_dir: str | Path, ctx: AuthContext) -> list[sqlite3.Row]:
     with connect(data_dir) as con:
         return list(con.execute(
@@ -1397,10 +2118,35 @@ def server_stats(data_dir: str | Path) -> dict:
         bundles = con.execute(
             "SELECT COALESCE(SUM(bundle_bytes), 0) AS n FROM sources"
         ).fetchone()["n"]
+        incoming = _sum_files_size(Path(data_dir) / "incoming")
+        cold = _sum_files_size(Path(data_dir) / "cold")
+        jobs = con.execute(
+            """
+            SELECT status, COUNT(*) AS n
+            FROM compact_jobs
+            GROUP BY status
+            """
+        ).fetchall()
     return {
         "tenants": tenants,
         "users": users,
         "devices": devices,
         "sources": sources,
         "bundle_bytes": int(bundles or 0),
+        "incoming_bytes": int(incoming),
+        "cold_bytes": int(cold),
+        "compact_jobs": {str(row["status"]): int(row["n"]) for row in jobs},
     }
+
+
+def _sum_files_size(root: Path) -> int:
+    total = 0
+    if not root.exists():
+        return 0
+    for path in root.rglob("*"):
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total

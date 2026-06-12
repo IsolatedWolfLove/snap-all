@@ -437,6 +437,85 @@ def test_local_rm_does_not_delete_remote_snapshot(tmp_path):
         server.server_close()
 
 
+def test_push_stores_incoming_bundle_and_creates_compact_job(tmp_path):
+    server_root = tmp_path / "server"
+    db.create_user(server_root, "tenant-a", "alice", "secret")
+    server, url = _start_server(server_root)
+    try:
+        local = RuntimeConfig(root=tmp_path / "client")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("v1\n", encoding="utf-8")
+        api.save(project, "v1", config=local)
+
+        auth = remote.login(
+            url,
+            tenant="tenant-a",
+            username="alice",
+            password="secret",
+            device_name="laptop",
+            config=local,
+        )
+        pushed = remote.push_all(config=local)
+        assert pushed.ok
+        source_id = pushed.items[0].source_id
+
+        ctx = db.authenticate_token(server_root, auth.token)
+        assert ctx is not None
+        source = db.get_source(server_root, ctx, source_id)
+        assert source is not None
+        incoming = db.incoming_bundle_path(server_root, ctx.tenant_id, source_id)
+        assert incoming.is_file()
+        assert db.legacy_bundle_path(server_root, ctx.tenant_id, source_id).exists() is False
+        assert source["bundle_sha256"] == hashlib.sha256(incoming.read_bytes()).hexdigest()
+        assert source["compact_status"] == "pending"
+        job = db.get_compact_job(
+            server_root,
+            ctx.tenant_id,
+            source_id,
+            source["bundle_sha256"],
+        )
+        assert job is not None
+        assert job["status"] == "pending"
+
+        pulled = RuntimeConfig(root=tmp_path / "client-pulled")
+        remote.save_auth(auth, pulled)
+        assert remote.pull_all(config=pulled).ok
+        archives = api.list_archives(config=pulled)
+        assert len(archives) == 1
+        assert [snap.name for snap in archives[0].snapshots] == ["v1"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_pull_all_sends_configured_transfer_mode(tmp_path, monkeypatch):
+    local = RuntimeConfig(root=tmp_path / "client", pull_transfer_mode="client-bundle")
+    remote.save_auth(
+        remote.RemoteAuth(
+            server_url="http://server.example",
+            tenant="tenant-a",
+            username="alice",
+            token="tok",
+            device_id="dev_1",
+            device_name="test",
+        ),
+        local,
+    )
+    seen: list[dict[str, object]] = []
+
+    def fake_request_json(method, server_url, path, **kwargs):
+        seen.append({"method": method, "path": path, **kwargs})
+        return {"sources": []}
+
+    monkeypatch.setattr(remote, "_request_json", fake_request_json)
+
+    outcome = remote.pull_all(config=local)
+
+    assert outcome.ok
+    assert seen[0]["extra_headers"] == {"X-Snapz-Pull-Mode": "client-bundle"}
+
+
 def test_push_after_local_rm_preserves_remote_snapshot(tmp_path):
     server_root = tmp_path / "server"
     db.create_user(server_root, "tenant-a", "alice", "secret")

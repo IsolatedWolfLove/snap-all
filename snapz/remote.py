@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 from urllib.parse import urlsplit
 
-from snapz import api, cas
+from snapz import api, cas, preferences
 from snapz.config import META_SUFFIX, RuntimeConfig, default_config
 from snapz.store import DirEntry, DirMeta, SnapshotMeta, Store
 from snapz.util import now_iso
@@ -777,6 +777,7 @@ def _mark_remote_archive_synced(
 
 def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
     cfg = config or default_config()
+    transfer_mode = _configured_pull_transfer_mode(cfg)
     auth = load_auth(cfg)
     store = Store(cfg)
     response = _request_json(
@@ -784,6 +785,7 @@ def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
         auth.server_url,
         "/api/sources",
         token=auth.token,
+        extra_headers={"X-Snapz-Pull-Mode": transfer_mode},
         **auth.tls_kwargs(),
     )
     outcome = SyncOutcome(server_url=auth.server_url)
@@ -810,7 +812,11 @@ def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
                     )
                 )
                 continue
-            index = _get_remote_index(auth, source_id)
+            index = (
+                None
+                if transfer_mode == "client-bundle"
+                else _get_remote_index(auth, source_id, transfer_mode=transfer_mode)
+            )
             if index is not None:
                 imported = _import_remote_index(
                     index,
@@ -831,7 +837,7 @@ def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
                 continue
             with tempfile.TemporaryDirectory(prefix="snapz-pull-") as tmpdir:
                 bundle = Path(tmpdir) / f"{source_id}.snapz"
-                _download_bundle(auth, source_id, bundle)
+                _download_bundle(auth, source_id, bundle, transfer_mode=transfer_mode)
                 imported_bundle = api.import_bundle(
                     bundle,
                     config=cfg,
@@ -863,6 +869,18 @@ def pull_all(*, config: Optional[RuntimeConfig] = None) -> SyncOutcome:
                 )
             )
     return outcome
+
+
+def _configured_pull_transfer_mode(cfg: RuntimeConfig) -> str:
+    mode = cfg.pull_transfer_mode
+    try:
+        disk_config = preferences.load_config(Path(cfg.root))
+    except Exception:
+        disk_config = {}
+    if "pull_transfer_mode" in disk_config:
+        mode = str(disk_config["pull_transfer_mode"])
+    mode = str(mode or "cold").strip()
+    return mode if mode in {"cold", "client-bundle", "raw-stream"} else "cold"
 
 
 def remote_archive_key(source_id: str) -> str:
@@ -930,19 +948,29 @@ def read_bundle_meta(bundle: Path) -> dict[str, Any]:
     return data
 
 
-def _get_remote_index(auth: RemoteAuth, source_id: str) -> Optional[dict[str, Any]]:
+def _get_remote_index(
+    auth: RemoteAuth,
+    source_id: str,
+    *,
+    transfer_mode: str = "",
+) -> Optional[dict[str, Any]]:
     try:
         return _request_json(
             "GET",
             auth.server_url,
             f"/api/sources/{source_id}/index",
             token=auth.token,
+            extra_headers=_pull_mode_headers(transfer_mode),
             **auth.tls_kwargs(),
         )
     except RemoteError as exc:
         if exc.status == 404:
             return None
         raise
+
+
+def _pull_mode_headers(transfer_mode: str) -> dict[str, str]:
+    return {"X-Snapz-Pull-Mode": transfer_mode} if transfer_mode else {}
 
 
 def _import_remote_index(
@@ -1206,12 +1234,15 @@ def _request_json(
     *,
     payload: Optional[dict[str, Any]] = None,
     token: str = "",
+    extra_headers: Optional[dict[str, str]] = None,
     tls_ca: str = "",
     tls_client_cert: str = "",
     tls_client_key: str = "",
 ) -> dict[str, Any]:
     body = None
     headers = {"Accept": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -1393,8 +1424,17 @@ def _upload_delta(
         raise _remote_error(status, raw)
 
 
-def _download_bundle(auth: RemoteAuth, source_id: str, destination: Path) -> None:
-    headers = {"Authorization": f"Bearer {auth.token}"}
+def _download_bundle(
+    auth: RemoteAuth,
+    source_id: str,
+    destination: Path,
+    *,
+    transfer_mode: str = "",
+) -> None:
+    headers = {
+        "Authorization": f"Bearer {auth.token}",
+        **_pull_mode_headers(transfer_mode),
+    }
     status, _headers, raw = _http_request(
         "GET",
         auth.server_url,
@@ -1424,8 +1464,13 @@ def _download_object(
     source_id: str,
     sha: str,
     destination: Path,
+    *,
+    transfer_mode: str = "",
 ) -> None:
-    headers = {"Authorization": f"Bearer {auth.token}"}
+    headers = {
+        "Authorization": f"Bearer {auth.token}",
+        **_pull_mode_headers(transfer_mode),
+    }
     status, _headers, raw = _http_request(
         "GET",
         auth.server_url,
