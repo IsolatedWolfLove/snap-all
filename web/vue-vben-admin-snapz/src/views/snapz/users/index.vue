@@ -1149,7 +1149,7 @@ onMounted(() => {
                 <Input.Password v-model:value="createForm.password" />
               </Form.Item>
               <div class="snapz-form-footer">
-                <Form.Item :label="t('disabled')" name="disabled">
+                <Form.Item :label="t('disabled')" name="disabled" value-prop-name="checked">
                   <Switch v-model:checked="createForm.disabled" />
                 </Form.Item>
                 <Form.Item>
